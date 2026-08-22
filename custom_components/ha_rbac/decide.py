@@ -51,15 +51,25 @@ REASON_DEGRADED = "degraded"
 
 
 def _invokes_a_service(node: Any, depth: int = 0) -> bool:
-    """Return True if a payload calls a service anywhere inside it."""
+    """Return True if a payload calls a service anywhere inside it.
+
+    Home Assistant spells a call as `service` or, more recently, `action`, and
+    `execute_script` buries it inside a sequence -- so the whole payload is
+    searched rather than just the top level.
+
+    The value has to look like a service though. Lovelace writes
+    `{"action": "toggle"}` for a tap action, and treating that as a service call
+    would deny reads of any dashboard containing a button.
+    """
     if depth > MAX_WALK_DEPTH:
         # A payload too deep to inspect is assumed to act, not to observe.
         return True
     if isinstance(node, dict):
-        if SERVICE_KEYS & node.keys() and (
-            "domain" in node or "service" in node or "action" in node
-        ):
-            return True
+        for key in SERVICE_KEYS:
+            value = node.get(key)
+            # `light.turn_on`, or `turn_on` alongside an explicit domain.
+            if isinstance(value, str) and ("." in value or "domain" in node):
+                return True
         return any(_invokes_a_service(value, depth + 1) for value in node.values())
     if isinstance(node, list):
         return any(_invokes_a_service(item, depth + 1) for item in node)

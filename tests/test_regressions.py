@@ -30,6 +30,7 @@ from custom_components.ha_rbac.decide import (
     KIND_WS,
     REASON_UNBOUNDED,
     Decider,
+    _invokes_a_service,
 )
 from custom_components.ha_rbac.filters import REGISTRY
 from custom_components.ha_rbac.policy import (
@@ -296,3 +297,42 @@ async def test_a_malformed_stored_role_is_skipped_not_fatal(
     assert "broken" not in store.roles
     # The predefined roles are still available, so users keep working.
     assert "read_only" in store.roles
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        pytest.param(
+            {"domain": "light", "service": "turn_on"}, True, id="call_service"
+        ),
+        pytest.param(
+            {"sequence": [{"service": "lock.unlock", "target": {"entity_id": "l.a"}}]},
+            True,
+            id="execute_script",
+        ),
+        pytest.param(
+            {"sequence": [{"action": "lock.unlock"}]}, True, id="action-syntax"
+        ),
+        pytest.param(
+            {"views": [{"cards": [{"tap_action": {"action": "toggle"}}]}]},
+            False,
+            id="lovelace-tap-action",
+        ),
+        pytest.param(
+            {"views": [{"cards": [{"tap_action": {"action": "navigate"}}]}]},
+            False,
+            id="lovelace-navigate",
+        ),
+        pytest.param({"type": "get_states"}, False, id="plain-read"),
+    ],
+)
+async def test_service_invocation_detection(
+    payload: dict[str, Any], expected: bool
+) -> None:
+    """A service call is found anywhere, but a Lovelace tap action is not one.
+
+    Matching a bare `action` key would deny reads of any dashboard containing a
+    button, so the value has to look like a service: `domain.service`, or a bare
+    name alongside an explicit domain.
+    """
+    assert _invokes_a_service(payload) is expected
