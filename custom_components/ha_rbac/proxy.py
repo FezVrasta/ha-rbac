@@ -335,13 +335,16 @@ class RbacProxy:
                 max_msg_size=MAX_WEBSOCKET_MESSAGE_SIZE,
             ) as server_ws:
                 session = _WsSession(self, client_ws, server_ws)
-                await asyncio.wait(
-                    [
-                        create_eager_task(session.pump_inbound()),
-                        create_eager_task(session.pump_outbound()),
-                    ],
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
+                try:
+                    await asyncio.wait(
+                        [
+                            create_eager_task(session.pump_inbound()),
+                            create_eager_task(session.pump_outbound()),
+                        ],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    session.close()
         except (aiohttp.ClientError, TimeoutError) as err:
             _LOGGER.debug("Websocket proxy error: %s", err)
 
@@ -373,6 +376,14 @@ class _WsSession:
         # dropped rather than forwarded.
         self._pending: dict[int, str] = {}
         self._coalesced = False
+        self._unsubscribe_revoke: Any = None
+
+    @callback
+    def close(self) -> None:
+        """Release anything registered for the lifetime of the connection."""
+        if self._unsubscribe_revoke is not None:
+            self._unsubscribe_revoke()
+            self._unsubscribe_revoke = None
 
     @property
     def _full_access(self) -> bool:
@@ -486,6 +497,18 @@ class _WsSession:
             return
         self._user = refresh_token.user
         self._permissions = self._proxy._evaluator.async_permissions(self._user)
+        # A revoked token must not leave a filtered connection alive, since the
+        # permissions were resolved once at authentication time.
+        self._unsubscribe_revoke = (
+            self._proxy._hass.auth.async_register_revoke_token_callback(
+                refresh_token.id, self._on_token_revoked
+            )
+        )
+
+    @callback
+    def _on_token_revoked(self) -> None:
+        """Tear the connection down when its refresh token is revoked."""
+        self._proxy._hass.async_create_task(self._client.close())
 
     async def _deny(self, msg_id: Any, decision: Decision) -> None:
         """Answer a refused command in Home Assistant's own error shape.

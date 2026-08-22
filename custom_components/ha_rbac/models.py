@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .catalog import Catalog
+    from .decide import Decider
     from .denylog import DenyLog
     from .policy import Evaluator
     from .proxy import RbacProxy
@@ -18,6 +19,7 @@ class RbacData:
     store: "RbacStore"
     catalog: "Catalog"
     evaluator: "Evaluator"
+    decider: "Decider"
     denylog: "DenyLog"
     proxy: "RbacProxy | None" = None
     unsubscribes: list[Any] = field(default_factory=list)
