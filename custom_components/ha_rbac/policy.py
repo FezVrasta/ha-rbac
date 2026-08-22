@@ -52,7 +52,28 @@ from .const import (
     TIER_ADMIN,
     TIER_OPEN,
     TIER_ORDER,
+    TIER_USER,
 )
+
+# The one place a command has to be named. Each of these defeats the rest of the
+# layer outright, and none of it is derivable from anything Home Assistant
+# exposes -- no decorator, schema or naming convention distinguishes them.
+#
+# `auth/sign_path` mints a URL that authenticates on its own, with no
+# Authorization header and no path restriction, so a signed request arrives
+# without a user and skips every gate. The intent commands take free text --
+# "unlock the front door" -- so nothing in the payload names the lock.
+#
+# Applied to every role that is not full access, not just the predefined ones:
+# leaving it to role data meant any role created in the panel was exposed, which
+# is every role that matters.
+BASELINE_DENY = (
+    "auth/sign_path",
+    "conversation/*",
+    "assist_pipeline/*",
+    "assist_satellite/*",
+)
+ACTS_ON_INTENT = BASELINE_DENY
 
 SUBCAT_LABELS = "label_ids"
 SUBCAT_FLOORS = "floor_ids"
@@ -114,7 +135,7 @@ def default_roles() -> dict[str, dict[str, Any]]:
                 CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}}
             },
             "deny": {},
-            "tiers": {"max": TIER_OPEN, "allow": [], "deny": []},
+            "tiers": {"max": TIER_USER, "allow": [], "deny": list(ACTS_ON_INTENT)},
         },
         ROLE_READ_ONLY: {
             "id": ROLE_READ_ONLY,
@@ -123,7 +144,7 @@ def default_roles() -> dict[str, dict[str, Any]]:
             "system_generated": True,
             "allow": {CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
             "deny": {},
-            "tiers": {"max": TIER_OPEN, "allow": [], "deny": []},
+            "tiers": {"max": TIER_USER, "allow": [], "deny": list(ACTS_ON_INTENT)},
         },
     }
 
@@ -264,7 +285,7 @@ def compile_role(
         deny_fn=compile_entities(deny_policy.get(CAT_ENTITIES), perm_lookup),
         tier_max=tier_max,
         tier_allow=tier_allow,
-        tier_deny=list(tiers.get("deny") or []),
+        tier_deny=[*BASELINE_DENY, *(tiers.get("deny") or [])],
         # Full access skips every gate, so it has to mean *nothing* is
         # restricted. Ignoring the tier denials here silently disabled the whole
         # layer for the obvious authoring flow of cloning Administrator and

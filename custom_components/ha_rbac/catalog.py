@@ -27,8 +27,11 @@ USER_WRAPPER_NAME = "check_current_user"
 
 # Commands that mutate configuration or storage. A regex, not a list: it does not
 # need revisiting when an integration adds a command next release.
+# Matched on the verb, not the namespace: `^config/` also caught
+# `config/entity_registry/list`, so every registry read was treated as a
+# mutation and refused.
 WRITE_PATTERN = re.compile(
-    r"^config/|/(save|create|update|delete|remove|add|set|move|reload|import)(/|$)"
+    r"/(save|create|update|delete|remove|add|set|move|reload|import|upload)(/|$)"
 )
 
 

@@ -13,6 +13,7 @@ reads the registries directly instead.
 """
 
 import asyncio
+import base64
 import json
 import logging
 from collections import OrderedDict
@@ -82,13 +83,47 @@ TYPE_EVENT = "event"
 ERR_UNAUTHORIZED = "unauthorized"
 
 
+# Home Assistant's signed-path parameter.
+SIGN_QUERY_PARAM = "authSig"
+
+# Anonymous requests are forwarded so the login flow and the static frontend
+# work. These are the exception: they reach the API and act, with no user to
+# check them against.
+UNGOVERNED_API_PREFIXES = ("/api/webhook/",)
+
+
+def _is_ungoverned_api_path(path: str) -> bool:
+    """Return True if an unauthenticated request here would act ungoverned."""
+    return path.startswith(UNGOVERNED_API_PREFIXES)
+
+
+def _unverified_issuer(signature: str) -> str | None:
+    """Return the refresh-token id a signed path claims, without verifying it.
+
+    Verification is Home Assistant's job and happens upstream; this only needs
+    to know whose permissions to apply, and a forged claim resolves to a token
+    whose signature check then fails there.
+    """
+    try:
+        payload = signature.split(".")[1]
+        padded = payload + "=" * (-len(payload) % 4)
+        claims = json_loads(base64.urlsafe_b64decode(padded))
+    except (ValueError, IndexError, TypeError):
+        return None
+    issuer = claims.get("iss") if isinstance(claims, dict) else None
+    return issuer if isinstance(issuer, str) else None
+
+
 def _carries_entity_data(content_type: str) -> bool:
     """Return True if a response could disclose entity state.
 
     Images, video and static assets cannot; anything textual might. Used only to
     decide whether an unfilterable response must be refused.
     """
-    if content_type.startswith(("image/", "video/", "audio/", "font/")):
+    # Media cannot disclose an entity's state, and a stream cannot be buffered
+    # to filter in any case. A camera feed the role is permitted to see must not
+    # be refused for being unfilterable.
+    if content_type.startswith(("image/", "video/", "audio/", "font/", "multipart/")):
         return False
     return content_type not in (
         "application/octet-stream",
@@ -214,7 +249,20 @@ class RbacProxy:
         permissions = self._evaluator.async_permissions(user)
 
         decision = Decision(allowed=True)
-        if user is not None and not permissions.full_access:
+        if user is None:
+            # Anonymous traffic is the login flow and the static frontend, which
+            # must pass. Anything that reaches Home Assistant's own API without
+            # identifying a user cannot be reasoned about, so it is refused
+            # rather than forwarded ungoverned -- `/api/webhook/{id}` is the
+            # live example, and the mobile app's webhook can call any service.
+            if _is_ungoverned_api_path(request.path):
+                _LOGGER.warning(
+                    "Refusing unauthenticated %s %s: no user to check it against",
+                    request.method,
+                    request.path,
+                )
+                return web.json_response({"message": "Unauthorized"}, status=401)
+        elif not permissions.full_access:
             body = await self._peek_json(request)
             name = f"{request.method} {request.path}"
             decision = self._decider.decide(
@@ -287,10 +335,13 @@ class RbacProxy:
                     return web.json_response(
                         filtered, status=result.status, headers=headers
                     )
-                if _carries_entity_data(content_type):
-                    # Filtering was required and could not be applied. A size
-                    # limit is a performance guard, not a correctness boundary:
-                    # streaming the body here would hand a restricted user every
+                # A request that named its resources has already been checked
+                # against them by the resource gate, so an unfilterable response
+                # to it discloses nothing new. Refusal is for the unbounded case,
+                # where the response was the only thing left to check.
+                if not decision.resources and _carries_entity_data(content_type):
+                    # A size limit is a performance guard, not a correctness
+                    # boundary: streaming here would hand a restricted user every
                     # entity in a large response, silently.
                     _LOGGER.warning(
                         "Refusing %s %s: response could not be filtered "
@@ -453,9 +504,18 @@ class _WsSession:
         # Correlates a result or event back to the command that asked for it.
         # Without it an outbound frame cannot be filtered, so an unknown id is
         # dropped rather than forwarded.
-        # Correlations are kept for the life of the connection, so the map is
-        # bounded: a long-lived frontend session issues a lot of commands.
+        # Correlations for one-shot commands, bounded because a long-lived
+        # session issues a lot of them.
         self._pending: OrderedDict[int, str] = OrderedDict()
+        # Ids that have streamed at least one event are subscriptions. They are
+        # kept out of the bounded map: they are few, they live for the whole
+        # connection, and evicting one silently stops the UI updating.
+        self._streaming: dict[int, str] = {}
+        # Home Assistant requires ids to increase strictly, so the highest one
+        # seen is all that is needed to reject a repeat. Checking membership of
+        # the bounded map instead let an attacker evict the entry first and then
+        # reuse the id to re-label which filter applied.
+        self._highest_id = 0
         self._coalesced = False
         self._unsubscribe_revoke: Any = None
 
@@ -465,6 +525,11 @@ class _WsSession:
         self._pending[msg_id] = msg_type
         while len(self._pending) > MAX_PENDING_IDS:
             self._pending.popitem(last=False)
+
+    @callback
+    def _correlate(self, msg_id: int) -> str | None:
+        """Return the command an id belongs to."""
+        return self._streaming.get(msg_id) or self._pending.get(msg_id)
 
     @callback
     def close(self) -> None:
@@ -675,7 +740,7 @@ class _WsSession:
         if not isinstance(msg_id, int):
             return message
 
-        command = self._pending.get(msg_id)
+        command = self._correlate(msg_id)
         if command is None:
             # A frame that cannot be correlated cannot be filtered, and
             # forwarding it unfiltered is exactly the leak this exists to stop.
@@ -699,6 +764,9 @@ class _WsSession:
             return message
 
         if msg_type == TYPE_EVENT and "event" in message:
+            # First event proves this id is a subscription; move it somewhere it
+            # cannot be evicted, or the UI would quietly stop updating.
+            self._streaming.setdefault(msg_id, command)
             filtered = REGISTRY.filter_event(command, ctx, message["event"])
             if filtered is None:
                 return None

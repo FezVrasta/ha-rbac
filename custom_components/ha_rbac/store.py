@@ -49,10 +49,11 @@ class RbacStore:
                 # that would leave the proxy unbound and, on a loopback-only
                 # deployment, cut off every route into Home Assistant.
                 _LOGGER.exception(
-                    "Ignoring stored role %s because it is not valid; users "
-                    "bound only to it will fall back to their Home Assistant "
-                    "group",
+                    "Ignoring stored role %s because it is not valid. Any user "
+                    "bound only to this role now has no access at all -- "
+                    "rebind them, or delete the role from .storage/%s",
                     role_id,
+                    STORAGE_KEY,
                 )
 
         self.bindings = {

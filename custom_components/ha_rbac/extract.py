@@ -85,9 +85,13 @@ def _add(target: Extracted, kind: str, value: Any) -> None:
         return
 
     bucket = target.buckets[kind]
-    for item in values:
-        # cv.entity_ids accepts these sentinels. "all" means the command
-        # reaches every entity, which is the opposite of a bound.
+    for raw in values:
+        # Home Assistant lowercases these on the way in (`cv.entity_id`), and
+        # its policy lookup is an exact dict match -- so comparing the raw string
+        # would let `LOCK.Front` miss a deny rule written for `lock.front`, and
+        # `ALL` miss the sentinel while still counting as one named resource,
+        # which would satisfy the boundedness gate.
+        item = raw.lower()
         if kind == KEY_ENTITY and item in (SENTINEL_ALL, SENTINEL_NONE):
             if item == SENTINEL_ALL:
                 target.unbounded = True

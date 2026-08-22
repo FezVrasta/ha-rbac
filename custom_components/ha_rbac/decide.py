@@ -250,25 +250,17 @@ class Decider:
                     reason=REASON_UNBOUNDED,
                     detail=f"{name!r} mutates without naming what it affects",
                 )
-            # An unbounded request is safe only when its response can be
-            # checked, because that response is all that is left.
+            # Otherwise it is a read that named nothing, which is the ordinary
+            # case: `get_panels`, `person/list`, `energy/info` and most of a
+            # frontend's boot sequence. Allow it and filter the response --
+            # leakage from a read is in the response by definition, and a
+            # payload carrying nothing resource-shaped has nothing to leak.
             #
-            # For REST the verb settles it: a GET is a read by the protocol's
-            # own definition, so the generic response filter is enough. A
-            # websocket command has no verb, and guessing from its name is what
-            # let `conversation/process` through -- it names nothing, matches no
-            # write-shaped name, carries no domain and service, and executes
-            # intents, so a read-only user could ask it to unlock a door.
-            # There, an explicit response filter is required.
-            if kind != KIND_HTTP and not self._filters.has(name):
-                return Decision(
-                    allowed=False,
-                    reason=REASON_UNBOUNDED,
-                    detail=(
-                        f"{name!r} neither names what it affects nor has a "
-                        "response filter, so it cannot be checked"
-                    ),
-                )
+            # Requiring an explicit response filter here instead was tried, to
+            # catch commands like `conversation/process` that act on free text.
+            # It denied 17 of the 27 commands a real frontend issues on load, so
+            # those few are named in the predefined roles' tier denials, where an
+            # administrator can see and change them.
 
         return Decision(allowed=True, resources=sorted(entities), filter_response=True)
 
@@ -285,7 +277,7 @@ class Decider:
     @callback
     def _merge_named_resource(found: Extracted, key: str, value: str) -> None:
         """Fold a resource named in the URL into the extracted set."""
-        found.buckets[RESOURCE_KEYS[key]].add(value)
+        found.buckets[RESOURCE_KEYS[key]].add(value.lower())
 
     @staticmethod
     @callback
@@ -299,8 +291,8 @@ class Decider:
         if (kind := RESOURCE_KEYS.get(normalised)) is None:
             return
         for item in value.split(","):
-            if item := item.strip():
-                found.buckets[kind].add(item)
+            if cleaned := item.strip().lower():
+                found.buckets[kind].add(cleaned)
 
     @callback
     def _is_mutation(self, kind: str, name: str, payload: dict[str, Any]) -> bool:
