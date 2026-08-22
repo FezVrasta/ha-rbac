@@ -94,6 +94,66 @@ Reads are allowed and their **responses filtered** — leakage from a read is by
 in the response, so a command returning nothing resource-shaped needs no classification.
 Mutations are gated up front, since their damage is not visible in the response.
 
+---
+
+## What it looks like
+
+All of these are one Home Assistant, one dashboard, seen through the proxy by
+two different accounts. The guest is bound to a role that denies the `lock`
+domain; the owner is unrestricted.
+
+### The guest
+
+![Guest dashboard](screenshots/guest-dashboard.jpg)
+
+An ordinary working dashboard — areas, summaries, a rendered heading. Nothing
+announces that anything is being withheld, which is the point. Note the sidebar:
+no Settings, no Developer Tools, and no Access Control.
+
+![Guest searching for locks](screenshots/guest-search-no-locks.jpg)
+
+Searching entities for `lock` returns nothing. The lock is absent from
+`get_states`, from `/api/states`, and from the compressed state stream the
+dashboard subscribes to, so there is nothing for the frontend to find. Asking
+for it directly — `GET /api/states/lock.front_door` — returns 401.
+
+### The owner, same proxy
+
+![Owner sidebar](screenshots/owner-sidebar.jpg)
+
+Settings and Access Control appear. The proxy does no parsing or filtering at
+all for a fully permitted role, so an administrator pays nothing for this being
+installed.
+
+### The Access Control panel
+
+![Roles](screenshots/panel-roles.jpg)
+
+Roles are edited here and stored in `.storage/ha_rbac`, never in YAML. The three
+built-in roles cannot be edited, only cloned. Entity rules are written as a Home
+Assistant policy, so a role's `allow` block is portable back into a group policy
+if you ever remove this.
+
+The line under **Commands** — *"393 commands derived"* — is the point of the
+whole design. That count comes from reading Home Assistant's own `require_admin`
+decorators at runtime, on this instance, with this set of integrations
+installed. It is not a list shipped in the code, and it does not need updating
+when Home Assistant adds a command.
+
+![Users](screenshots/panel-users.jpg)
+
+A user with no role keeps whatever their Home Assistant group already gives
+them, so installing this changes nothing until you assign one. The owner is
+always unrestricted, in code — that is the way back in if a role locks you out.
+
+![Denials](screenshots/panel-denials.jpg)
+
+Every refusal, with the reason and the entities involved. A denied request
+reaches the user as a screen that quietly does less, with no explanation, so
+this is where to look when someone reports one. The reasons map to the gates:
+`tier` is a command the role may not use at all, `resource` is an entity it may
+not touch, `unbounded` is a request that named nothing checkable.
+
 ## Installation
 
 Install via HACS or copy `custom_components/ha_rbac` into your `config/custom_components`.
