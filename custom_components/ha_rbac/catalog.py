@@ -266,6 +266,26 @@ class Catalog:
         return info.tier
 
     @callback
+    def service_is_admin_only(self, domain: str, service: str) -> bool:
+        """Return True if Home Assistant registered this service as admin-only.
+
+        `async_register_admin_service` wraps the handler in a partial of
+        `_async_admin_handler`, so the registration itself says so -- no list of
+        service names is needed.
+        """
+        from homeassistant.helpers.service import (  # noqa: PLC0415
+            _async_admin_handler,
+        )
+
+        services = self._hass.services.async_services().get(domain) or {}
+        if (entry := services.get(service)) is None:
+            # A service this build has never seen is treated as the most
+            # restrictive thing, same as an unknown command.
+            return True
+        target = getattr(getattr(entry, "job", None), "target", None)
+        return getattr(target, "func", None) is _async_admin_handler
+
+    @callback
     def route_for(self, method: str, path: str) -> RouteInfo | None:
         """Return the registered route matching a request.
 

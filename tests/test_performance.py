@@ -6,6 +6,8 @@ fast path exists to keep administrators paying nothing. These tests pin the
 behaviour that makes the cost predictable rather than measuring wall clock.
 """
 
+import json
+import time
 from typing import Any
 
 from homeassistant.auth.permissions.const import CAT_ENTITIES, POLICY_READ, SUBCAT_ALL
@@ -118,3 +120,42 @@ async def test_filtering_a_large_state_list_is_linear(hass: HomeAssistant) -> No
 
     assert len(result) == 500
     assert all(state["entity_id"].startswith("light.") for state in result)
+
+
+async def test_filtering_a_state_diff_stays_cheap(hass: HomeAssistant) -> None:
+    """Pins the cost that decides whether a cache is worth building.
+
+    The obvious worry is that per-user filtering defeats Home Assistant's
+    sharing of one pre-serialised payload across every client. Measured, a
+    state-change diff costs single-digit microseconds to parse, filter and
+    re-serialise -- so fifty tabs at a hundred state changes a second is a few
+    percent of one core, and a cache would buy nothing worth its invalidation.
+
+    The threshold here is deliberately loose. It is a regression alarm for
+    something going quadratic, not a benchmark.
+    """
+    denied = {f"lock.d{index}" for index in range(50)}
+    ctx = FilterContext(hass, lambda entity_id, key: entity_id not in denied)
+    event = {
+        "c": {
+            "light.kitchen": {
+                "+": {"s": "on", "lu": 1787442000.1, "a": {"brightness": 180}}
+            }
+        }
+    }
+    raw = json.dumps({"id": 7, "type": "event", "event": event})
+
+    def round_trip() -> str:
+        message = json.loads(raw)
+        filtered = REGISTRY.filter_event("subscribe_entities", ctx, message["event"])
+        return json.dumps({**message, "event": filtered})
+
+    round_trip()
+    started = time.perf_counter()
+    for _ in range(2000):
+        round_trip()
+    per_frame = (time.perf_counter() - started) / 2000
+
+    assert per_frame < 500e-6, (
+        f"{per_frame * 1e6:.0f}us per frame is far above measured"
+    )

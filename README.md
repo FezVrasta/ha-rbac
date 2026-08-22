@@ -183,8 +183,15 @@ Custom roles are authored in the **Access Control** panel and stored in
 - **Binary WebSocket frames are relayed unfiltered.** The handler id is per-connection and
   the payload is opaque. The commands that negotiate them are admin-gated today.
 - **Automations execute with no user context**, unchanged from stock HA.
-- **Filtering costs CPU.** HA builds state-diff JSON once and shares it across all clients;
-  per-user filtering forces a re-serialize per connection.
+- **Filtering costs CPU, but less than expected.** Home Assistant builds each
+  state-diff payload once and shares it with every client; filtering per user
+  gives that up. Measured, a state-change diff costs about 5 microseconds to
+  parse, filter and re-serialise, so fifty browser tabs at a hundred state
+  changes a second come to roughly 2% of one core. A per-role cache was
+  considered and dropped: Home Assistant gives each connection its own
+  subscription id, so the frames are not byte-identical across connections and
+  you have to parse before you could key a cache -- which is most of the cost
+  already. `tests/test_performance.py` pins the measurement.
 - **Moving users from `:8123` to `:8124` invalidates their sessions** — `client_id` is the
   origin, so everyone logs in once after the switch.
 

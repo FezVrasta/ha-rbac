@@ -27,7 +27,7 @@ from homeassistant.helpers import (
 )
 
 from .catalog import Catalog
-from .const import MAX_WALK_DEPTH, RESOURCE_KEYS
+from .const import MAX_WALK_DEPTH, RESOURCE_KEYS, TIER_ADMIN
 from .extract import Extracted, extract, is_bounded
 from .filters import FilterRegistry
 from .policy import Permissions
@@ -48,6 +48,10 @@ REASON_TIER = "tier"
 REASON_RESOURCE = "resource"
 REASON_UNBOUNDED = "unbounded"
 REASON_DEGRADED = "degraded"
+
+# Never a real entity; it makes a domain-level policy rule answer for a call
+# that names no particular entity.
+DOMAIN_PROBE = "_rbac_probe"
 
 
 def _invokes_a_service(node: Any, depth: int = 0) -> bool:
@@ -235,6 +239,15 @@ class Decider:
         # 4. Boundedness. A payload that names nothing, or that carries a
         #    template, does not constrain its own command.
         if not is_bounded(found):
+            # A service call that names no entity is not unbounded, it is bound
+            # by the service. `persistent_notification.create`, `notify.*` and
+            # `homeassistant.restart` all target nothing, and refusing the lot
+            # left a role unable to make a notification.
+            if (
+                service_decision := self._decide_service(permissions, payload)
+            ) is not None:
+                return service_decision
+
             if self._is_mutation(kind, name, payload):
                 return Decision(
                     allowed=False,
@@ -270,6 +283,42 @@ class Decider:
         return Decision(allowed=True, resources=sorted(entities), filter_response=True)
 
         return Decision(allowed=True, resources=sorted(entities), filter_response=True)
+
+    @callback
+    def _decide_service(
+        self, permissions: Permissions, payload: dict[str, Any]
+    ) -> Decision | None:
+        """Judge a service call that named no entity, or None if not one.
+
+        The service itself is the bound. Home Assistant already records which
+        services it considers administrative, so that is read rather than
+        listed; anything else is allowed to a role that may control the domain.
+        """
+        domain = payload.get("domain")
+        service = payload.get("service")
+        if not isinstance(domain, str) or not isinstance(service, str):
+            return None
+        if payload.get("target") or payload.get("service_data", {}).get("entity_id"):
+            return None
+
+        if self._catalog.service_is_admin_only(domain, service):
+            if not permissions.tier_allowed(f"{domain}.{service}", TIER_ADMIN):
+                return Decision(
+                    allowed=False,
+                    reason=REASON_TIER,
+                    detail=(f"{domain}.{service} is an administrative service"),
+                )
+            return Decision(allowed=True, filter_response=True)
+
+        # The probe is never a real entity; it makes the domain-level rule in
+        # the policy answer for a call that names no particular one.
+        if not permissions.check_entity(f"{domain}.{DOMAIN_PROBE}", POLICY_CONTROL):
+            return Decision(
+                allowed=False,
+                reason=REASON_RESOURCE,
+                detail=f"no control access to the {domain} domain",
+            )
+        return Decision(allowed=True, filter_response=True)
 
     @staticmethod
     @callback

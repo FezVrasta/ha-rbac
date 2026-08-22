@@ -34,6 +34,7 @@ from custom_components.ha_rbac.const import (
 from custom_components.ha_rbac.decide import (
     KIND_HTTP,
     KIND_WS,
+    REASON_TIER,
     Decider,
     _invokes_a_service,
 )
@@ -529,3 +530,101 @@ async def test_a_role_created_in_the_panel_can_start_a_frontend(
     assert perms.tier_allowed("auth/current_user", TIER_USER) is True
     # ...without also handing it the command that defeats the whole layer.
     assert perms.tier_allowed("auth/sign_path", TIER_USER) is False
+
+
+async def test_a_service_call_naming_no_entity_is_judged_by_the_service(
+    hass: HomeAssistant, decider: Decider
+) -> None:
+    """`persistent_notification.create` targets nothing, and must still work.
+
+    Treating every targetless call as unbounded refused the lot, so a role could
+    not raise a notification, send anything, or run a script.
+    """
+    await async_setup_component(hass, "persistent_notification", {})
+    await hass.async_block_till_done()
+    assert (
+        decider._catalog.service_is_admin_only("persistent_notification", "create")
+        is False
+    )
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}}
+            }
+        ),
+        _lookup(hass),
+    )
+    decision = decider.decide(
+        Permissions(roles=[role]),
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "persistent_notification",
+            "service": "create",
+            "service_data": {"message": "hello"},
+        },
+    )
+    assert decision.allowed is True
+
+
+async def test_a_read_only_role_cannot_call_a_targetless_service(
+    hass: HomeAssistant, decider: Decider
+) -> None:
+    """Bound by the service, not unbound: a reader still may not act."""
+    await async_setup_component(hass, "persistent_notification", {})
+    await hass.async_block_till_done()
+
+    decision = decider.decide(
+        _read_only(hass),
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "persistent_notification",
+            "service": "create",
+            "service_data": {"message": "hello"},
+        },
+    )
+    assert decision.allowed is False
+
+
+async def test_an_administrative_service_needs_the_admin_tier(
+    hass: HomeAssistant, decider: Decider
+) -> None:
+    """Home Assistant records which services are administrative; that is read.
+
+    `homeassistant.restart` is registered with async_register_admin_service, so
+    no list of service names is needed to recognise it.
+    """
+    await async_setup_component(hass, "homeassistant", {})
+    await hass.async_block_till_done()
+
+    assert decider._catalog.service_is_admin_only("homeassistant", "restart") is True
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}}
+            }
+        ),
+        _lookup(hass),
+    )
+    decision = decider.decide(
+        Permissions(roles=[role]),
+        KIND_WS,
+        "call_service",
+        {"type": "call_service", "domain": "homeassistant", "service": "restart"},
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_TIER
+
+
+async def test_an_unknown_service_is_treated_as_administrative(
+    hass: HomeAssistant, decider: Decider
+) -> None:
+    """A service this build has never seen cannot be reasoned about."""
+    assert decider._catalog.service_is_admin_only("nope", "nope") is True
