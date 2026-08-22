@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Run the test suite against the Home Assistant core checkout's virtualenv.
+exec /Users/federicozivolo/Developer/core/venv/bin/python -m pytest "$@"
