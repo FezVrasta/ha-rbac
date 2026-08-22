@@ -148,14 +148,27 @@ async def test_get_states_is_filtered(proxy_env: dict[str, Any]) -> None:
     assert "lock.front" not in entity_ids
 
 
-async def test_render_template_is_refused_over_the_wire(
+async def test_a_templates_value_never_reaches_a_denied_reader(
     proxy_env: dict[str, Any],
 ) -> None:
-    """The headline case, end to end: the decoy entity_ids buys nothing."""
+    """End to end: the decoy entity_ids buys nothing, and no value comes back.
+
+    The subscription is permitted -- the request cannot be judged, but every
+    result it streams reports what it read, and that can be. The rendered value
+    of a denied lock must never arrive.
+    """
     hass, store = proxy_env["hass"], proxy_env["store"]
     hass.states.async_set("lock.front", "unlocked")
-    await _bind(store, proxy_env["read_only_user"], ROLE_READ_ONLY)
-    token = proxy_env["read_only_token"]
+
+    user, token = proxy_env["read_only_user"], proxy_env["read_only_token"]
+    role = await store.async_create_role(
+        {
+            "name": "No locks",
+            "allow": {"entities": {"all": {"read": True}}},
+            "deny": {"entities": {"domains": {"lock": True}}},
+        }
+    )
+    await store.async_set_binding(user.id, [role["id"]])
 
     async with aiohttp.ClientSession() as session:
         ws = await _ws_login(session, proxy_env["ws"], token)
@@ -167,12 +180,46 @@ async def test_render_template_is_refused_over_the_wire(
                 "entity_ids": ["sun.sun"],
             }
         )
-        message = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        received: list[str] = []
+        for _ in range(3):
+            try:
+                received.append(await asyncio.wait_for(ws.receive_str(), timeout=2))
+            except TimeoutError:
+                break
         await ws.close()
 
-    assert message["success"] is False
-    assert message["error"]["code"] == "unauthorized"
-    assert "unlocked" not in json.dumps(message)
+    assert "unlocked" not in " ".join(received)
+
+
+async def test_a_template_reading_nothing_still_renders(
+    proxy_env: dict[str, Any],
+) -> None:
+    """The dashboard heading is a template that reads no entity at all.
+
+    Refusing every template showed restricted users raw Jinja on their home
+    screen, which is what this exists to avoid.
+    """
+    store = proxy_env["store"]
+    await _bind(store, proxy_env["read_only_user"], ROLE_READ_ONLY)
+    token = proxy_env["read_only_token"]
+
+    async with aiohttp.ClientSession() as session:
+        ws = await _ws_login(session, proxy_env["ws"], token)
+        await ws.send_json(
+            {"id": 1, "type": "render_template", "template": "Welcome home"}
+        )
+        rendered = None
+        for _ in range(3):
+            try:
+                message = await asyncio.wait_for(ws.receive_json(), timeout=3)
+            except TimeoutError:
+                break
+            if message.get("type") == "event":
+                rendered = message["event"].get("result")
+                break
+        await ws.close()
+
+    assert rendered == "Welcome home"
 
 
 async def test_denial_reaches_the_deny_log(proxy_env: dict[str, Any]) -> None:

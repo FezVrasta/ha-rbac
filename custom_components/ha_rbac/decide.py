@@ -235,7 +235,18 @@ class Decider:
         # 4. Boundedness. A payload that names nothing, or that carries a
         #    template, does not constrain its own command.
         if not is_bounded(found):
-            if found.templated:
+            if self._is_mutation(kind, name, payload):
+                return Decision(
+                    allowed=False,
+                    reason=REASON_UNBOUNDED,
+                    detail=f"{name!r} mutates without naming what it affects",
+                )
+            if found.templated and not self._filters.has(name):
+                # A template reaches past whatever its request names, so it can
+                # only be allowed where the response says what it actually read.
+                # `render_template` reports that in every result it streams; a
+                # template smuggled into another command's payload does not, and
+                # stays refused.
                 return Decision(
                     allowed=False,
                     reason=REASON_UNBOUNDED,
@@ -243,12 +254,6 @@ class Decider:
                         f"{name!r} carries a template, whose reach is not limited "
                         "to the entities named"
                     ),
-                )
-            if self._is_mutation(kind, name, payload):
-                return Decision(
-                    allowed=False,
-                    reason=REASON_UNBOUNDED,
-                    detail=f"{name!r} mutates without naming what it affects",
                 )
             # Otherwise it is a read that named nothing, which is the ordinary
             # case: `get_panels`, `person/list`, `energy/info` and most of a

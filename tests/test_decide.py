@@ -54,8 +54,15 @@ def _read_only(hass: HomeAssistant) -> Permissions:
     return Permissions(roles=[role])
 
 
-async def test_render_template_is_denied(hass: HomeAssistant, decider: Decider) -> None:
-    """The headline case: a decoy entity_ids must not buy a template access."""
+async def test_render_template_is_judged_by_its_response(
+    hass: HomeAssistant, decider: Decider
+) -> None:
+    """A decoy entity_ids buys nothing; the render is judged by what it read.
+
+    The subscription is permitted because every result it streams reports the
+    states that render actually read -- a stronger check than the request could
+    support. The response side is covered in test_filters and test_proxy.
+    """
     decision = decider.decide(
         _read_only(hass),
         KIND_WS,
@@ -66,14 +73,14 @@ async def test_render_template_is_denied(hass: HomeAssistant, decider: Decider) 
             "entity_ids": ["sun.sun"],
         },
     )
-    assert decision.allowed is False
-    assert decision.reason == REASON_UNBOUNDED
+    assert decision.allowed is True
+    assert decision.filter_response is True
 
 
-async def test_template_start_preview_is_denied(
+async def test_an_unregistered_template_command_is_denied(
     hass: HomeAssistant, decider: Decider
 ) -> None:
-    """The same escape hatch under another name, closed by the same rule."""
+    """A template command this build has never seen resolves to admin."""
     decision = decider.decide(
         _read_only(hass),
         KIND_WS,

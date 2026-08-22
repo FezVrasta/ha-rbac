@@ -190,3 +190,107 @@ async def test_prune_preserves_list_order(hass: HomeAssistant) -> None:
         [{"entity_id": "light.a"}, {"entity_id": "lock.b"}, {"entity_id": "light.c"}],
     )
     assert [item["entity_id"] for item in result] == ["light.a", "light.c"]
+
+
+async def test_template_result_is_withheld_when_it_read_a_denied_entity(
+    hass: HomeAssistant,
+) -> None:
+    """The listeners report what this render actually read, so it can be judged."""
+    event = REGISTRY.filter_event(
+        "render_template",
+        _ctx(hass, {"lock.front"}),
+        {
+            "result": "unlocked",
+            "listeners": {"all": False, "entities": ["lock.front"], "domains": []},
+        },
+    )
+    assert event is None
+
+
+async def test_template_result_is_delivered_when_it_read_nothing(
+    hass: HomeAssistant,
+) -> None:
+    """A dashboard heading reads no entity, and must render rather than break."""
+    event = REGISTRY.filter_event(
+        "render_template",
+        _ctx(hass, {"lock.front"}),
+        {
+            "result": "Welcome home",
+            "listeners": {"all": False, "entities": [], "domains": []},
+        },
+    )
+    assert event["result"] == "Welcome home"
+
+
+async def test_template_result_is_delivered_when_every_entity_is_readable(
+    hass: HomeAssistant,
+) -> None:
+    """Templates over permitted entities are ordinary reads."""
+    event = REGISTRY.filter_event(
+        "render_template",
+        _ctx(hass, {"lock.front"}),
+        {
+            "result": "on",
+            "listeners": {"all": False, "entities": ["light.kitchen"], "domains": []},
+        },
+    )
+    assert event["result"] == "on"
+
+
+async def test_a_template_reading_all_states_is_withheld(hass: HomeAssistant) -> None:
+    """`states | count` reads everything, so nothing about it can be cleared."""
+    event = REGISTRY.filter_event(
+        "render_template",
+        _ctx(hass, {"lock.front"}),
+        {"result": "42", "listeners": {"all": True, "entities": [], "domains": []}},
+    )
+    assert event is None
+
+
+async def test_a_domain_listener_is_checked_across_that_domain(
+    hass: HomeAssistant,
+) -> None:
+    """A domain listener also covers entities that do not exist yet."""
+    hass.states.async_set("lock.front", "unlocked")
+    hass.states.async_set("light.kitchen", "on")
+
+    denied = REGISTRY.filter_event(
+        "render_template",
+        _ctx(hass, {"lock.front"}),
+        {
+            "result": "1",
+            "listeners": {"all": False, "entities": [], "domains": ["lock"]},
+        },
+    )
+    allowed = REGISTRY.filter_event(
+        "render_template",
+        _ctx(hass, {"lock.front"}),
+        {
+            "result": "1",
+            "listeners": {"all": False, "entities": [], "domains": ["light"]},
+        },
+    )
+    assert denied is None
+    assert allowed is not None
+
+
+async def test_a_result_with_no_listeners_is_withheld(hass: HomeAssistant) -> None:
+    """A render that does not account for what it read cannot be cleared."""
+    event = REGISTRY.filter_event(
+        "render_template", _ctx(hass, set()), {"result": "unlocked"}
+    )
+    assert event is None
+
+
+async def test_a_template_error_is_not_echoed_verbatim(hass: HomeAssistant) -> None:
+    """Jinja errors can quote the value that caused them."""
+    event = REGISTRY.filter_event(
+        "render_template",
+        _ctx(hass, {"lock.front"}),
+        {
+            "error": "TypeError: can only concatenate str to 'unlocked'",
+            "level": "ERROR",
+        },
+    )
+    assert "unlocked" not in event["error"]
+    assert event["level"] == "ERROR"

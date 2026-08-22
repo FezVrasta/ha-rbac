@@ -178,14 +178,14 @@ async def test_simulate_explains_a_denial(
         {
             "type": f"{DOMAIN}/simulate",
             "user_id": hass_read_only_user.id,
-            "command": "render_template",
-            "payload": {"template": "{{ states('lock.front') }}"},
+            "command": "execute_script",
+            "payload": {"sequence": []},
         }
     )
     result = (await client.receive_json())["result"]
     assert result["allowed"] is False
-    assert result["reason"] == "unbounded"
-    assert "template" in result["detail"]
+    assert result["reason"] == "tier"
+    assert "execute_script" in result["detail"]
 
 
 async def test_bindings_round_trip(

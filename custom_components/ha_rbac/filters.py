@@ -201,6 +201,58 @@ def _filter_subscribed_event(ctx: FilterContext, event: Any) -> Any:
     return event
 
 
+# Keys of the `listeners` payload a template subscription reports.
+LISTENER_ALL = "all"
+LISTENER_ENTITIES = "entities"
+LISTENER_DOMAINS = "domains"
+
+
+@REGISTRY.event("render_template", "template/start_preview")
+def _filter_template_event(ctx: FilterContext, event: Any) -> Any:
+    """Withhold a rendered template that read something the role cannot.
+
+    A template's reach is not limited by the entities its request names, which
+    is why the request alone cannot be judged. But every result it streams
+    carries `listeners` -- the states this particular render actually read -- so
+    the response can be judged exactly.
+
+    That is better than refusing templates outright, which is what this did
+    before: a dashboard heading is a template, so restricted users were shown
+    raw Jinja on their home screen for a template that reads nothing at all.
+    """
+    if not isinstance(event, dict):
+        return event
+
+    if "error" in event:
+        # Jinja errors can quote the value that caused them, and an error frame
+        # carries no listeners to check it against.
+        return {**event, "error": "Template error"}
+
+    listeners = event.get("listeners")
+    if not isinstance(listeners, dict):
+        # A result with no account of what it read cannot be cleared.
+        return None
+
+    if listeners.get(LISTENER_ALL):
+        return None
+
+    entities = listeners.get(LISTENER_ENTITIES) or ()
+    if any(not ctx.readable(entity_id) for entity_id in entities):
+        return None
+
+    # A domain listener means the template reads whatever appears in that
+    # domain, including entities that do not exist yet.
+    domains = listeners.get(LISTENER_DOMAINS) or ()
+    for domain in domains:
+        if any(
+            not ctx.readable(entity_id)
+            for entity_id in ctx.hass.states.async_entity_ids(domain)
+        ):
+            return None
+
+    return event
+
+
 @REGISTRY.result("get_services")
 def _filter_get_services(ctx: FilterContext, result: Any) -> Any:
     """Hide service domains the role has no entity in.
