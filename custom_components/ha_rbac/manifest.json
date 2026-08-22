@@ -1,0 +1,13 @@
+{
+  "domain": "ha_rbac",
+  "name": "RBAC Access Control",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["http", "websocket_api", "frontend", "auth", "panel_custom"],
+  "documentation": "https://github.com/fezvolo/ha-rbac",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/fezvolo/ha-rbac/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
