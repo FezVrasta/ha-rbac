@@ -512,3 +512,20 @@ def test_media_responses_are_not_refused_for_being_unfilterable() -> None:
     assert _carries_entity_data("image/jpeg") is False
     assert _carries_entity_data("video/mp4") is False
     assert _carries_entity_data("application/json") is True
+
+
+async def test_a_role_created_in_the_panel_can_start_a_frontend(
+    hass: HomeAssistant,
+) -> None:
+    """A role with schema defaults must permit `auth/current_user`.
+
+    It sits behind `ws_require_user`, which means only "a signed-in user" -- and
+    a frontend cannot finish loading without it. Defaulting a new role to the
+    open tier produced a session that never came up.
+    """
+    role = compile_role(hass, ROLE_SCHEMA({"id": "c", "name": "Custom"}), _lookup(hass))
+    perms = Permissions(roles=[role])
+
+    assert perms.tier_allowed("auth/current_user", TIER_USER) is True
+    # ...without also handing it the command that defeats the whole layer.
+    assert perms.tier_allowed("auth/sign_path", TIER_USER) is False

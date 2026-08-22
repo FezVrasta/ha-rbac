@@ -50,7 +50,6 @@ from .const import (
     ROLE_READ_ONLY,
     ROLE_USER,
     TIER_ADMIN,
-    TIER_OPEN,
     TIER_ORDER,
     TIER_USER,
 )
@@ -90,7 +89,13 @@ EXTENDED_POLICY_SCHEMA = vol.Schema(
 
 TIERS_SCHEMA = vol.Schema(
     {
-        vol.Optional("max", default=TIER_OPEN): vol.In(TIER_ORDER),
+        # `ws_require_user` means only "a signed-in user", which every
+        # connection through the proxy is -- `auth/current_user` sits behind it,
+        # and a frontend cannot start without that. Defaulting a role to `open`
+        # denied it, so a role created in the panel produced a session that
+        # never finished loading. The commands at this tier that actually matter
+        # are named in BASELINE_DENY.
+        vol.Optional("max", default=TIER_USER): vol.In(TIER_ORDER),
         vol.Optional("allow", default=list): [str],
         vol.Optional("deny", default=list): [str],
     }
@@ -275,7 +280,7 @@ def compile_role(
     deny_policy = desugar(hass, role.get("deny") or {})
 
     tiers = role.get("tiers") or {}
-    tier_max = tiers.get("max", TIER_OPEN)
+    tier_max = tiers.get("max", TIER_USER)
     tier_allow = list(tiers.get("allow") or [])
 
     return CompiledRole(
