@@ -10,9 +10,17 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import Event, HomeAssistant
 from homeassistant.helpers import (
     area_registry as ar,
+)
+from homeassistant.helpers import (
     device_registry as dr,
+)
+from homeassistant.helpers import (
     entity_registry as er,
+)
+from homeassistant.helpers import (
     floor_registry as fr,
+)
+from homeassistant.helpers import (
     label_registry as lr,
 )
 
@@ -27,7 +35,6 @@ from .const import (
     DEFAULT_BIND_ADDRESS,
     DEFAULT_PROXY_PORT,
     DEFAULT_UPSTREAM_HOST,
-    DOMAIN,
     PANEL_URL_PATH,
     STATIC_URL_PATH,
 )
@@ -80,15 +87,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass.bus.async_listen(event_type, evaluator.invalidate)
         )
     # Integrations register websocket commands lazily as they are set up.
-    data.unsubscribes.append(
-        hass.bus.async_listen("component_loaded", catalog.rebuild)
-    )
+    data.unsubscribes.append(hass.bus.async_listen("component_loaded", catalog.rebuild))
     websocket_api.async_register(hass)
     # The panel is how roles are administered, but it is not how they are
     # enforced. If the frontend is unavailable, keep enforcing and say so.
     try:
         await _async_register_panel(hass)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOGGER.exception(
             "Could not register the Access Control panel; roles are still "
             "enforced but must be managed over the websocket API"

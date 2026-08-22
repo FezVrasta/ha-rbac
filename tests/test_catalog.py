@@ -7,6 +7,7 @@ fails *open*. These tests are the alarm for that.
 """
 
 import pathlib
+from functools import wraps
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -145,7 +146,6 @@ async def test_catalogue_reports_degradation(
 
 def test_derive_tier_survives_both_decorator_orderings() -> None:
     """Verified against the two orderings that appear in core."""
-    from functools import wraps
 
     def require_admin(func):
         @wraps(func)
@@ -162,10 +162,10 @@ def test_derive_tier_survives_both_decorator_orderings() -> None:
         return schedule_handler
 
     def handler_a() -> None:
-        """Handler."""
+        """Do nothing; only the wrapper is inspected."""
 
     def handler_b() -> None:
-        """Handler."""
+        """Do nothing; only the wrapper is inspected."""
 
     assert derive_tier(require_admin(async_response(handler_a))) == TIER_ADMIN
     assert derive_tier(async_response(require_admin(handler_b))) == TIER_ADMIN

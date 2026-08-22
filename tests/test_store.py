@@ -123,9 +123,7 @@ async def test_denylog_returns_newest_first(hass: HomeAssistant) -> None:
     """The most recent denial is the one an operator is debugging."""
     log = DenyLog(hass)
     for index in range(3):
-        log.async_record(
-            Denial("u1", "Guest", "ws", f"cmd{index}", "tier", [])
-        )
+        log.async_record(Denial("u1", "Guest", "ws", f"cmd{index}", "tier", []))
     assert [entry["name"] for entry in log.async_recent()] == [
         "cmd2",
         "cmd1",

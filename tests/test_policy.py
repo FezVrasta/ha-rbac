@@ -9,22 +9,26 @@ from homeassistant.auth.permissions.const import (
     POLICY_READ,
     SUBCAT_ALL,
 )
+from homeassistant.auth.permissions.entities import compile_entities
 from homeassistant.auth.permissions.models import PermissionLookup
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import (
     area_registry as ar,
+)
+from homeassistant.helpers import (
     device_registry as dr,
+)
+from homeassistant.helpers import (
     entity_registry as er,
 )
-
 from tests.common import MockConfigEntry
 
+from custom_components.ha_rbac.const import TIER_ADMIN, TIER_OPEN, TIER_USER
 from custom_components.ha_rbac.policy import (
     Permissions,
     compile_role,
     desugar,
 )
-from custom_components.ha_rbac.const import TIER_ADMIN, TIER_OPEN, TIER_USER
 
 
 def _lookup(hass: HomeAssistant) -> PermissionLookup:
@@ -85,7 +89,7 @@ async def test_deny_is_coarse_and_has_no_carve_out(hass: HomeAssistant) -> None:
 async def test_carve_out_is_expressed_by_granting_narrowly(
     hass: HomeAssistant,
 ) -> None:
-    """"All locks except the garage" is an allow-side grant, not a deny-side hole."""
+    """All locks except the garage is an allow-side grant, not a deny-side hole."""
     role = compile_role(
         hass,
         _role(
@@ -131,9 +135,7 @@ async def test_area_desugars_through_the_device(hass: HomeAssistant) -> None:
     dev_reg.async_update_device(device.id, area_id=kitchen.id)
 
     ent_reg = er.async_get(hass)
-    entry = ent_reg.async_get_or_create(
-        "light", "test", "unique1", device_id=device.id
-    )
+    entry = ent_reg.async_get_or_create("light", "test", "unique1", device_id=device.id)
 
     policy = desugar(hass, {CAT_ENTITIES: {"area_ids": {kitchen.id: True}}})
     assert entry.entity_id in policy[CAT_ENTITIES]["entity_ids"]
@@ -160,9 +162,7 @@ async def test_entity_level_area_overrides_its_device(hass: HomeAssistant) -> No
     dev_reg.async_update_device(device.id, area_id=kitchen.id)
 
     ent_reg = er.async_get(hass)
-    entry = ent_reg.async_get_or_create(
-        "light", "test", "unique2", device_id=device.id
-    )
+    entry = ent_reg.async_get_or_create("light", "test", "unique2", device_id=device.id)
     ent_reg.async_update_entity(entry.entity_id, area_id=study.id)
 
     study_policy = desugar(hass, {CAT_ENTITIES: {"area_ids": {study.id: True}}})
@@ -198,7 +198,10 @@ async def test_roles_compose_permissively(hass: HomeAssistant) -> None:
     )
     permissive = compile_role(
         hass,
-        _role("b", allow={CAT_ENTITIES: {"entity_ids": {"lock.front": {POLICY_READ: True}}}}),
+        _role(
+            "b",
+            allow={CAT_ENTITIES: {"entity_ids": {"lock.front": {POLICY_READ: True}}}},
+        ),
         lookup,
     )
     perms = Permissions(roles=[restrictive, permissive])
@@ -207,12 +210,8 @@ async def test_roles_compose_permissively(hass: HomeAssistant) -> None:
 
 async def test_global_deny_beats_every_role(hass: HomeAssistant) -> None:
     """Per-user denial expresses what role composition cannot."""
-    from homeassistant.auth.permissions.entities import compile_entities
-
     lookup = _lookup(hass)
-    role = compile_role(
-        hass, _role(allow={CAT_ENTITIES: True}), lookup
-    )
+    role = compile_role(hass, _role(allow={CAT_ENTITIES: True}), lookup)
     deny_fn = compile_entities({"entity_ids": {"camera.bedroom": True}}, lookup)
     perms = Permissions(roles=[role], global_deny_fn=deny_fn)
 
@@ -245,7 +244,13 @@ async def test_tier_globs_override_the_ranking(hass: HomeAssistant) -> None:
     """Operator overrides win over the derived tier, deny before allow."""
     role = compile_role(
         hass,
-        _role(tiers={"max": TIER_OPEN, "allow": ["frontend/*"], "deny": ["frontend/secret"]}),
+        _role(
+            tiers={
+                "max": TIER_OPEN,
+                "allow": ["frontend/*"],
+                "deny": ["frontend/secret"],
+            }
+        ),
         _lookup(hass),
     )
     perms = Permissions(roles=[role])

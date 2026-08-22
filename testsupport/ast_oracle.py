@@ -10,8 +10,17 @@ import pathlib
 from dataclasses import dataclass, field
 
 RESOURCE_FIELDS = {
-    "entity_id", "entity_ids", "device_id", "device_ids", "area_id", "area_ids",
-    "label_id", "label_ids", "floor_id", "floor_ids", "target",
+    "entity_id",
+    "entity_ids",
+    "device_id",
+    "device_ids",
+    "area_id",
+    "area_ids",
+    "label_id",
+    "label_ids",
+    "floor_id",
+    "floor_ids",
+    "target",
 }
 
 
@@ -57,8 +66,7 @@ def scan(root: pathlib.Path) -> dict[str, Declared]:
             calls = [
                 d
                 for d in node.decorator_list
-                if isinstance(d, ast.Call)
-                and _dotted(d).endswith("websocket_command")
+                if isinstance(d, ast.Call) and _dotted(d).endswith("websocket_command")
             ]
             if not calls:
                 continue

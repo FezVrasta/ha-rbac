@@ -130,8 +130,7 @@ def extract(payload: Any) -> Extracted:
                     continue
                 stack.append((value, depth + 1))
         elif isinstance(node, list):
-            for item in node:
-                stack.append((item, depth + 1))
+            stack.extend((item, depth + 1) for item in node)
 
     return found
 

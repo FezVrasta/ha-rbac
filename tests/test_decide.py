@@ -9,7 +9,8 @@ from homeassistant.auth.permissions.const import (
 )
 from homeassistant.auth.permissions.models import PermissionLookup
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 
 from custom_components.ha_rbac.catalog import Catalog
@@ -53,9 +54,7 @@ def _read_only(hass: HomeAssistant) -> Permissions:
     return Permissions(roles=[role])
 
 
-async def test_render_template_is_denied(
-    hass: HomeAssistant, decider: Decider
-) -> None:
+async def test_render_template_is_denied(hass: HomeAssistant, decider: Decider) -> None:
     """The headline case: a decoy entity_ids must not buy a template access."""
     decision = decider.decide(
         _read_only(hass),
@@ -259,11 +258,15 @@ async def test_http_method_decides_read_versus_control(
     perms = _read_only(hass)
 
     allowed = decider.decide(
-        perms, "http", "GET /api/states/light.kitchen",
+        perms,
+        "http",
+        "GET /api/states/light.kitchen",
         {"entity_id": "light.kitchen"},
     )
     denied = decider.decide(
-        perms, "http", "POST /api/services/light/turn_on",
+        perms,
+        "http",
+        "POST /api/services/light/turn_on",
         {"entity_id": "light.kitchen"},
     )
     assert allowed.allowed is True

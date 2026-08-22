@@ -17,35 +17,62 @@ from custom_components.ha_rbac.extract import (
     ("payload", "entities", "devices", "areas"),
     [
         pytest.param(
-            {"type": "call_service", "domain": "light", "service": "turn_on",
-             "target": {"entity_id": "light.kitchen"}},
-            {"light.kitchen"}, set(), set(),
+            {
+                "type": "call_service",
+                "domain": "light",
+                "service": "turn_on",
+                "target": {"entity_id": "light.kitchen"},
+            },
+            {"light.kitchen"},
+            set(),
+            set(),
             id="call_service-target-entity",
         ),
         pytest.param(
-            {"type": "call_service", "domain": "light", "service": "turn_on",
-             "target": {"area_id": ["kitchen", "hall"], "device_id": "abc123"}},
-            set(), {"abc123"}, {"kitchen", "hall"},
+            {
+                "type": "call_service",
+                "domain": "light",
+                "service": "turn_on",
+                "target": {"area_id": ["kitchen", "hall"], "device_id": "abc123"},
+            },
+            set(),
+            {"abc123"},
+            {"kitchen", "hall"},
             id="call_service-target-area-and-device",
         ),
         pytest.param(
-            {"type": "call_service", "domain": "light", "service": "turn_on",
-             "target": {"entity_id": "light.a"},
-             "service_data": {"entity_id": ["light.b"]}},
-            {"light.a", "light.b"}, set(), set(),
+            {
+                "type": "call_service",
+                "domain": "light",
+                "service": "turn_on",
+                "target": {"entity_id": "light.a"},
+                "service_data": {"entity_id": ["light.b"]},
+            },
+            {"light.a", "light.b"},
+            set(),
+            set(),
             id="service_data-hides-more-entities",
         ),
         pytest.param(
-            {"trigger": [{"platform": "device", "device_id": "dev1"}],
-             "action": [{"service": "light.turn_on",
-                         "target": {"entity_id": "light.c"}}]},
-            {"light.c"}, {"dev1"}, set(),
+            {
+                "trigger": [{"platform": "device", "device_id": "dev1"}],
+                "action": [
+                    {"service": "light.turn_on", "target": {"entity_id": "light.c"}}
+                ],
+            },
+            {"light.c"},
+            {"dev1"},
+            set(),
             id="automation-config-nested",
         ),
         pytest.param(
-            {"type": "history/history_during_period",
-             "entity_ids": ["sensor.a", "sensor.b"]},
-            {"sensor.a", "sensor.b"}, set(), set(),
+            {
+                "type": "history/history_during_period",
+                "entity_ids": ["sensor.a", "sensor.b"],
+            },
+            {"sensor.a", "sensor.b"},
+            set(),
+            set(),
             id="entity_ids-list",
         ),
         pytest.param({"type": "ping"}, set(), set(), set(), id="no-resources"),
@@ -130,14 +157,13 @@ def test_schema_resource_markers_counts_target_as_a_resource_field() -> None:
             vol.Optional("target"): dict,
         }
     )
-    required, optional = schema_resource_markers(schema)
+    _, optional = schema_resource_markers(schema)
     assert "target" in optional
 
 
 def test_a_template_defeats_a_decoy_resource_list() -> None:
     """The rule that stops render_template exfiltrating via a decoy list."""
-    payload = {"template": "{{ states('lock.front_door') }}",
-               "entity_ids": ["sun.sun"]}
+    payload = {"template": "{{ states('lock.front_door') }}", "entity_ids": ["sun.sun"]}
     result = extract(payload)
     assert result.entities == {"sun.sun"}
     assert result.templated is True
@@ -161,8 +187,12 @@ def test_template_hidden_in_service_data_is_caught() -> None:
 
 def test_statement_template_syntax_is_caught() -> None:
     """`{% ... %}` is a template too."""
-    result = extract({"entity_id": "light.a",
-                      "x": "{% for s in states %}{{ s.entity_id }}{% endfor %}"})
+    result = extract(
+        {
+            "entity_id": "light.a",
+            "x": "{% for s in states %}{{ s.entity_id }}{% endfor %}",
+        }
+    )
     assert result.templated is True
 
 
@@ -175,8 +205,14 @@ def test_plain_string_is_not_a_template() -> None:
 
 def test_call_service_with_optional_target_still_bounds() -> None:
     """`call_service` declares `target` optional; requiring it would deny all control."""
-    result = extract({"type": "call_service", "domain": "light",
-                      "service": "turn_on", "target": {"entity_id": "light.a"}})
+    result = extract(
+        {
+            "type": "call_service",
+            "domain": "light",
+            "service": "turn_on",
+            "target": {"entity_id": "light.a"},
+        }
+    )
     assert is_bounded(result) is True
 
 

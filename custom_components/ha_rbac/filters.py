@@ -7,9 +7,8 @@ objects carrying a denied entity id.
 """
 
 from collections.abc import Callable
-from typing import Any
-
 from functools import cached_property
+from typing import Any
 
 from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.core import HomeAssistant
@@ -149,8 +148,7 @@ def _filter_get_states(ctx: FilterContext, result: Any) -> Any:
     return [
         state
         for state in result
-        if not isinstance(state, dict)
-        or ctx.readable(state.get("entity_id", ""))
+        if not isinstance(state, dict) or ctx.readable(state.get("entity_id", ""))
     ]
 
 
@@ -178,9 +176,7 @@ def _filter_entity_event(ctx: FilterContext, event: Any) -> Any:
                 out[key] = kept
 
     if isinstance(removed := event.get(ENTITY_EVENT_REMOVE), list):
-        kept_ids = [
-            entity_id for entity_id in removed if ctx.readable(entity_id)
-        ]
+        kept_ids = [entity_id for entity_id in removed if ctx.readable(entity_id)]
         if kept_ids:
             out[ENTITY_EVENT_REMOVE] = kept_ids
 
@@ -221,7 +217,8 @@ def _filter_get_services(ctx: FilterContext, result: Any) -> Any:
         # domains with no entities at all (`homeassistant`, `persistent_
         # notification`) are kept, since hiding them breaks the UI without
         # concealing anything about the user's devices.
-        if domain in visible or not any(
+        if domain in visible
+        or not any(
             entity_id.startswith(f"{domain}.")
             for entity_id in ctx.hass.states.async_entity_ids()
         )

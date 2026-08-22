@@ -37,7 +37,11 @@ from homeassistant.auth.permissions.types import PolicyType
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import (
     area_registry as ar,
+)
+from homeassistant.helpers import (
     device_registry as dr,
+)
+from homeassistant.helpers import (
     entity_registry as er,
 )
 
@@ -48,7 +52,6 @@ from .const import (
     TIER_ADMIN,
     TIER_OPEN,
     TIER_ORDER,
-    TIER_USER,
 )
 
 SUBCAT_LABELS = "label_ids"
@@ -137,9 +140,7 @@ def _entities_for_area(hass: HomeAssistant, area_id: str) -> set[str]:
     dev_reg = dr.async_get(hass)
 
     # The registry indexes only entities carrying an explicit area_id.
-    found = {
-        entry.entity_id for entry in er.async_entries_for_area(ent_reg, area_id)
-    }
+    found = {entry.entity_id for entry in er.async_entries_for_area(ent_reg, area_id)}
     # Entities with no area of their own inherit their device's.
     for device in dr.async_entries_for_area(dev_reg, area_id):
         found.update(
@@ -311,8 +312,7 @@ class Permissions:
     def full_access(self) -> bool:
         """Return True if filtering can be skipped entirely for this user."""
         return self.pass_through or (
-            self.global_deny_fn is None
-            and any(role.full_access for role in self.roles)
+            self.global_deny_fn is None and any(role.full_access for role in self.roles)
         )
 
 
@@ -325,9 +325,7 @@ class Evaluator:
         self._store = store
         self._compiled: dict[str, CompiledRole] = {}
         self._cache: dict[str, Permissions] = {}
-        self._perm_lookup = PermissionLookup(
-            er.async_get(hass), dr.async_get(hass)
-        )
+        self._perm_lookup = PermissionLookup(er.async_get(hass), dr.async_get(hass))
 
     @callback
     def invalidate(self, _event: Any = None) -> None:

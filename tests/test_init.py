@@ -1,11 +1,15 @@
 """Tests for integration setup and the admin websocket API."""
 
+import socket
 from typing import Any
 
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
+from tests.common import MockConfigEntry
+from tests.typing import WebSocketGenerator
 
+from custom_components.ha_rbac import async_setup_entry, async_unload_entry
 from custom_components.ha_rbac.const import (
     CONF_BIND_ADDRESS,
     CONF_PROXY_PORT,
@@ -17,16 +21,9 @@ from custom_components.ha_rbac.const import (
     ROLE_READ_ONLY,
 )
 
-from custom_components.ha_rbac import async_setup_entry, async_unload_entry
-
-from tests.common import MockConfigEntry
-from tests.typing import WebSocketGenerator
-
 
 def _free_port() -> int:
     """Return an unused TCP port."""
-    import socket
-
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]

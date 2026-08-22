@@ -76,9 +76,7 @@ async def handle_roles_update(
 ) -> None:
     """Update a custom role."""
     try:
-        role = await _data(hass).store.async_update_role(
-            msg["role_id"], msg["changes"]
-        )
+        role = await _data(hass).store.async_update_role(msg["role_id"], msg["changes"])
     except KeyError:
         connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, "Unknown role")
         return
@@ -179,7 +177,10 @@ def handle_catalog(
             "commands": data.catalog.as_dict(),
             "degraded": data.catalog.degraded,
             "domains": sorted(
-                {entity_id.partition(".")[0] for entity_id in hass.states.async_entity_ids()}
+                {
+                    entity_id.partition(".")[0]
+                    for entity_id in hass.states.async_entity_ids()
+                }
             ),
         },
     )
@@ -197,9 +198,7 @@ def handle_denials_recent(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Return recent denials, newest first."""
-    connection.send_result(
-        msg["id"], _data(hass).denylog.async_recent(msg["limit"])
-    )
+    connection.send_result(msg["id"], _data(hass).denylog.async_recent(msg["limit"]))
 
 
 @websocket_api.require_admin

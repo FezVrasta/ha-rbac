@@ -15,7 +15,7 @@ from homeassistant.components.websocket_api import const as ws_const
 from homeassistant.core import HomeAssistant, callback
 
 from .const import RESOURCE_KEYS, TIER_ADMIN, TIER_OPEN, TIER_USER
-from .extract import TARGET_KEY, schema_resource_markers
+from .extract import schema_resource_markers
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ USER_WRAPPER_NAME = "check_current_user"
 WRITE_PATTERN = re.compile(
     r"^config/|/(save|create|update|delete|remove|add|set|move|reload|import)(/|$)"
 )
+
 
 def introspection_works() -> bool:
     """Verify tier derivation against Home Assistant's own decorators.
@@ -88,6 +89,98 @@ def derive_tier(handler: Any) -> str:
     if USER_WRAPPER_NAME in names:
         return TIER_USER
     return TIER_OPEN
+
+
+HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
+
+# `/api/states/{entity_id}` -> a pattern that also tells us the parameter names,
+# so a path segment can be recovered as a resource reference.
+_PLACEHOLDER = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)(?::[^}]+)?\}")
+
+
+@dataclass(slots=True)
+class RouteInfo:
+    """What has been derived about one REST route."""
+
+    pattern: "re.Pattern[str]"
+    url: str
+    tiers: dict[str, str]
+    requires_auth: bool
+
+    def tier_for_method(self, method: str) -> str:
+        """Return the tier for a method, defaulting to admin when undeclared."""
+        return self.tiers.get(method.lower(), TIER_ADMIN)
+
+
+def _url_to_pattern(url: str) -> "re.Pattern[str]":
+    """Compile an aiohttp route template into a matching regex."""
+    parts: list[str] = []
+    index = 0
+    for match in _PLACEHOLDER.finditer(url):
+        parts.append(re.escape(url[index : match.start()]))
+        name = match.group(1)
+        # aiohttp's `{path:.*}` style tails may span separators; plain ones
+        # match a single segment.
+        greedy = ":" in match.group(0)
+        parts.append(f"(?P<{name}>{'.*' if greedy else '[^/]+'})")
+        index = match.end()
+    parts.append(re.escape(url[index:]))
+    return re.compile(f"^{''.join(parts)}/?$")
+
+
+def _all_view_subclasses(base: Any) -> list[Any]:
+    """Return every HomeAssistantView subclass, transitively."""
+    found: list[Any] = []
+    stack = list(base.__subclasses__())
+    seen: set[int] = set()
+    while stack:
+        cls = stack.pop()
+        if id(cls) in seen:
+            continue
+        seen.add(id(cls))
+        found.append(cls)
+        stack.extend(cls.__subclasses__())
+    return found
+
+
+def build_routes() -> list[RouteInfo]:
+    """Derive REST route tiers from the registered view classes.
+
+    `hass.http.app.router` knows the paths but has lost the view object inside
+    `request_handler_factory`'s closure, so the classes are walked instead. Views
+    that build their URL per instance are not discoverable this way and simply
+    stay unknown, which resolves to admin.
+    """
+    from homeassistant.components.http import HomeAssistantView  # noqa: PLC0415
+
+    routes: list[RouteInfo] = []
+    for cls in _all_view_subclasses(HomeAssistantView):
+        url = getattr(cls, "url", None)
+        if not isinstance(url, str) or not url:
+            continue
+
+        tiers: dict[str, str] = {}
+        for method in HTTP_METHODS:
+            if (handler := getattr(cls, method, None)) is None:
+                continue
+            tiers[method] = derive_tier(handler)
+
+        urls = [url, *(getattr(cls, "extra_urls", None) or [])]
+        for candidate in urls:
+            if not isinstance(candidate, str) or not candidate:
+                continue
+            routes.append(
+                RouteInfo(
+                    pattern=_url_to_pattern(candidate),
+                    url=candidate,
+                    tiers=tiers,
+                    requires_auth=getattr(cls, "requires_auth", True),
+                )
+            )
+
+    # Longest URL first, so `/api/states/{entity_id}` wins over `/api/states`.
+    routes.sort(key=lambda route: len(route.url), reverse=True)
+    return routes
 
 
 class Catalog:
@@ -216,95 +309,3 @@ class Catalog:
             ),
             key=lambda item: item["command"],
         )
-
-
-HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
-
-# `/api/states/{entity_id}` -> a pattern that also tells us the parameter names,
-# so a path segment can be recovered as a resource reference.
-_PLACEHOLDER = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)(?::[^}]+)?\}")
-
-
-@dataclass(slots=True)
-class RouteInfo:
-    """What has been derived about one REST route."""
-
-    pattern: "re.Pattern[str]"
-    url: str
-    tiers: dict[str, str]
-    requires_auth: bool
-
-    def tier_for_method(self, method: str) -> str:
-        """Return the tier for a method, defaulting to admin when undeclared."""
-        return self.tiers.get(method.lower(), TIER_ADMIN)
-
-
-def _url_to_pattern(url: str) -> "re.Pattern[str]":
-    """Compile an aiohttp route template into a matching regex."""
-    parts: list[str] = []
-    index = 0
-    for match in _PLACEHOLDER.finditer(url):
-        parts.append(re.escape(url[index : match.start()]))
-        name = match.group(1)
-        # aiohttp's `{path:.*}` style tails may span separators; plain ones
-        # match a single segment.
-        greedy = ":" in match.group(0)
-        parts.append(f"(?P<{name}>{'.*' if greedy else '[^/]+'})")
-        index = match.end()
-    parts.append(re.escape(url[index:]))
-    return re.compile(f"^{''.join(parts)}/?$")
-
-
-def _all_view_subclasses(base: Any) -> list[Any]:
-    """Return every HomeAssistantView subclass, transitively."""
-    found: list[Any] = []
-    stack = list(base.__subclasses__())
-    seen: set[int] = set()
-    while stack:
-        cls = stack.pop()
-        if id(cls) in seen:
-            continue
-        seen.add(id(cls))
-        found.append(cls)
-        stack.extend(cls.__subclasses__())
-    return found
-
-
-def build_routes() -> list[RouteInfo]:
-    """Derive REST route tiers from the registered view classes.
-
-    `hass.http.app.router` knows the paths but has lost the view object inside
-    `request_handler_factory`'s closure, so the classes are walked instead. Views
-    that build their URL per instance are not discoverable this way and simply
-    stay unknown, which resolves to admin.
-    """
-    from homeassistant.components.http import HomeAssistantView  # noqa: PLC0415
-
-    routes: list[RouteInfo] = []
-    for cls in _all_view_subclasses(HomeAssistantView):
-        url = getattr(cls, "url", None)
-        if not isinstance(url, str) or not url:
-            continue
-
-        tiers: dict[str, str] = {}
-        for method in HTTP_METHODS:
-            if (handler := getattr(cls, method, None)) is None:
-                continue
-            tiers[method] = derive_tier(handler)
-
-        urls = [url, *(getattr(cls, "extra_urls", None) or [])]
-        for candidate in urls:
-            if not isinstance(candidate, str) or not candidate:
-                continue
-            routes.append(
-                RouteInfo(
-                    pattern=_url_to_pattern(candidate),
-                    url=candidate,
-                    tiers=tiers,
-                    requires_auth=getattr(cls, "requires_auth", True),
-                )
-            )
-
-    # Longest URL first, so `/api/states/{entity_id}` wins over `/api/states`.
-    routes.sort(key=lambda route: len(route.url), reverse=True)
-    return routes

@@ -17,7 +17,11 @@ from homeassistant.auth.permissions.const import POLICY_CONTROL, POLICY_READ
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import (
     area_registry as ar,
+)
+from homeassistant.helpers import (
     device_registry as dr,
+)
+from homeassistant.helpers import (
     entity_registry as er,
 )
 
@@ -215,9 +219,7 @@ class Decider:
                 allowed=True, resources=sorted(entities), filter_response=True
             )
 
-        return Decision(
-            allowed=True, resources=sorted(entities), filter_response=True
-        )
+        return Decision(allowed=True, resources=sorted(entities), filter_response=True)
 
     @staticmethod
     @callback

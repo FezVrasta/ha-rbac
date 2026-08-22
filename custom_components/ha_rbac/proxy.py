@@ -15,13 +15,13 @@ reads the registries directly instead.
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import aiohttp
 from aiohttp import ClientTimeout, ClientWebSocketResponse, hdrs, web
 from aiohttp.helpers import must_be_empty_body
 from homeassistant.auth.models import User
-from homeassistant.components.http.const import KEY_HASS_USER
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util.async_ import create_eager_task
@@ -172,7 +172,7 @@ class RbacProxy:
             "Bearer "
         ):
             token = auth.removeprefix("Bearer ")
-            if (refresh_token := self._hass.auth.async_validate_access_token(token)):
+            if refresh_token := self._hass.auth.async_validate_access_token(token):
                 return refresh_token.user
         return None
 
@@ -194,9 +194,7 @@ class RbacProxy:
             decision = self._decider.decide(permissions, KIND_HTTP, name, body)
             if not decision.allowed:
                 self._record(user, KIND_HTTP, name, decision)
-                return web.json_response(
-                    {"message": "Unauthorized"}, status=401
-                )
+                return web.json_response({"message": "Unauthorized"}, status=401)
 
         try:
             return await self._forward_http(request, permissions, decision)
@@ -292,7 +290,9 @@ class RbacProxy:
         return REGISTRY.filter_result(f"{request.method} {request.path}", ctx, payload)
 
     @callback
-    def _record(self, user: User | None, kind: str, name: str, decision: Decision) -> None:
+    def _record(
+        self, user: User | None, kind: str, name: str, decision: Decision
+    ) -> None:
         """Note a denial so an operator can see why a UI broke."""
         self._denylog.async_record(
             Denial(
@@ -334,7 +334,14 @@ class RbacProxy:
                 autoping=False,
                 max_msg_size=MAX_WEBSOCKET_MESSAGE_SIZE,
             ) as server_ws:
-                session = _WsSession(self, client_ws, server_ws)
+                session = _WsSession(
+                    self._hass,
+                    self._evaluator,
+                    self._decider,
+                    self._record,
+                    client_ws,
+                    server_ws,
+                )
                 try:
                     await asyncio.wait(
                         [
@@ -361,16 +368,22 @@ class _WsSession:
 
     def __init__(
         self,
-        proxy: RbacProxy,
+        hass: HomeAssistant,
+        evaluator: Evaluator,
+        decider: Decider,
+        record: "Callable[[User | None, str, str, Decision], None]",
         client_ws: web.WebSocketResponse,
         server_ws: ClientWebSocketResponse,
     ) -> None:
         """Initialise the session."""
-        self._proxy = proxy
+        self._hass = hass
+        self._evaluator = evaluator
+        self._decider = decider
+        self._record = record
         self._client = client_ws
         self._server = server_ws
         self._user: User | None = None
-        self._permissions = proxy._evaluator.async_permissions(None)
+        self._permissions = evaluator.async_permissions(None)
         # Correlates a result or event back to the command that asked for it.
         # Without it an outbound frame cannot be filtered, so an unknown id is
         # dropped rather than forwarded.
@@ -475,13 +488,11 @@ class _WsSession:
         if self._full_access or not isinstance(msg_type, str):
             return True
 
-        decision = self._proxy._decider.decide(
-            self._permissions, KIND_WS, msg_type, message
-        )
+        decision = self._decider.decide(self._permissions, KIND_WS, msg_type, message)
         if decision.allowed:
             return True
 
-        self._proxy._record(self._user, KIND_WS, msg_type, decision)
+        self._record(self._user, KIND_WS, msg_type, decision)
         if isinstance(msg_id, int):
             self._pending.pop(msg_id, None)
         await self._deny(msg_id, decision)
@@ -492,23 +503,21 @@ class _WsSession:
         token = message.get("access_token")
         if not isinstance(token, str):
             return
-        refresh_token = self._proxy._hass.auth.async_validate_access_token(token)
+        refresh_token = self._hass.auth.async_validate_access_token(token)
         if refresh_token is None:
             return
         self._user = refresh_token.user
-        self._permissions = self._proxy._evaluator.async_permissions(self._user)
+        self._permissions = self._evaluator.async_permissions(self._user)
         # A revoked token must not leave a filtered connection alive, since the
         # permissions were resolved once at authentication time.
-        self._unsubscribe_revoke = (
-            self._proxy._hass.auth.async_register_revoke_token_callback(
-                refresh_token.id, self._on_token_revoked
-            )
+        self._unsubscribe_revoke = self._hass.auth.async_register_revoke_token_callback(
+            refresh_token.id, self._on_token_revoked
         )
 
     @callback
     def _on_token_revoked(self) -> None:
         """Tear the connection down when its refresh token is revoked."""
-        self._proxy._hass.async_create_task(self._client.close())
+        self._hass.async_create_task(self._client.close())
 
     async def _deny(self, msg_id: Any, decision: Decision) -> None:
         """Answer a refused command in Home Assistant's own error shape.
@@ -576,7 +585,7 @@ class _WsSession:
             _LOGGER.debug("Dropping websocket frame with uncorrelated id %s", msg_id)
             return None
 
-        ctx = FilterContext(self._proxy._hass, self._permissions.check_entity)
+        ctx = FilterContext(self._hass, self._permissions.check_entity)
 
         if msg_type == TYPE_RESULT:
             # A subscription keeps streaming, so its id stays correlated.
@@ -585,9 +594,7 @@ class _WsSession:
             if message.get("success") and "result" in message:
                 return {
                     **message,
-                    "result": REGISTRY.filter_result(
-                        command, ctx, message["result"]
-                    ),
+                    "result": REGISTRY.filter_result(command, ctx, message["result"]),
                 }
             return message
 

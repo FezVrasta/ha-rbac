@@ -6,29 +6,28 @@ a plain aiohttp client exercises the same path a frontend would.
 
 import asyncio
 import json
+import socket
 from typing import Any
 
 import aiohttp
 import pytest
+from aiohttp import web
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
+from tests.common import MockUser
 
 from custom_components.ha_rbac.catalog import Catalog
+from custom_components.ha_rbac.const import ROLE_READ_ONLY
 from custom_components.ha_rbac.decide import Decider
 from custom_components.ha_rbac.denylog import DenyLog
 from custom_components.ha_rbac.filters import REGISTRY
 from custom_components.ha_rbac.policy import Evaluator
 from custom_components.ha_rbac.proxy import RbacProxy
 from custom_components.ha_rbac.store import RbacStore
-from custom_components.ha_rbac.const import ROLE_READ_ONLY
-
-from tests.common import MockUser
 
 
 def _free_port() -> int:
     """Return an unused TCP port."""
-    import socket
-
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
@@ -44,9 +43,18 @@ async def proxy_env_fixture(
     hass_read_only_access_token: str,
 ) -> dict[str, Any]:
     """Start Home Assistant behind the proxy and return the pieces under test."""
-    for domain in ("http", "websocket_api", "api", "config"):
+    for domain in ("http", "websocket_api", "api", "config", "auth"):
         await async_setup_component(hass, domain, {"http": {}})
     await hass.async_block_till_done()
+
+    # Registered before the server starts: aiohttp freezes the router on start.
+    query_strings: list[str] = []
+
+    async def _probe(request: web.Request) -> web.Response:
+        query_strings.append(request.rel_url.query_string)
+        return web.Response(text="ok")
+
+    hass.http.app.router.add_route("GET", "/rbac_probe", _probe)
 
     upstream = await aiohttp_server(hass.http.app)
 
@@ -80,6 +88,7 @@ async def proxy_env_fixture(
         "admin_token": hass_access_token,
         "read_only_user": hass_read_only_user,
         "read_only_token": hass_read_only_access_token,
+        "query_strings": query_strings,
     }
 
     await proxy.async_stop()
@@ -103,7 +112,7 @@ async def _ws_login(session: aiohttp.ClientSession, url: str, token: str) -> Any
 
 async def test_handshake_is_relayed(proxy_env: dict[str, Any]) -> None:
     """auth_required must arrive well inside Home Assistant's ten second window."""
-    hass, store = proxy_env["hass"], proxy_env["store"]
+    store = proxy_env["store"]
     await _bind(store, proxy_env["read_only_user"], ROLE_READ_ONLY)
     token = proxy_env["read_only_token"]
 
@@ -168,7 +177,7 @@ async def test_render_template_is_refused_over_the_wire(
 
 async def test_denial_reaches_the_deny_log(proxy_env: dict[str, Any]) -> None:
     """An operator has to be able to see why the UI broke."""
-    hass, store = proxy_env["hass"], proxy_env["store"]
+    store = proxy_env["store"]
     await _bind(store, proxy_env["read_only_user"], ROLE_READ_ONLY)
     token = proxy_env["read_only_token"]
 
@@ -216,12 +225,14 @@ async def test_rest_states_are_filtered(proxy_env: dict[str, Any]) -> None:
     )
     await store.async_set_binding(user.id, [role["id"]])
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(
             f"{proxy_env['base']}/api/states",
             headers={"Authorization": f"Bearer {token}"},
-        ) as response:
-            payload = await response.json()
+        ) as response,
+    ):
+        payload = await response.json()
 
     entity_ids = {state["entity_id"] for state in payload}
     assert "light.kitchen" in entity_ids
@@ -237,13 +248,15 @@ async def test_rest_control_is_denied_for_read_only(
     await _bind(store, proxy_env["read_only_user"], ROLE_READ_ONLY)
     token = proxy_env["read_only_token"]
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
+    async with (
+        aiohttp.ClientSession() as session,
+        session.post(
             f"{proxy_env['base']}/api/services/light/turn_on",
             headers={"Authorization": f"Bearer {token}"},
             json={"entity_id": "light.kitchen"},
-        ) as response:
-            assert response.status == 401
+        ) as response,
+    ):
+        assert response.status == 401
 
 
 async def test_coalesced_batches_are_handled(proxy_env: dict[str, Any]) -> None:
@@ -256,8 +269,11 @@ async def test_coalesced_batches_are_handled(proxy_env: dict[str, Any]) -> None:
     async with aiohttp.ClientSession() as session:
         ws = await _ws_login(session, proxy_env["ws"], token)
         await ws.send_json(
-            {"id": 1, "type": "supported_features",
-             "features": {"coalesce_messages": 1}}
+            {
+                "id": 1,
+                "type": "supported_features",
+                "features": {"coalesce_messages": 1},
+            }
         )
         await asyncio.wait_for(ws.receive_json(), timeout=5)
 
@@ -282,3 +298,52 @@ async def test_coalesced_batches_are_handled(proxy_env: dict[str, Any]) -> None:
 
     assert seen[2]["success"] is True
     assert seen[3]["success"] is False
+
+
+async def test_signed_paths_survive_the_proxy(proxy_env: dict[str, Any]) -> None:
+    """Signed URLs are an HMAC over the exact path and ordered query parameters.
+
+    Any prefix, reordering or added parameter breaks every camera snapshot and
+    download link, and the signing secret cannot be re-created outside Home
+    Assistant. This asserts the proxy forwards both untouched.
+    """
+    token = proxy_env["admin_token"]
+
+    async with aiohttp.ClientSession() as session:
+        ws = await _ws_login(session, proxy_env["ws"], token)
+        await ws.send_json(
+            {
+                "id": 1,
+                "type": "auth/sign_path",
+                "path": "/api/states",
+                "expires": 30,
+            }
+        )
+        message = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        await ws.close()
+
+    assert message["success"] is True, message
+    signed = message["result"]["path"]
+    assert "authSig=" in signed
+
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(f"{proxy_env['base']}{signed}") as response,
+    ):
+        assert response.status == 200
+
+
+async def test_query_string_is_forwarded_verbatim(proxy_env: dict[str, Any]) -> None:
+    """Parameter order is part of the signature, so it must not be normalised."""
+    seen = proxy_env["query_strings"]
+
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(
+            f"{proxy_env['base']}/rbac_probe?z=1&a=2&m=3",
+            headers={"Authorization": f"Bearer {proxy_env['admin_token']}"},
+        ) as response,
+    ):
+        assert response.status == 200
+
+    assert seen == ["z=1&a=2&m=3"]

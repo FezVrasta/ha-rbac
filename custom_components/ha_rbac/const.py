@@ -19,7 +19,7 @@ CONF_UPSTREAM_PORT: Final = "upstream_port"
 CONF_FAIL_OPEN: Final = "fail_open"
 
 DEFAULT_PROXY_PORT: Final = 8124
-DEFAULT_BIND_ADDRESS: Final = "0.0.0.0"  # noqa: S104
+DEFAULT_BIND_ADDRESS: Final = "0.0.0.0"
 DEFAULT_UPSTREAM_HOST: Final = "127.0.0.1"
 
 PANEL_URL_PATH: Final = "rbac"
@@ -68,4 +68,4 @@ SENTINEL_NONE: Final = "none"
 MAX_WALK_DEPTH: Final = 12
 MAX_WALK_NODES: Final = 5000
 
-DATA_RBAC: HassKey[RbacData] = HassKey(DOMAIN)
+DATA_RBAC: "HassKey[RbacData]" = HassKey(DOMAIN)

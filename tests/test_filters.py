@@ -1,8 +1,5 @@
 """Tests for response filtering."""
 
-from typing import Any
-
-import pytest
 from homeassistant.core import HomeAssistant
 
 from custom_components.ha_rbac.filters import REGISTRY, FilterContext, prune
@@ -71,7 +68,9 @@ async def test_camera_token_goes_with_the_entity(hass: HomeAssistant) -> None:
             "a": {
                 "camera.bedroom": {
                     "s": "idle",
-                    "a": {"entity_picture": "/api/camera_proxy/camera.bedroom?token=s3cret"},
+                    "a": {
+                        "entity_picture": "/api/camera_proxy/camera.bedroom?token=s3cret"
+                    },
                 }
             }
         },
@@ -112,7 +111,10 @@ async def test_generic_prune_filters_entity_id_lists(hass: HomeAssistant) -> Non
     """search/related returns lists of ids rather than objects."""
     result = prune(
         _ctx(hass, {"lock.front"}),
-        {"entity": ["light.kitchen", "lock.front"], "entity_id": ["light.a", "lock.front"]},
+        {
+            "entity": ["light.kitchen", "lock.front"],
+            "entity_id": ["light.a", "lock.front"],
+        },
     )
     assert result["entity_id"] == ["light.a"]
 
@@ -132,7 +134,9 @@ async def test_lovelace_cards_are_filtered_by_its_own_conventions(
             }
         ]
     }
-    result = REGISTRY.filter_result("lovelace/config", _ctx(hass, {"lock.front"}), config)
+    result = REGISTRY.filter_result(
+        "lovelace/config", _ctx(hass, {"lock.front"}), config
+    )
     cards = result["views"][0]["cards"]
     assert len(cards) == 2
     assert cards[0]["entity"] == "light.kitchen"
@@ -150,7 +154,10 @@ async def test_current_user_is_reported_as_non_admin(hass: HomeAssistant) -> Non
 async def test_catalogues_are_passed_through(hass: HomeAssistant) -> None:
     """Pruning a themes payload would corrupt the UI and conceal nothing."""
     payload = {"themes": {"dark": {"primary-color": "#000"}}, "default_theme": "dark"}
-    assert REGISTRY.filter_result("frontend/get_themes", _ctx(hass, set()), payload) == payload
+    assert (
+        REGISTRY.filter_result("frontend/get_themes", _ctx(hass, set()), payload)
+        == payload
+    )
 
 
 async def test_get_services_hides_domains_the_role_cannot_reach(
@@ -163,7 +170,11 @@ async def test_get_services_hides_domains_the_role_cannot_reach(
     result = REGISTRY.filter_result(
         "get_services",
         _ctx(hass, {"lock.front"}),
-        {"light": {"turn_on": {}}, "lock": {"lock": {}}, "homeassistant": {"restart": {}}},
+        {
+            "light": {"turn_on": {}},
+            "lock": {"lock": {}},
+            "homeassistant": {"restart": {}},
+        },
     )
     assert "light" in result
     assert "lock" not in result

@@ -38,7 +38,8 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(
-                CONF_PROXY_PORT, default=defaults.get(CONF_PROXY_PORT, DEFAULT_PROXY_PORT)
+                CONF_PROXY_PORT,
+                default=defaults.get(CONF_PROXY_PORT, DEFAULT_PROXY_PORT),
             ): port,
             vol.Required(
                 CONF_BIND_ADDRESS,
