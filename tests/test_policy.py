@@ -222,8 +222,9 @@ async def test_global_deny_beats_every_role(hass: HomeAssistant) -> None:
 @pytest.mark.parametrize(
     ("role_max", "command_tier", "expected"),
     [
+        # `open` is raised to `user` on compile -- see test_open_ceiling_is_raised
         (TIER_OPEN, TIER_OPEN, True),
-        (TIER_OPEN, TIER_USER, False),
+        (TIER_OPEN, TIER_USER, True),
         (TIER_OPEN, TIER_ADMIN, False),
         (TIER_USER, TIER_USER, True),
         (TIER_USER, TIER_ADMIN, False),
@@ -264,3 +265,17 @@ async def test_owner_is_pass_through(hass: HomeAssistant) -> None:
     assert perms.check_entity("anything.at_all", POLICY_CONTROL) is True
     assert perms.tier_allowed("config/auth/delete", TIER_ADMIN) is True
     assert perms.full_access is True
+
+
+async def test_open_ceiling_is_raised_to_user(hass: HomeAssistant) -> None:
+    """`open` is not a usable ceiling and is accepted rather than rejected.
+
+    Every connection through the proxy is a signed-in user, and
+    `auth/current_user` sits behind `ws_require_user`, so a role capped at
+    `open` cannot start a frontend. Roles stored before that was understood are
+    raised on load rather than left broken.
+    """
+    role = compile_role(
+        hass, _role(tiers={"max": TIER_OPEN, "allow": [], "deny": []}), _lookup(hass)
+    )
+    assert role.tier_max == TIER_USER

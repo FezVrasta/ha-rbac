@@ -50,6 +50,7 @@ from .const import (
     ROLE_READ_ONLY,
     ROLE_USER,
     TIER_ADMIN,
+    TIER_OPEN,
     TIER_ORDER,
     TIER_USER,
 )
@@ -87,15 +88,26 @@ EXTENDED_POLICY_SCHEMA = vol.Schema(
     }
 )
 
+
+def _tier_ceiling(value: object) -> str:
+    """Normalise a role's tier ceiling.
+
+    `open` is not a usable ceiling. Every connection through the proxy is a
+    signed-in user, and `auth/current_user` sits behind `ws_require_user`, so a
+    role capped at `open` cannot start a frontend at all. It is accepted and
+    raised rather than rejected, so roles stored before this was understood keep
+    working.
+    """
+    if not isinstance(value, str) or value not in TIER_ORDER:
+        return TIER_USER
+    return TIER_USER if value == TIER_OPEN else value
+
+
 TIERS_SCHEMA = vol.Schema(
     {
-        # `ws_require_user` means only "a signed-in user", which every
-        # connection through the proxy is -- `auth/current_user` sits behind it,
-        # and a frontend cannot start without that. Defaulting a role to `open`
-        # denied it, so a role created in the panel produced a session that
-        # never finished loading. The commands at this tier that actually matter
-        # are named in BASELINE_DENY.
-        vol.Optional("max", default=TIER_USER): vol.In(TIER_ORDER),
+        vol.Optional("max", default=TIER_USER): vol.All(
+            vol.In(TIER_ORDER), _tier_ceiling
+        ),
         vol.Optional("allow", default=list): [str],
         vol.Optional("deny", default=list): [str],
     }
@@ -280,7 +292,7 @@ def compile_role(
     deny_policy = desugar(hass, role.get("deny") or {})
 
     tiers = role.get("tiers") or {}
-    tier_max = tiers.get("max", TIER_USER)
+    tier_max = _tier_ceiling(tiers.get("max"))
     tier_allow = list(tiers.get("allow") or [])
 
     return CompiledRole(
