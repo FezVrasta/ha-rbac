@@ -14,7 +14,7 @@ from typing import Any
 from homeassistant.components.websocket_api import const as ws_const
 from homeassistant.core import HomeAssistant, callback
 
-from .const import TIER_ADMIN, TIER_OPEN, TIER_USER
+from .const import RESOURCE_KEYS, TIER_ADMIN, TIER_OPEN, TIER_USER
 from .extract import TARGET_KEY, schema_resource_markers
 
 _LOGGER = logging.getLogger(__name__)
@@ -97,6 +97,7 @@ class Catalog:
         """Initialise an empty catalogue."""
         self._hass = hass
         self._commands: dict[str, CommandInfo] = {}
+        self._routes: list[RouteInfo] = []
         self.degraded = False
 
     @property
@@ -122,6 +123,7 @@ class Catalog:
             )
 
         self._commands = commands
+        self._routes = build_routes()
         self._check_not_degraded()
 
     def _check_not_degraded(self) -> None:
@@ -156,6 +158,42 @@ class Catalog:
         return info.tier
 
     @callback
+    def route_for(self, method: str, path: str) -> RouteInfo | None:
+        """Return the registered route matching a request path."""
+        for route in self._routes:
+            if route.pattern.match(path):
+                return route
+        return None
+
+    @callback
+    def tier_for_request(self, method: str, path: str) -> str:
+        """Return the tier for a REST request.
+
+        Unmatched paths resolve to admin: a route this build cannot see is one
+        it cannot reason about.
+        """
+        if (route := self.route_for(method, path)) is None:
+            return TIER_ADMIN
+        return route.tier_for_method(method)
+
+    @callback
+    def path_resources(self, method: str, path: str) -> dict[str, str]:
+        """Return resource references carried in the path itself.
+
+        `/api/camera_proxy/{entity_id}` names an entity in its URL rather than
+        in a body, so the resource gate would otherwise see nothing.
+        """
+        if (route := self.route_for(method, path)) is None:
+            return {}
+        if (match := route.pattern.match(path)) is None:
+            return {}
+        return {
+            name: value
+            for name, value in (match.groupdict() or {}).items()
+            if value and name in RESOURCE_KEYS
+        }
+
+    @callback
     def info_for(self, command: str) -> CommandInfo | None:
         """Return the derived information for a command, if known."""
         return self._commands.get(command)
@@ -178,3 +216,95 @@ class Catalog:
             ),
             key=lambda item: item["command"],
         )
+
+
+HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
+
+# `/api/states/{entity_id}` -> a pattern that also tells us the parameter names,
+# so a path segment can be recovered as a resource reference.
+_PLACEHOLDER = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)(?::[^}]+)?\}")
+
+
+@dataclass(slots=True)
+class RouteInfo:
+    """What has been derived about one REST route."""
+
+    pattern: "re.Pattern[str]"
+    url: str
+    tiers: dict[str, str]
+    requires_auth: bool
+
+    def tier_for_method(self, method: str) -> str:
+        """Return the tier for a method, defaulting to admin when undeclared."""
+        return self.tiers.get(method.lower(), TIER_ADMIN)
+
+
+def _url_to_pattern(url: str) -> "re.Pattern[str]":
+    """Compile an aiohttp route template into a matching regex."""
+    parts: list[str] = []
+    index = 0
+    for match in _PLACEHOLDER.finditer(url):
+        parts.append(re.escape(url[index : match.start()]))
+        name = match.group(1)
+        # aiohttp's `{path:.*}` style tails may span separators; plain ones
+        # match a single segment.
+        greedy = ":" in match.group(0)
+        parts.append(f"(?P<{name}>{'.*' if greedy else '[^/]+'})")
+        index = match.end()
+    parts.append(re.escape(url[index:]))
+    return re.compile(f"^{''.join(parts)}/?$")
+
+
+def _all_view_subclasses(base: Any) -> list[Any]:
+    """Return every HomeAssistantView subclass, transitively."""
+    found: list[Any] = []
+    stack = list(base.__subclasses__())
+    seen: set[int] = set()
+    while stack:
+        cls = stack.pop()
+        if id(cls) in seen:
+            continue
+        seen.add(id(cls))
+        found.append(cls)
+        stack.extend(cls.__subclasses__())
+    return found
+
+
+def build_routes() -> list[RouteInfo]:
+    """Derive REST route tiers from the registered view classes.
+
+    `hass.http.app.router` knows the paths but has lost the view object inside
+    `request_handler_factory`'s closure, so the classes are walked instead. Views
+    that build their URL per instance are not discoverable this way and simply
+    stay unknown, which resolves to admin.
+    """
+    from homeassistant.components.http import HomeAssistantView  # noqa: PLC0415
+
+    routes: list[RouteInfo] = []
+    for cls in _all_view_subclasses(HomeAssistantView):
+        url = getattr(cls, "url", None)
+        if not isinstance(url, str) or not url:
+            continue
+
+        tiers: dict[str, str] = {}
+        for method in HTTP_METHODS:
+            if (handler := getattr(cls, method, None)) is None:
+                continue
+            tiers[method] = derive_tier(handler)
+
+        urls = [url, *(getattr(cls, "extra_urls", None) or [])]
+        for candidate in urls:
+            if not isinstance(candidate, str) or not candidate:
+                continue
+            routes.append(
+                RouteInfo(
+                    pattern=_url_to_pattern(candidate),
+                    url=candidate,
+                    tiers=tiers,
+                    requires_auth=getattr(cls, "requires_auth", True),
+                )
+            )
+
+    # Longest URL first, so `/api/states/{entity_id}` wins over `/api/states`.
+    routes.sort(key=lambda route: len(route.url), reverse=True)
+    return routes
