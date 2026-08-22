@@ -206,6 +206,10 @@ LISTENER_ALL = "all"
 LISTENER_ENTITIES = "entities"
 LISTENER_DOMAINS = "domains"
 
+# Never a real entity; it makes the domain-level rule in a policy answer for a
+# domain whose members are not known yet.
+DOMAIN_PROBE = "_rbac_probe"
+
 
 @REGISTRY.event("render_template", "template/start_preview")
 def _filter_template_event(ctx: FilterContext, event: Any) -> Any:
@@ -240,10 +244,15 @@ def _filter_template_event(ctx: FilterContext, event: Any) -> Any:
     if any(not ctx.readable(entity_id) for entity_id in entities):
         return None
 
-    # A domain listener means the template reads whatever appears in that
-    # domain, including entities that do not exist yet.
+    # A domain listener reads whatever appears in that domain, including
+    # entities that do not exist yet -- so checking only the current ones is not
+    # enough. An empty domain would pass, and the count alone tells the reader
+    # how many of something they cannot see exist. The probe asks the policy
+    # directly whether anything in the domain could be read.
     domains = listeners.get(LISTENER_DOMAINS) or ()
     for domain in domains:
+        if not ctx.readable(f"{domain}.{DOMAIN_PROBE}"):
+            return None
         if any(
             not ctx.readable(entity_id)
             for entity_id in ctx.hass.states.async_entity_ids(domain)

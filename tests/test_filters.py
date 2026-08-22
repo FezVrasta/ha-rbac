@@ -1,5 +1,6 @@
 """Tests for response filtering."""
 
+from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.core import HomeAssistant
 
 from custom_components.ha_rbac.filters import REGISTRY, FilterContext, prune
@@ -294,3 +295,28 @@ async def test_a_template_error_is_not_echoed_verbatim(hass: HomeAssistant) -> N
     )
     assert "unlocked" not in event["error"]
     assert event["level"] == "ERROR"
+
+
+async def test_an_empty_denied_domain_is_still_withheld(hass: HomeAssistant) -> None:
+    """A domain listener covers entities that do not exist yet.
+
+    Checking only the current members let an empty domain through, and the count
+    alone tells the reader how many of something they cannot see exist.
+    """
+
+    def check(entity_id: str, key: str) -> bool:
+        return not entity_id.startswith("lock.")
+
+    ctx = FilterContext(hass, check)
+    assert not hass.states.async_entity_ids("lock"), "precondition: no locks exist"
+
+    event = REGISTRY.filter_event(
+        "render_template",
+        ctx,
+        {
+            "result": "0",
+            "listeners": {"all": False, "entities": [], "domains": ["lock"]},
+        },
+    )
+    assert event is None
+    assert check("lock.anything", POLICY_READ) is False
