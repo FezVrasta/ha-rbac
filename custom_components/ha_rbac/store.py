@@ -4,14 +4,18 @@ Home Assistant has no group CRUD API, so `.storage/auth` is left alone entirely
 and this integration keeps its own store.
 """
 
+import logging
 import uuid
 from typing import Any
 
+import voluptuous as vol
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 
 from .const import STORAGE_KEY, STORAGE_VERSION
 from .policy import ROLE_SCHEMA, default_roles
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class RbacStore:
@@ -38,7 +42,18 @@ class RbacStore:
             # them, mirroring how HA treats its own system groups.
             if role_id in self.roles and self.roles[role_id].get("system_generated"):
                 continue
-            self.roles[role_id] = ROLE_SCHEMA(role)
+            try:
+                self.roles[role_id] = ROLE_SCHEMA(role)
+            except vol.Invalid:
+                # Skipping one unreadable role is far better than failing setup:
+                # that would leave the proxy unbound and, on a loopback-only
+                # deployment, cut off every route into Home Assistant.
+                _LOGGER.exception(
+                    "Ignoring stored role %s because it is not valid; users "
+                    "bound only to it will fall back to their Home Assistant "
+                    "group",
+                    role_id,
+                )
 
         self.bindings = {
             user_id: list(role_ids)

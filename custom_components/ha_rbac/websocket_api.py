@@ -4,9 +4,36 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
+from homeassistant.components.websocket_api import const as ws_const
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DATA_RBAC, DOMAIN
+
+COMMANDS = (
+    "roles/list",
+    "roles/create",
+    "roles/update",
+    "roles/delete",
+    "bindings/list",
+    "bindings/set",
+    "catalog",
+    "denials/recent",
+    "simulate",
+)
+
+
+@callback
+def async_unregister(hass: HomeAssistant) -> None:
+    """Remove the rbac/* commands.
+
+    They close over the integration's runtime state, so leaving them registered
+    after unload turns every call into a KeyError.
+    """
+    handlers = hass.data.get(ws_const.DOMAIN)
+    if not handlers:
+        return
+    for command in COMMANDS:
+        handlers.pop(f"{DOMAIN}/{command}", None)
 
 
 @callback

@@ -32,6 +32,7 @@ from .const import (
     CONF_UPSTREAM_HOST,
     CONF_UPSTREAM_PORT,
     DATA_RBAC,
+    DATA_STATIC_PATH_REGISTERED,
     DEFAULT_BIND_ADDRESS,
     DEFAULT_PROXY_PORT,
     DEFAULT_UPSTREAM_HOST,
@@ -62,6 +63,10 @@ REGISTRY_EVENTS = (
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the RBAC proxy and its admin panel."""
+    # The options flow writes to `options`; reading only `data` meant a changed
+    # port was accepted, redisplayed, and silently ignored.
+    config = {**entry.data, **entry.options}
+
     store = RbacStore(hass)
     await store.async_load()
 
@@ -106,7 +111,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "can present the token they already have directly to port %s. Set "
             "http.server_host to 127.0.0.1 in configuration.yaml and expose only "
             "the proxy port",
-            entry.data.get(CONF_UPSTREAM_PORT, 8123),
+            config.get(CONF_UPSTREAM_PORT, 8123),
         )
 
     if catalog.degraded:
@@ -122,10 +127,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             evaluator,
             decider,
             denylog,
-            upstream_host=entry.data.get(CONF_UPSTREAM_HOST, DEFAULT_UPSTREAM_HOST),
-            upstream_port=entry.data.get(CONF_UPSTREAM_PORT, 8123),
-            bind_address=entry.data.get(CONF_BIND_ADDRESS, DEFAULT_BIND_ADDRESS),
-            port=entry.data.get(CONF_PROXY_PORT, DEFAULT_PROXY_PORT),
+            upstream_host=config.get(CONF_UPSTREAM_HOST, DEFAULT_UPSTREAM_HOST),
+            upstream_port=config.get(CONF_UPSTREAM_PORT, 8123),
+            bind_address=config.get(CONF_BIND_ADDRESS, DEFAULT_BIND_ADDRESS),
+            port=config.get(CONF_PROXY_PORT, DEFAULT_PROXY_PORT),
         )
         await proxy.async_start()
         data.proxy = proxy
@@ -143,15 +148,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _async_register_panel(hass: HomeAssistant) -> None:
     """Serve the admin panel."""
-    await hass.http.async_register_static_paths(
-        [
-            StaticPathConfig(
-                STATIC_URL_PATH,
-                str(Path(__file__).parent / "frontend"),
-                cache_headers=False,
-            )
-        ]
-    )
+    # aiohttp cannot unregister a route, so re-registering on reload raises and
+    # the panel would be lost until a full restart.
+    if not hass.data.get(DATA_STATIC_PATH_REGISTERED):
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    STATIC_URL_PATH,
+                    str(Path(__file__).parent / "frontend"),
+                    cache_headers=False,
+                )
+            ]
+        )
+        hass.data[DATA_STATIC_PATH_REGISTERED] = True
     await panel_custom.async_register_panel(
         hass,
         frontend_url_path=PANEL_URL_PATH,
@@ -180,5 +189,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if data.proxy is not None:
         await data.proxy.async_stop()
 
+    # The handlers close over hass.data[DATA_RBAC], which has just been removed.
+    websocket_api.async_unregister(hass)
     frontend.async_remove_panel(hass, PANEL_URL_PATH, warn_if_unknown=False)
     return True

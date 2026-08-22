@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 import voluptuous as vol
+from aiohttp import hdrs
 from homeassistant.auth.permissions.const import (
     CAT_ENTITIES,
     POLICY_CONTROL,
@@ -37,6 +38,8 @@ from custom_components.ha_rbac.policy import (
     compile_role,
     desugar,
 )
+from custom_components.ha_rbac.proxy import INIT_HEADERS_FILTER
+from custom_components.ha_rbac.store import RbacStore
 
 
 def _lookup(hass: HomeAssistant) -> PermissionLookup:
@@ -255,3 +258,41 @@ async def test_route_matching_prefers_the_more_specific_url() -> None:
     assert _match("/api/error_log") == "/api/error_log"
     assert _match("/api/states") == "/api/states"
     assert _match("/api/states/light.kitchen") == "/api/states/{entity_id}"
+
+
+async def test_client_supplied_forwarded_headers_are_discarded(
+    hass: HomeAssistant,
+) -> None:
+    """A client must not be able to claim its own source address.
+
+    Home Assistant trusts X-Forwarded-For from a configured proxy, so relaying
+    whatever the client sent would let anyone spoof their address past IP
+    banning and the trusted_networks auth provider.
+    """
+    assert hdrs.X_FORWARDED_FOR in INIT_HEADERS_FILTER
+    assert hdrs.X_FORWARDED_HOST in INIT_HEADERS_FILTER
+    assert hdrs.X_FORWARDED_PROTO in INIT_HEADERS_FILTER
+
+
+async def test_a_malformed_stored_role_is_skipped_not_fatal(
+    hass: HomeAssistant,
+) -> None:
+    """Failing setup would leave the proxy unbound and cut off all access.
+
+    On a loopback-only deployment that is the only route in, so one unreadable
+    role must not take the installation down with it.
+    """
+    store = RbacStore(hass)
+    await store._store.async_save(
+        {
+            "roles": {"broken": {"id": "broken", "tiers": {"max": "not-a-tier"}}},
+            "bindings": {},
+            "global_deny": {},
+        }
+    )
+
+    await store.async_load()
+
+    assert "broken" not in store.roles
+    # The predefined roles are still available, so users keep working.
+    assert "read_only" in store.roles

@@ -47,6 +47,14 @@ INIT_HEADERS_FILTER = {
     hdrs.SEC_WEBSOCKET_PROTOCOL,
     hdrs.SEC_WEBSOCKET_VERSION,
     hdrs.SEC_WEBSOCKET_KEY,
+    # Whatever the client claims about its own origin is discarded. Home
+    # Assistant trusts these from a configured proxy, so relaying a
+    # client-supplied value would let anyone spoof their source address past IP
+    # banning and the trusted_networks auth provider. The proxy sets them itself
+    # when it is trusted, and sends none at all when it is not.
+    hdrs.X_FORWARDED_FOR,
+    hdrs.X_FORWARDED_HOST,
+    hdrs.X_FORWARDED_PROTO,
 }
 RESPONSE_HEADERS_FILTER = {
     hdrs.TRANSFER_ENCODING,
@@ -174,9 +182,7 @@ class RbacProxy:
         # checks `trusted_proxies` and disables this otherwise, because
         # untrusted forwarded headers make HA reject the request outright.
         if self._forward_client_ip:
-            peer = request.remote or ""
-            existing = request.headers.get(hdrs.X_FORWARDED_FOR)
-            headers[hdrs.X_FORWARDED_FOR] = f"{existing}, {peer}" if existing else peer
+            headers[hdrs.X_FORWARDED_FOR] = request.remote or ""
             headers[hdrs.X_FORWARDED_HOST] = request.headers.get(hdrs.HOST, "")
             headers[hdrs.X_FORWARDED_PROTO] = request.scheme
         return headers
@@ -399,15 +405,18 @@ class RbacProxy:
                     client_ws,
                     server_ws,
                 )
+                pumps = [
+                    create_eager_task(session.pump_inbound()),
+                    create_eager_task(session.pump_outbound()),
+                ]
                 try:
-                    await asyncio.wait(
-                        [
-                            create_eager_task(session.pump_inbound()),
-                            create_eager_task(session.pump_outbound()),
-                        ],
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
+                    await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
                 finally:
+                    # The surviving pump holds a reference to the session and
+                    # would otherwise dangle for the life of the process.
+                    for pump in pumps:
+                        pump.cancel()
+                    await asyncio.gather(*pumps, return_exceptions=True)
                     session.close()
         except (aiohttp.ClientError, TimeoutError) as err:
             _LOGGER.debug("Websocket proxy error: %s", err)
@@ -583,6 +592,11 @@ class _WsSession:
 
     async def _on_auth(self, message: dict[str, Any]) -> None:
         """Learn who the connection belongs to from its auth frame."""
+        # A connection authenticates once. A second frame would re-point the
+        # permissions mid-stream while Home Assistant carries on as the first
+        # user, and would leak the earlier revoke-callback registration.
+        if self._user is not None:
+            return
         token = message.get("access_token")
         if not isinstance(token, str):
             return

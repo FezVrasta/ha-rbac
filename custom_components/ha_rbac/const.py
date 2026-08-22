@@ -69,3 +69,6 @@ MAX_WALK_DEPTH: Final = 12
 MAX_WALK_NODES: Final = 5000
 
 DATA_RBAC: "HassKey[RbacData]" = HassKey(DOMAIN)
+# aiohttp routes cannot be removed, so the static path is registered once for
+# the lifetime of the process rather than per config entry.
+DATA_STATIC_PATH_REGISTERED: HassKey[bool] = HassKey(f"{DOMAIN}_static")
