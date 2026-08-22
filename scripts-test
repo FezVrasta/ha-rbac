@@ -1,3 +1,6 @@
 #!/usr/bin/env bash
-# Run the test suite against the Home Assistant core checkout's virtualenv.
-exec /Users/federicozivolo/Developer/core/venv/bin/python -m pytest "$@"
+# Run the suite against the Home Assistant core checkout: its virtualenv supplies
+# the dependencies, its tests/ package supplies the fixtures.
+CORE=/Users/federicozivolo/Developer/core
+cd "$(dirname "$0")"
+PYTHONPATH="$CORE:." exec "$CORE/venv/bin/python" -m pytest "$@"
