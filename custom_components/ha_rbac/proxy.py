@@ -15,6 +15,7 @@ reads the registries directly instead.
 import asyncio
 import json
 import logging
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
@@ -55,7 +56,10 @@ RESPONSE_HEADERS_FILTER = {
 }
 
 MAX_WEBSOCKET_MESSAGE_SIZE = 16 * 1024 * 1024
-MAX_SIMPLE_RESPONSE_SIZE = 4194000
+# Correlations outlive their result, so the map needs a ceiling.
+MAX_PENDING_IDS = 8192
+# Bodies above this are not filtered, and are refused rather than forwarded.
+MAX_FILTERABLE_RESPONSE_SIZE = 16 * 1024 * 1024
 DISABLED_TIMEOUT = ClientTimeout(total=None)
 
 WS_PATH = "/api/websocket"
@@ -68,6 +72,22 @@ TYPE_RESULT = "result"
 TYPE_EVENT = "event"
 
 ERR_UNAUTHORIZED = "unauthorized"
+
+
+def _carries_entity_data(content_type: str) -> bool:
+    """Return True if a response could disclose entity state.
+
+    Images, video and static assets cannot; anything textual might. Used only to
+    decide whether an unfilterable response must be refused.
+    """
+    if content_type.startswith(("image/", "video/", "audio/", "font/")):
+        return False
+    return content_type not in (
+        "application/octet-stream",
+        "text/css",
+        "text/javascript",
+        "application/javascript",
+    )
 
 
 def _is_websocket(request: web.Request) -> bool:
@@ -191,7 +211,9 @@ class RbacProxy:
         if user is not None and not permissions.full_access:
             body = await self._peek_json(request)
             name = f"{request.method} {request.path}"
-            decision = self._decider.decide(permissions, KIND_HTTP, name, body)
+            decision = self._decider.decide(
+                permissions, KIND_HTTP, name, body, query=request.query
+            )
             if not decision.allowed:
                 self._record(user, KIND_HTTP, name, decision)
                 return web.json_response({"message": "Unauthorized"}, status=401)
@@ -251,17 +273,34 @@ class RbacProxy:
             if must_be_empty_body(method, result.status):
                 return web.Response(headers=headers, status=result.status)
 
-            if decision.filter_response and content_type == "application/json":
-                filtered = await self._filter_http_body(result, permissions, request)
-                if filtered is not None:
+            if decision.filter_response:
+                filtered, filterable = await self._filter_http_body(
+                    result, permissions, request, content_type
+                )
+                if filterable:
                     return web.json_response(
                         filtered, status=result.status, headers=headers
                     )
+                if _carries_entity_data(content_type):
+                    # Filtering was required and could not be applied. A size
+                    # limit is a performance guard, not a correctness boundary:
+                    # streaming the body here would hand a restricted user every
+                    # entity in a large response, silently.
+                    _LOGGER.warning(
+                        "Refusing %s %s: response could not be filtered "
+                        "(content-type %s, length %s)",
+                        request.method,
+                        request.path,
+                        content_type,
+                        result.headers.get(hdrs.CONTENT_LENGTH, "unknown"),
+                    )
+                    return web.json_response(
+                        {"message": "Response too large to filter"}, status=403
+                    )
 
-            # Large or non-JSON bodies stream through untouched. Camera and
-            # media responses are the common case and there is nothing in them
-            # to filter that filtering the entity's state has not already
-            # handled.
+            # Anything else -- images, streams, static assets -- carries no
+            # entity data of its own, and the state that would reveal it has
+            # already been filtered.
             response = web.StreamResponse(status=result.status, headers=headers)
             response.content_type = content_type
             await response.prepare(request)
@@ -273,21 +312,39 @@ class RbacProxy:
             return response
 
     async def _filter_http_body(
-        self, result: aiohttp.ClientResponse, permissions: Any, request: web.Request
-    ) -> Any:
-        """Filter a JSON response body, or return None to stream it instead."""
+        self,
+        result: aiohttp.ClientResponse,
+        permissions: Any,
+        request: web.Request,
+        content_type: str,
+    ) -> tuple[Any, bool]:
+        """Filter a JSON body.
+
+        Returns the filtered payload and whether filtering was possible at all,
+        so the caller can refuse rather than fall back to streaming.
+        """
+        if content_type != "application/json":
+            return None, False
+
         length = result.headers.get(hdrs.CONTENT_LENGTH)
-        if length is not None and int(length) > MAX_SIMPLE_RESPONSE_SIZE:
-            return None
+        if length is not None and int(length) > MAX_FILTERABLE_RESPONSE_SIZE:
+            return None, False
+
         raw = await result.read()
         if not raw:
-            return None
+            return None, False
+        if len(raw) > MAX_FILTERABLE_RESPONSE_SIZE:
+            return None, False
         try:
             payload = json_loads(raw)
         except ValueError:
-            return None
+            return None, False
+
         ctx = FilterContext(self._hass, permissions.check_entity)
-        return REGISTRY.filter_result(f"{request.method} {request.path}", ctx, payload)
+        return (
+            REGISTRY.filter_result(f"{request.method} {request.path}", ctx, payload),
+            True,
+        )
 
     @callback
     def _record(
@@ -387,9 +444,18 @@ class _WsSession:
         # Correlates a result or event back to the command that asked for it.
         # Without it an outbound frame cannot be filtered, so an unknown id is
         # dropped rather than forwarded.
-        self._pending: dict[int, str] = {}
+        # Correlations are kept for the life of the connection, so the map is
+        # bounded: a long-lived frontend session issues a lot of commands.
+        self._pending: OrderedDict[int, str] = OrderedDict()
         self._coalesced = False
         self._unsubscribe_revoke: Any = None
+
+    @callback
+    def _remember(self, msg_id: int, msg_type: str) -> None:
+        """Record an id correlation, discarding the oldest when full."""
+        self._pending[msg_id] = msg_type
+        while len(self._pending) > MAX_PENDING_IDS:
+            self._pending.popitem(last=False)
 
     @callback
     def close(self) -> None:
@@ -469,11 +535,28 @@ class _WsSession:
         msg_type = message.get("type")
         msg_id = message.get("id")
 
-        # Correlate first, unconditionally. An outbound frame whose id is not in
-        # this map is dropped, so a command that is forwarded but never recorded
-        # would have its reply silently swallowed and hang the client.
+        # Correlate first. An outbound frame whose id is not in this map is
+        # dropped, so a forwarded command that was never recorded would have its
+        # reply swallowed and hang the client.
+        #
+        # Never *re*-label an id, though. Home Assistant requires ids to
+        # increase strictly and rejects a repeat outright, so a second use is
+        # always an attack: sending [{"id":5,"get_states"},{"id":5,"get_config"}]
+        # in one coalesced frame would relabel the pending id, and the
+        # get_states result would then be matched to get_config's pass-through
+        # filter and forwarded in full.
         if isinstance(msg_id, int) and isinstance(msg_type, str):
-            self._pending[msg_id] = msg_type
+            if msg_id in self._pending:
+                await self._deny(
+                    msg_id,
+                    Decision(
+                        allowed=False,
+                        reason="id_reuse",
+                        detail="Message id reused on this connection",
+                    ),
+                )
+                return False
+            self._remember(msg_id, msg_type)
 
         if msg_type == TYPE_AUTH:
             await self._on_auth(message)
@@ -588,9 +671,12 @@ class _WsSession:
         ctx = FilterContext(self._hass, self._permissions.check_entity)
 
         if msg_type == TYPE_RESULT:
-            # A subscription keeps streaming, so its id stays correlated.
-            if not command.startswith("subscribe_"):
-                self._pending.pop(msg_id, None)
+            # The correlation is deliberately kept after the result. Many
+            # subscriptions are not spelled `subscribe_*` -- history/stream,
+            # logbook/event_stream and weather/subscribe_forecast among them --
+            # and dropping the entry by name meant their event frames arrived
+            # uncorrelated and were discarded, so history graphs never updated.
+            # The map is bounded instead, in _remember.
             if message.get("success") and "result" in message:
                 return {
                     **message,

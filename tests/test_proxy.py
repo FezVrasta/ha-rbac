@@ -347,3 +347,81 @@ async def test_query_string_is_forwarded_verbatim(proxy_env: dict[str, Any]) -> 
         assert response.status == 200
 
     assert seen == ["z=1&a=2&m=3"]
+
+
+async def test_reusing_a_message_id_cannot_relabel_a_filter(
+    proxy_env: dict[str, Any],
+) -> None:
+    """A repeated id in one coalesced frame must not swap which filter applies.
+
+    Home Assistant requires ids to increase strictly and rejects a repeat, so a
+    second use is always an attack. The proxy recorded it anyway, which meant
+    `[{"id":5,"get_states"},{"id":5,"get_config"}]` correlated the get_states
+    result to get_config's pass-through filter and forwarded every entity.
+    """
+    hass, store = proxy_env["hass"], proxy_env["store"]
+    hass.states.async_set("lock.secret", "unlocked")
+
+    user, token = proxy_env["read_only_user"], proxy_env["read_only_token"]
+    role = await store.async_create_role(
+        {
+            "name": "No locks",
+            "allow": {"entities": {"all": {"read": True}}},
+            "deny": {"entities": {"domains": {"lock": True}}},
+        }
+    )
+    await store.async_set_binding(user.id, [role["id"]])
+
+    async with aiohttp.ClientSession() as session:
+        ws = await _ws_login(session, proxy_env["ws"], token)
+        await ws.send_str(
+            json.dumps(
+                [
+                    {"id": 5, "type": "get_states"},
+                    {"id": 5, "type": "get_config"},
+                ]
+            )
+        )
+        received: list[str] = []
+        for _ in range(2):
+            try:
+                received.append(await asyncio.wait_for(ws.receive_str(), timeout=2))
+            except TimeoutError:
+                break
+        await ws.close()
+
+    assert "lock.secret" not in " ".join(received)
+
+
+async def test_a_subscription_keeps_streaming_after_its_result(
+    proxy_env: dict[str, Any],
+) -> None:
+    """Correlation must survive the result frame, or events are dropped.
+
+    Only commands literally named `subscribe_*` used to keep their correlation,
+    so history/stream, logbook/event_stream and weather/subscribe_forecast lost
+    every event after the first reply.
+    """
+    hass, store = proxy_env["hass"], proxy_env["store"]
+    hass.states.async_set("light.kitchen", "off")
+    await _bind(store, proxy_env["read_only_user"], ROLE_READ_ONLY)
+    token = proxy_env["read_only_token"]
+
+    async with aiohttp.ClientSession() as session:
+        ws = await _ws_login(session, proxy_env["ws"], token)
+        await ws.send_json(
+            {"id": 1, "type": "subscribe_entities", "entity_ids": ["light.kitchen"]}
+        )
+        result = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        assert result["success"] is True
+
+        # Initial state, then a change: both must arrive.
+        first = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        assert "a" in first["event"]
+
+        hass.states.async_set("light.kitchen", "on")
+        second = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        await ws.close()
+
+    assert "c" in second["event"]
+    assert "light.kitchen" in second["event"]["c"]

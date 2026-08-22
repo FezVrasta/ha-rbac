@@ -189,17 +189,22 @@ def desugar(hass: HomeAssistant, policy: dict[str, Any]) -> PolicyType:
     if not isinstance(entities, dict):
         entities = {}
 
-    out: dict[str, Any] = {
-        key: dict(value)
-        for key, value in entities.items()
-        if key in (SUBCAT_ALL, ENTITY_DOMAINS, ENTITY_DEVICE_IDS, ENTITY_ENTITY_IDS)
-        and isinstance(value, (dict, bool))
-    }
-    for key in (SUBCAT_ALL,):
-        if key in entities and not isinstance(entities[key], dict):
-            out[key] = entities[key]
+    # `all: True` and `domains: True` are valid Home Assistant policy, so a
+    # bare bool has to survive rather than being copied as if it were a mapping.
+    out: dict[str, Any] = {}
+    for key in (SUBCAT_ALL, ENTITY_DOMAINS, ENTITY_DEVICE_IDS, ENTITY_ENTITY_IDS):
+        if key not in entities:
+            continue
+        value = entities[key]
+        if isinstance(value, dict):
+            out[key] = dict(value)
+        elif isinstance(value, bool):
+            out[key] = value
 
-    explicit_entities: dict[str, Any] = dict(out.get(ENTITY_ENTITY_IDS, {}))
+    existing_entities = out.get(ENTITY_ENTITY_IDS)
+    explicit_entities: dict[str, Any] = (
+        dict(existing_entities) if isinstance(existing_entities, dict) else {}
+    )
 
     # Floors -> areas, merged with any areas named directly.
     areas: dict[str, Any] = dict(entities.get(ENTITY_AREAS, {}) or {})
@@ -260,11 +265,16 @@ def compile_role(
         tier_max=tier_max,
         tier_allow=tier_allow,
         tier_deny=list(tiers.get("deny") or []),
+        # Full access skips every gate, so it has to mean *nothing* is
+        # restricted. Ignoring the tier denials here silently disabled the whole
+        # layer for the obvious authoring flow of cloning Administrator and
+        # denying one namespace.
         full_access=(
             allow_policy.get(CAT_ENTITIES) is True
-            and not deny_policy
+            and not (role.get("deny") or {})
             and tier_max == TIER_ADMIN
             and "*" in tier_allow
+            and not tiers.get("deny")
         ),
     )
 

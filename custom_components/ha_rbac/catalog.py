@@ -107,6 +107,19 @@ class RouteInfo:
     tiers: dict[str, str]
     requires_auth: bool
 
+    @property
+    def specificity(self) -> tuple[int, int, int]:
+        """Return a sort key placing the most specific route first.
+
+        Ordering by URL length is not correctness-preserving: a catch-all such
+        as `/api/{username}` from an unrelated integration is longer than
+        `/api/error_log` and would shadow it, downgrading an admin-only endpoint
+        to open. Literal characters, then fewer placeholders, then length.
+        """
+        placeholders = self.url.count("{")
+        literal = len(_PLACEHOLDER.sub("", self.url))
+        return (-literal, placeholders, -len(self.url))
+
     def tier_for_method(self, method: str) -> str:
         """Return the tier for a method, defaulting to admin when undeclared."""
         return self.tiers.get(method.lower(), TIER_ADMIN)
@@ -178,8 +191,7 @@ def build_routes() -> list[RouteInfo]:
                 )
             )
 
-    # Longest URL first, so `/api/states/{entity_id}` wins over `/api/states`.
-    routes.sort(key=lambda route: len(route.url), reverse=True)
+    routes.sort(key=lambda route: route.specificity)
     return routes
 
 
@@ -252,11 +264,21 @@ class Catalog:
 
     @callback
     def route_for(self, method: str, path: str) -> RouteInfo | None:
-        """Return the registered route matching a request path."""
+        """Return the registered route matching a request.
+
+        A route only answers for the methods its view actually declares;
+        otherwise an unrelated view sharing a path shape would answer for verbs
+        it never implements.
+        """
+        fallback: RouteInfo | None = None
         for route in self._routes:
-            if route.pattern.match(path):
+            if not route.pattern.match(path):
+                continue
+            if method.lower() in route.tiers:
                 return route
-        return None
+            if fallback is None:
+                fallback = route
+        return fallback
 
     @callback
     def tier_for_request(self, method: str, path: str) -> str:

@@ -10,6 +10,7 @@ classification at all. A mutation's damage is not visible in the response, so it
 has to be judged up front.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,7 +27,7 @@ from homeassistant.helpers import (
 )
 
 from .catalog import Catalog
-from .const import RESOURCE_KEYS
+from .const import MAX_WALK_DEPTH, RESOURCE_KEYS
 from .extract import Extracted, extract, is_bounded
 from .filters import FilterRegistry
 from .policy import Permissions
@@ -34,10 +35,35 @@ from .policy import Permissions
 KIND_WS = "ws"
 KIND_HTTP = "http"
 
+# Home Assistant spells some resources differently in query strings.
+QUERY_RESOURCE_ALIASES = {
+    "filter_entity_id": "entity_id",
+    "entity": "entity_id",
+}
+
+# Keys that mean "invoke something", wherever they appear in a payload.
+SERVICE_KEYS = frozenset({"service", "action"})
+
 REASON_TIER = "tier"
 REASON_RESOURCE = "resource"
 REASON_UNBOUNDED = "unbounded"
 REASON_DEGRADED = "degraded"
+
+
+def _invokes_a_service(node: Any, depth: int = 0) -> bool:
+    """Return True if a payload calls a service anywhere inside it."""
+    if depth > MAX_WALK_DEPTH:
+        # A payload too deep to inspect is assumed to act, not to observe.
+        return True
+    if isinstance(node, dict):
+        if SERVICE_KEYS & node.keys() and (
+            "domain" in node or "service" in node or "action" in node
+        ):
+            return True
+        return any(_invokes_a_service(value, depth + 1) for value in node.values())
+    if isinstance(node, list):
+        return any(_invokes_a_service(item, depth + 1) for item in node)
+    return False
 
 
 @dataclass(slots=True)
@@ -134,6 +160,7 @@ class Decider:
         kind: str,
         name: str,
         payload: dict[str, Any],
+        query: "Mapping[str, str] | None" = None,
     ) -> Decision:
         """Return the verdict for one request."""
         # 1. Pass-through. Owner, system users and full-access roles skip every
@@ -171,7 +198,13 @@ class Decider:
         if kind == KIND_HTTP:
             # A path parameter is a resource reference the body never carries.
             for key, value in self._catalog.path_resources(method, path).items():
-                found = self._merge_path_resource(found, key, value)
+                self._merge_named_resource(found, key, value)
+            # So is a query parameter. `?filter_entity_id=lock.front` names its
+            # own target, and with `minimal_response` the entity id appears only
+            # on the first history sample, so the response filter cannot recover
+            # what the request gave away.
+            for key, value in (query or {}).items():
+                self._merge_query_resource(found, key, value)
         entities = expand_to_entities(self._hass, found)
         key = POLICY_CONTROL if self._is_mutation(kind, name, payload) else POLICY_READ
 
@@ -190,19 +223,8 @@ class Decider:
             )
 
         # 4. Boundedness. A payload that names nothing, or that carries a
-        #    template, does not constrain its own command. Such a request is
-        #    safe only if its response can be filtered.
+        #    template, does not constrain its own command.
         if not is_bounded(found):
-            if self._filters.has(name):
-                return Decision(
-                    allowed=True, resources=sorted(entities), filter_response=True
-                )
-            if self._is_mutation(kind, name, payload):
-                return Decision(
-                    allowed=False,
-                    reason=REASON_UNBOUNDED,
-                    detail=f"{name!r} mutates without naming what it affects",
-                )
             if found.templated:
                 return Decision(
                     allowed=False,
@@ -212,12 +234,33 @@ class Decider:
                         "to the entities named"
                     ),
                 )
-            # An unbounded *read* with no registered filter: allow it, but run
-            # the generic response filter. If the response carries nothing
-            # resource-shaped there was nothing to leak.
-            return Decision(
-                allowed=True, resources=sorted(entities), filter_response=True
-            )
+            if self._is_mutation(kind, name, payload):
+                return Decision(
+                    allowed=False,
+                    reason=REASON_UNBOUNDED,
+                    detail=f"{name!r} mutates without naming what it affects",
+                )
+            # An unbounded request is safe only when its response can be
+            # checked, because that response is all that is left.
+            #
+            # For REST the verb settles it: a GET is a read by the protocol's
+            # own definition, so the generic response filter is enough. A
+            # websocket command has no verb, and guessing from its name is what
+            # let `conversation/process` through -- it names nothing, matches no
+            # write-shaped name, carries no domain and service, and executes
+            # intents, so a read-only user could ask it to unlock a door.
+            # There, an explicit response filter is required.
+            if kind != KIND_HTTP and not self._filters.has(name):
+                return Decision(
+                    allowed=False,
+                    reason=REASON_UNBOUNDED,
+                    detail=(
+                        f"{name!r} neither names what it affects nor has a "
+                        "response filter, so it cannot be checked"
+                    ),
+                )
+
+        return Decision(allowed=True, resources=sorted(entities), filter_response=True)
 
         return Decision(allowed=True, resources=sorted(entities), filter_response=True)
 
@@ -230,11 +273,24 @@ class Decider:
 
     @staticmethod
     @callback
-    def _merge_path_resource(found: Extracted, key: str, value: str) -> Extracted:
+    def _merge_named_resource(found: Extracted, key: str, value: str) -> None:
         """Fold a resource named in the URL into the extracted set."""
-        bucket = found.buckets[RESOURCE_KEYS[key]]
-        bucket.add(value)
-        return found
+        found.buckets[RESOURCE_KEYS[key]].add(value)
+
+    @staticmethod
+    @callback
+    def _merge_query_resource(found: Extracted, key: str, value: str) -> None:
+        """Fold a resource named in the query string into the extracted set.
+
+        Home Assistant spells some of these differently in query strings than in
+        bodies, so the recognised names are normalised rather than assumed.
+        """
+        normalised = QUERY_RESOURCE_ALIASES.get(key, key)
+        if (kind := RESOURCE_KEYS.get(normalised)) is None:
+            return
+        for item in value.split(","):
+            if item := item.strip():
+                found.buckets[kind].add(item)
 
     @callback
     def _is_mutation(self, kind: str, name: str, payload: dict[str, Any]) -> bool:
@@ -244,5 +300,7 @@ class Decider:
 
         if (info := self._catalog.info_for(name)) is not None and info.is_write:
             return True
-        # `call_service` is the mutation that carries no write-shaped name.
-        return "domain" in payload and "service" in payload
+        # `call_service` is the mutation with no write-shaped name, and
+        # `execute_script` hides the same shape inside a sequence -- checking
+        # only the top level asked for READ access to entities it then controls.
+        return _invokes_a_service(payload)
