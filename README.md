@@ -2,8 +2,8 @@
 
 <p align="center">
   <strong>Give everyone in the house their own Home Assistant.</strong><br>
-  Guests see the lights. Kids get their own dashboard. Nobody but you
-  touches the locks, the add-ons, or the settings.
+  Guests see the lights. Kids get their own dashboard. Nobody sees where
+  your phone is, and nobody but you touches the locks.
 </p>
 
 <p align="center">
@@ -58,6 +58,17 @@ exceptions. Target them however you already think about your house:
 | **Entities / devices** | one specific thing |
 
 Chosen with the same pickers you use everywhere else in Home Assistant.
+
+### 📍 Details — how much of an entity they see
+
+Withhold individual attributes from entities someone can otherwise see. The
+reason this exists is location:
+
+> Your partner's phone shows as **home**. It does not show *where* home is, or
+> where they were an hour ago.
+
+Name the attributes to hide — `latitude`, `longitude`, `gps_*` — and they are
+gone from the dashboard, the state API, the live updates, and templates.
 
 ### 📱 Apps, dashboards and add-ons — where they can go
 
@@ -239,8 +250,8 @@ unfiltered Home Assistant. (Swap the port if you chose the alternative layout.)
 
 ## What it can't do yet
 
-- **All or nothing per entity.** If someone can see a light, they see everything
-  about that light. No hiding individual attributes.
+- **Attribute rules apply everywhere.** Hiding `latitude` hides it on every
+  entity that role can see, not just the one you had in mind.
 - **Automations aren't affected.** They run as the system, not as a person, so an
   automation can still touch anything. Same as stock Home Assistant.
 - **Add-on control is tested only in theory.** Add-ons need Home Assistant OS or
@@ -254,9 +265,10 @@ unfiltered Home Assistant. (Swap the port if you chose the alternative layout.)
 
 ## Contributing
 
-Bug reports from real households are the most useful thing right now — especially
-"my dashboard broke and here's what the Denials tab said". Issues and pull
-requests welcome.
+Bug reports from real households are the most useful thing right now —
+especially "my dashboard broke, and here's what the Denials tab said". Issues
+and pull requests welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for how to run
+the tests.
 
 ## Licence
 
