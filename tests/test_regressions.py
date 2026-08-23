@@ -916,3 +916,32 @@ async def test_the_owner_keeps_every_attribute(hass: HomeAssistant) -> None:
     perms = Permissions(pass_through=True)
     assert perms.attribute_hidden("latitude") is False
     assert perms.hides_attributes is False
+
+
+async def test_every_transport_gets_the_same_filter_context(
+    hass: HomeAssistant,
+) -> None:
+    """One constructor, so a transport cannot silently lose a restriction.
+
+    Building contexts by hand at each call site meant the HTTP path lost
+    attribute hiding while the websocket path kept it: the same role withheld a
+    location over one transport and served it over the other.
+    """
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            attributes={"deny": ["latitude"]},
+        ),
+        _lookup(hass),
+    )
+    ctx = FilterContext.for_user(hass, Permissions(roles=[role]))
+
+    assert ctx.hides_attributes is True
+    assert ctx.strip_attributes({"latitude": 51.5, "battery": 80}) == {"battery": 80}
+
+    # And a role with no attribute rules must still pay nothing.
+    plain = FilterContext.for_user(
+        hass, Permissions(roles=[compile_role(hass, _role(), _lookup(hass))])
+    )
+    assert plain.hides_attributes is False

@@ -437,3 +437,77 @@ async def test_attributes_are_untouched_when_no_rules_apply(
     ]
     result = REGISTRY.filter_result("get_states", _ctx(hass, set()), payload)
     assert result[0]["attributes"] == {"latitude": 51.5, "source": "gps"}
+
+
+async def test_history_states_have_hidden_attributes_stripped(
+    hass: HomeAssistant,
+) -> None:
+    """History returns states compressed, with attributes under "a".
+
+    The generic walk only knew the spelled-out `attributes`, so a role hiding a
+    location served it in full through history while hiding it everywhere else.
+    """
+    result = REGISTRY.filter_result(
+        "history/history_during_period",
+        _attr_ctx(hass, {"latitude", "longitude"}),
+        {
+            "device_tracker.phone": [
+                {
+                    "s": "home",
+                    "a": {"latitude": 51.5, "longitude": -0.1, "battery": 77},
+                    "lu": 1787440000.0,
+                }
+            ]
+        },
+    )
+    assert result["device_tracker.phone"][0]["a"] == {"battery": 77}
+
+
+async def test_a_bare_a_key_is_not_mistaken_for_attributes(
+    hass: HomeAssistant,
+) -> None:
+    """The key `a` means attributes only on something that is actually a state."""
+    payload = {"a": {"latitude": 51.5}, "unrelated": True}
+    result = REGISTRY.filter_result(
+        "some/other/command", _attr_ctx(hass, {"latitude"}), payload
+    )
+    assert result["a"] == {"latitude": 51.5}
+
+
+async def test_the_compact_registry_listing_hides_denied_entities(
+    hass: HomeAssistant,
+) -> None:
+    """It abbreviates entity_id to `ei`, which the generic walk did not know.
+
+    The entries carry name, device and area, so this disclosed the existence and
+    details of entities absent from every other response.
+    """
+    result = REGISTRY.filter_result(
+        "config/entity_registry/list_for_display",
+        _ctx(hass, {"lock.front_door"}),
+        {
+            "entity_categories": {"config": 1},
+            "entities": [
+                {"ei": "light.kitchen", "en": "Kitchen"},
+                {"ei": "lock.front_door", "en": "Front Door", "di": "device-1"},
+            ],
+        },
+    )
+    assert [entry["ei"] for entry in result["entities"]] == ["light.kitchen"]
+    assert result["entity_categories"] == {"config": 1}
+
+
+async def test_the_dashboard_listing_hides_denied_dashboards(
+    hass: HomeAssistant,
+) -> None:
+    """Another route to the same dashboards, naming none of them in the request."""
+    ctx = FilterContext(hass, lambda e, k: True, lambda url: url != "secret-dash")
+    result = REGISTRY.filter_result(
+        "lovelace/dashboards/list",
+        ctx,
+        [
+            {"id": "map", "url_path": "map", "title": "Map"},
+            {"id": "secret", "url_path": "secret-dash", "title": "Secret"},
+        ],
+    )
+    assert [d["url_path"] for d in result] == ["map"]

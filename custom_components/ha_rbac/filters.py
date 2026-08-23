@@ -71,6 +71,22 @@ class FilterContext:
             return names
         return [name for name in names if not self._attribute_hidden(name)]
 
+    @classmethod
+    def for_user(cls, hass: HomeAssistant, permissions: Any) -> "FilterContext":
+        """Build the context for a user's permissions.
+
+        The only way one should be constructed. Building them by hand at each
+        call site meant the HTTP path silently lost attribute hiding while the
+        websocket path kept it -- the same role withheld a location over one
+        transport and served it over the other.
+        """
+        return cls(
+            hass,
+            permissions.check_entity,
+            permissions.app_allowed,
+            permissions.attribute_hidden if permissions.hides_attributes else None,
+        )
+
     def app_visible(self, url_path: str) -> bool:
         """Return True if the user may see this sidebar app."""
         return self._app_allowed(url_path) if self._app_allowed else True
@@ -144,6 +160,21 @@ class FilterRegistry:
 REGISTRY = FilterRegistry()
 
 
+# `config/entity_registry/list_for_display` spells entity_id this way.
+DISPLAY_ENTITY_ID = "ei"
+
+# Keys that only appear on a compressed state, used to tell one apart from any
+# other object that happens to have an "a".
+COMPRESSED_STATE_MARKERS = ("s", "lu", "lc")
+
+
+def _is_compressed_state(node: dict[str, Any]) -> bool:
+    """Return True if a mapping is a state in Home Assistant's compressed form."""
+    return COMPRESSED_ATTRIBUTES in node and any(
+        marker in node for marker in COMPRESSED_STATE_MARKERS
+    )
+
+
 def _looks_like_entity_id(value: Any) -> bool:
     """Return True if a string has the shape of an entity id."""
     return isinstance(value, str) and value.count(".") == 1 and " " not in value
@@ -158,13 +189,22 @@ def prune(ctx: FilterContext, node: Any) -> Any:
     container, a specific filter is registered instead.
     """
     if isinstance(node, dict):
-        entity_id = node.get("entity_id")
+        entity_id = node.get("entity_id") or node.get(DISPLAY_ENTITY_ID)
         if _looks_like_entity_id(entity_id) and not ctx.readable(entity_id):
             return None
+
+        # History and statistics return states in the compressed form, where
+        # attributes live under "a" rather than "attributes". Recognised only
+        # when the surrounding object really is a state, since "a" means
+        # "added entities" one level up in the subscription protocol.
+        compressed = _is_compressed_state(node)
 
         out: dict[str, Any] = {}
         for key, value in node.items():
             if key == "attributes" and isinstance(value, dict):
+                out[key] = ctx.strip_attributes(value)
+                continue
+            if compressed and key == COMPRESSED_ATTRIBUTES and isinstance(value, dict):
                 out[key] = ctx.strip_attributes(value)
                 continue
             if key in ("entity_id", "entity_ids") and isinstance(value, list):
@@ -377,6 +417,47 @@ def _filter_panels(ctx: FilterContext, result: Any) -> Any:
         for url_path, panel in result.items()
         if ctx.app_visible(url_path)
     }
+
+
+@REGISTRY.result("config/entity_registry/list_for_display")
+def _filter_display_registry(ctx: FilterContext, result: Any) -> Any:
+    """Drop hidden entities from the compact registry listing.
+
+    It abbreviates `entity_id` to `ei`, so the generic walk did not recognise
+    the entries and disclosed the name, device and area of every entity the role
+    hides -- entities that are absent from every other response.
+    """
+    if not isinstance(result, dict) or not isinstance(result.get("entities"), list):
+        return prune(ctx, result)
+    return {
+        **result,
+        "entities": [
+            entry
+            for entry in result["entities"]
+            if not isinstance(entry, dict)
+            or not _looks_like_entity_id(entry.get(DISPLAY_ENTITY_ID))
+            or ctx.readable(entry[DISPLAY_ENTITY_ID])
+        ],
+    }
+
+
+@REGISTRY.result("lovelace/dashboards/list")
+def _filter_dashboards(ctx: FilterContext, result: Any) -> Any:
+    """Drop denied dashboards from the listing.
+
+    `get_panels` already hides them from the sidebar, but this lists the same
+    dashboards by another route and named none of them in the request, so the
+    app gate had nothing to match on.
+    """
+    if not isinstance(result, list):
+        return result
+    return [
+        dashboard
+        for dashboard in result
+        if not isinstance(dashboard, dict)
+        or not isinstance(dashboard.get("url_path"), str)
+        or ctx.app_visible(dashboard["url_path"])
+    ]
 
 
 @REGISTRY.result("get_services")

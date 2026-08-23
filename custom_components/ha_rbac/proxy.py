@@ -397,9 +397,7 @@ class RbacProxy:
         except ValueError:
             return None, False
 
-        ctx = FilterContext(
-            self._hass, permissions.check_entity, permissions.app_allowed
-        )
+        ctx = FilterContext.for_user(self._hass, permissions)
         return (
             REGISTRY.filter_result(f"{request.method} {request.path}", ctx, payload),
             True,
@@ -749,13 +747,7 @@ class _WsSession:
             _LOGGER.debug("Dropping websocket frame with uncorrelated id %s", msg_id)
             return None
 
-        permissions = self._permissions
-        ctx = FilterContext(
-            self._hass,
-            permissions.check_entity,
-            permissions.app_allowed,
-            permissions.attribute_hidden if permissions.hides_attributes else None,
-        )
+        ctx = FilterContext.for_user(self._hass, self._permissions)
 
         if msg_type == TYPE_RESULT:
             # The correlation is deliberately kept after the result. Many
