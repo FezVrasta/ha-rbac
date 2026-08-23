@@ -141,6 +141,21 @@ function valueOf(access) {
   return {};
 }
 
+/** Read a role's attribute section into editable rows. */
+function readAttributeRules(role) {
+  const attributes = role.attributes || {};
+  const rules = (attributes.rules || []).map((rule) => ({
+    target: rule.target || "domains",
+    ids: [...(rule.ids || [])],
+    names: [...(rule.names || [])],
+  }));
+  // The original shape withheld names from everything; show it as such.
+  if ((attributes.deny || []).length) {
+    rules.push({ target: "domains", ids: [], names: [...attributes.deny] });
+  }
+  return rules;
+}
+
 /** Read a policy pair into a base level plus a flat list of exceptions. */
 function readRules(role) {
   const allow = role.allow || {};
@@ -260,7 +275,12 @@ class HaRbacPanel extends HTMLElement {
   _loadDraft() {
     const role = this._roles.find((r) => r.id === this._selected);
     this._draft = role
-      ? { ...role, ...readRules(role), appDenied: [...((role.apps || {}).deny || [])] }
+      ? {
+          ...role,
+          ...readRules(role),
+          appDenied: [...((role.apps || {}).deny || [])],
+          attrRules: readAttributeRules(role),
+        }
       : null;
   }
 
@@ -362,13 +382,15 @@ class HaRbacPanel extends HTMLElement {
       </div>
 
       <h3>Details to withhold</h3>
-      <p class="hint">Attributes hidden on every entity this role can see. The
-        usual reason is location: letting someone see that you are home without
-        seeing where you are. One per line; <code>gps_*</code> works.</p>
-      <textarea id="attr-deny" placeholder="latitude&#10;longitude&#10;gps_*"
-        ${locked ? "disabled" : ""}>${esc(
-          ((draft.attributes || {}).deny || []).join("\n")
-        )}</textarea>
+      <p class="hint">Hide particular attributes on particular entities. The
+        usual reason is location — hide <code>latitude</code> on people and
+        trackers, and the zones that define where home is still work.
+        Comma separated; <code>gps_*</code> matches a group. Leave the picker
+        empty to apply a rule to everything.</p>
+      <div id="attr-rules"></div>
+      <div class="actions">
+        <button id="add-attr" class="secondary" ${locked ? "disabled" : ""}>Hide an attribute</button>
+      </div>
 
       <h3>Apps this role can open</h3>
       <p class="hint">Everything in the sidebar, including add-ons. Unticking one
@@ -432,6 +454,7 @@ class HaRbacPanel extends HTMLElement {
       </div>`;
 
     this._mountRules(host.querySelector("#rules"), locked);
+    this._mountAttrRules(host.querySelector("#attr-rules"), locked);
   }
 
   _mountRules(host, locked) {
@@ -443,6 +466,60 @@ class HaRbacPanel extends HTMLElement {
     this._draft.rules.forEach((rule, index) => {
       host.appendChild(this._ruleRow(rule, index, locked));
     });
+  }
+
+  _mountAttrRules(host, locked) {
+    host.innerHTML = "";
+    if (!this._draft.attrRules.length) {
+      host.innerHTML = `<p class="hint">Nothing hidden — entities this role can
+        see, it sees in full.</p>`;
+      return;
+    }
+    this._draft.attrRules.forEach((rule, index) => {
+      host.appendChild(this._attrRow(rule, index, locked));
+    });
+  }
+
+  _attrRow(rule, index, locked) {
+    const row = document.createElement("div");
+    row.className = "rule deny";
+
+    const target = document.createElement("select");
+    target.innerHTML = TARGETS.map(
+      (t) => `<option value="${t.value}" ${rule.target === t.value ? "selected" : ""}>${t.label}</option>`
+    ).join("");
+    target.disabled = locked;
+    target.onchange = () => {
+      rule.target = target.value;
+      rule.ids = [];
+      this._mountAttrRules(this.shadowRoot.getElementById("attr-rules"), locked);
+    };
+
+    const picker = document.createElement("div");
+    picker.className = "picker";
+    picker.appendChild(this._pickerFor(rule, locked));
+
+    const names = document.createElement("input");
+    names.type = "text";
+    names.value = rule.names.join(", ");
+    names.placeholder = "latitude, longitude, gps_*";
+    names.disabled = locked;
+    names.onchange = () => {
+      rule.names = names.value.split(",").map((n) => n.trim()).filter(Boolean);
+    };
+
+    const remove = document.createElement("button");
+    remove.className = "icon-btn";
+    remove.title = "Remove";
+    remove.textContent = "✕";
+    remove.disabled = locked;
+    remove.onclick = () => {
+      this._draft.attrRules.splice(index, 1);
+      this._mountAttrRules(this.shadowRoot.getElementById("attr-rules"), locked);
+    };
+
+    row.append(target, picker, names, remove);
+    return row;
   }
 
   _ruleRow(rule, index, locked) {
@@ -646,6 +723,10 @@ class HaRbacPanel extends HTMLElement {
     on("delete", () => this._deleteRole());
     on("save-bindings", () => this._saveBindings());
     on("load-denials", () => this._loadDenials());
+    on("add-attr", () => {
+      this._draft.attrRules.push({ target: "domains", ids: [], names: [] });
+      this._mountAttrRules(root.getElementById("attr-rules"), false);
+    });
     on("add-rule", () => {
       this._draft.rules.push({ target: "area_ids", ids: [], access: "none" });
       this._mountRules(root.getElementById("rules"), false);
@@ -679,7 +760,16 @@ class HaRbacPanel extends HTMLElement {
         allow: lines("tier-allow"),
         deny: lines("tier-deny"),
       },
-      attributes: { deny: lines("attr-deny") },
+      attributes: {
+        deny: [],
+        rules: this._draft.attrRules
+          .filter((rule) => rule.names.length)
+          .map((rule) => ({
+            target: rule.target,
+            ids: rule.ids,
+            names: rule.names,
+          })),
+      },
       apps: {
         allow: [],
         deny: [...root.querySelectorAll("[data-app]")]

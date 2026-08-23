@@ -113,8 +113,23 @@ TIERS_SCHEMA = vol.Schema(
     }
 )
 
+# Each rule withholds some attributes from some entities. `target` names the
+# kind of thing `ids` are -- the same kinds an entity exception uses -- and an
+# empty `ids` means every entity the role can see.
+ATTRIBUTE_RULE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("target", default=ENTITY_DOMAINS): str,
+        vol.Optional("ids", default=list): [str],
+        vol.Required("names"): [str],
+    }
+)
+
 ATTRIBUTES_SCHEMA = vol.Schema(
     {
+        vol.Optional("rules", default=list): [ATTRIBUTE_RULE_SCHEMA],
+        # The original shape: names withheld from every entity. Kept so roles
+        # written before rules existed keep working, and read as one rule with
+        # no target.
         vol.Optional("deny", default=list): [str],
     }
 )
@@ -282,6 +297,70 @@ def desugar(hass: HomeAssistant, policy: dict[str, Any]) -> PolicyType:
 
 
 @dataclass(slots=True)
+class CompiledAttributeRule:
+    """Attribute names withheld from the entities a rule targets."""
+
+    names: list[str]
+    # None means every entity; otherwise the exact set this rule covers.
+    entity_ids: set[str] | None
+    domains: set[str] | None
+
+    def covers(self, entity_id: str) -> bool:
+        """Return True if this rule applies to an entity."""
+        if self.entity_ids is None and self.domains is None:
+            return True
+        if self.domains is not None and entity_id.partition(".")[0] in self.domains:
+            return True
+        return self.entity_ids is not None and entity_id in self.entity_ids
+
+    def hides(self, name: str) -> bool:
+        """Return True if this rule withholds an attribute name."""
+        return any(fnmatch(name, pattern) for pattern in self.names)
+
+
+def _compile_attribute_rules(
+    hass: HomeAssistant, attributes: dict[str, Any]
+) -> list[CompiledAttributeRule]:
+    """Turn a role's attribute section into matchers.
+
+    Domains stay domains rather than being expanded, so a rule keeps covering
+    entities that do not exist yet. Areas, labels and floors are resolved to
+    entity ids the same way an entity policy resolves them.
+    """
+    compiled: list[CompiledAttributeRule] = []
+
+    if legacy := list(attributes.get("deny") or []):
+        compiled.append(CompiledAttributeRule(legacy, None, None))
+
+    for rule in attributes.get("rules") or []:
+        names = list(rule.get("names") or [])
+        ids = list(rule.get("ids") or [])
+        if not names:
+            continue
+        if not ids:
+            compiled.append(CompiledAttributeRule(names, None, None))
+            continue
+
+        target = rule.get("target") or ENTITY_DOMAINS
+        if target == ENTITY_DOMAINS:
+            compiled.append(CompiledAttributeRule(names, None, set(ids)))
+            continue
+        if target == ENTITY_ENTITY_IDS:
+            compiled.append(
+                CompiledAttributeRule(names, {i.lower() for i in ids}, None)
+            )
+            continue
+
+        # Everything else resolves through the registries, reusing the same
+        # expansion an entity policy uses.
+        policy = desugar(hass, {CAT_ENTITIES: {target: dict.fromkeys(ids, True)}})
+        resolved = set((policy.get(CAT_ENTITIES) or {}).get(ENTITY_ENTITY_IDS) or {})
+        compiled.append(CompiledAttributeRule(names, resolved, None))
+
+    return compiled
+
+
+@dataclass(slots=True)
 class CompiledRole:
     """A role with its allow and deny policies compiled."""
 
@@ -294,7 +373,7 @@ class CompiledRole:
     tier_deny: list[str]
     app_allow: list[str]
     app_deny: list[str]
-    attribute_deny: list[str]
+    attribute_rules: "list[CompiledAttributeRule]"
     full_access: bool
 
     def check(self, entity_id: str, key: str) -> bool:
@@ -325,7 +404,7 @@ def compile_role(
         tier_deny=[*BASELINE_DENY, *(tiers.get("deny") or [])],
         app_allow=list(apps.get("allow") or []),
         app_deny=list(apps.get("deny") or []),
-        attribute_deny=list(attributes.get("deny") or []),
+        attribute_rules=_compile_attribute_rules(hass, attributes),
         # Full access skips every gate, so it has to mean *nothing* is
         # restricted. Ignoring the tier denials here silently disabled the whole
         # layer for the obvious authoring flow of cloning Administrator and
@@ -381,26 +460,27 @@ class Permissions:
         rank = TIER_ORDER.index(tier)
         return any(TIER_ORDER.index(role.tier_max) >= rank for role in self.roles)
 
-    def attribute_hidden(self, name: str) -> bool:
-        """Return True if this attribute must be withheld.
+    def attribute_hidden(self, entity_id: str, name: str) -> bool:
+        """Return True if an attribute must be withheld from this entity.
 
-        Attribute rules apply to every entity the role can already see -- an
-        entity it cannot see is gone entirely, attributes and all. Hiding
-        `latitude` is the case this exists for: letting someone see that you are
-        home without seeing where you are.
+        Rules are targeted: hiding `latitude` on people does not hide it on the
+        zones that define where home is. A rule with no target still covers
+        everything, which is what an untargeted rule means.
         """
         if self.pass_through:
             return False
         return any(
-            fnmatch(name, pattern)
+            rule.covers(entity_id) and rule.hides(name)
             for role in self.roles
-            for pattern in role.attribute_deny
+            for rule in role.attribute_rules
         )
 
     @property
     def hides_attributes(self) -> bool:
         """Return True if any role withholds attributes."""
-        return not self.pass_through and any(role.attribute_deny for role in self.roles)
+        return not self.pass_through and any(
+            role.attribute_rules for role in self.roles
+        )
 
     def app_allowed(self, url_path: str) -> bool:
         """Return True if any role permits this app.

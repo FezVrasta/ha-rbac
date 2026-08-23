@@ -68,8 +68,10 @@ reason this exists is location:
 > Your partner's phone shows as **home**. It does not show *where* home is, or
 > where they were an hour ago.
 
-Name the attributes to hide — `latitude`, `longitude`, `gps_*` — and they are
-gone from the dashboard, the state API, the live updates, and templates.
+Rules are targeted the same way entity rules are, so hiding `latitude` on people
+and trackers leaves the zones that define where home is working normally. Named
+attributes are gone from the dashboard, the state API, the live updates, and
+templates.
 
 ### 📱 Apps, dashboards and add-ons — where they can go
 
@@ -256,8 +258,6 @@ unfiltered Home Assistant. (Swap the port if you chose the alternative layout.)
 
 ## What it can't do yet
 
-- **Attribute rules apply everywhere.** Hiding `latitude` hides it on every
-  entity that role can see, not just the one you had in mind.
 - **Automations aren't affected.** They run as the system, not as a person, so an
   automation can still touch anything. Same as stock Home Assistant.
 - **Add-on control is tested only in theory.** Add-ons need Home Assistant OS or

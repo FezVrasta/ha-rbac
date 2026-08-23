@@ -322,11 +322,17 @@ async def test_an_empty_denied_domain_is_still_withheld(hass: HomeAssistant) -> 
     assert check("lock.anything", POLICY_READ) is False
 
 
-def _attr_ctx(hass: HomeAssistant, hidden: set[str]) -> FilterContext:
-    """Return a context that withholds the given attribute names."""
-    return FilterContext(
-        hass, lambda entity_id, key: True, None, lambda name: name in hidden
-    )
+def _attr_ctx(
+    hass: HomeAssistant, hidden: set[str], only_on: str | None = None
+) -> FilterContext:
+    """Return a context withholding names, optionally only on one entity."""
+
+    def is_hidden(entity_id: str, name: str) -> bool:
+        if only_on is not None and entity_id != only_on:
+            return False
+        return name in hidden
+
+    return FilterContext(hass, lambda entity_id, key: True, None, is_hidden)
 
 
 async def test_hidden_attributes_are_stripped_from_states(
@@ -511,3 +517,37 @@ async def test_the_dashboard_listing_hides_denied_dashboards(
         ],
     )
     assert [d["url_path"] for d in result] == ["map"]
+
+
+async def test_an_attribute_rule_only_touches_the_entities_it_targets(
+    hass: HomeAssistant,
+) -> None:
+    """Hiding a person's location must not hide the zone that defines home."""
+    result = REGISTRY.filter_result(
+        "get_states",
+        _attr_ctx(hass, {"latitude", "longitude"}, only_on="person.me"),
+        [
+            {"entity_id": "person.me", "attributes": {"latitude": 51.5, "name": "Me"}},
+            {"entity_id": "zone.home", "attributes": {"latitude": 51.5, "radius": 100}},
+        ],
+    )
+    assert result[0]["attributes"] == {"name": "Me"}
+    assert result[1]["attributes"] == {"latitude": 51.5, "radius": 100}
+
+
+async def test_a_targeted_rule_applies_per_entity_in_a_subscription(
+    hass: HomeAssistant,
+) -> None:
+    """The compressed stream is keyed by entity, so each gets its own rules."""
+    event = REGISTRY.filter_event(
+        "subscribe_entities",
+        _attr_ctx(hass, {"latitude"}, only_on="person.me"),
+        {
+            "a": {
+                "person.me": {"s": "home", "a": {"latitude": 51.5, "name": "Me"}},
+                "zone.home": {"s": "zoning", "a": {"latitude": 51.5, "radius": 100}},
+            }
+        },
+    )
+    assert event["a"]["person.me"]["a"] == {"name": "Me"}
+    assert event["a"]["zone.home"]["a"] == {"latitude": 51.5, "radius": 100}

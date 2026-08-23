@@ -38,7 +38,7 @@ class FilterContext:
         hass: HomeAssistant,
         check: CheckFn,
         app_allowed: "Callable[[str], bool] | None" = None,
-        attribute_hidden: "Callable[[str], bool] | None" = None,
+        attribute_hidden: "Callable[[str, str], bool] | None" = None,
     ) -> None:
         """Initialise the context."""
         self.hass = hass
@@ -51,17 +51,22 @@ class FilterContext:
         """Return True if any attribute is withheld from this user."""
         return self._attribute_hidden is not None
 
-    def strip_attributes(self, attributes: Any) -> Any:
-        """Remove withheld attributes from a mapping of them."""
+    def strip_attributes(self, entity_id: str | None, attributes: Any) -> Any:
+        """Remove withheld attributes from one entity's mapping of them.
+
+        `entity_id` is None where a response does not say which entity the
+        attributes belong to. Every rule is applied in that case, since the
+        alternative is disclosing something a rule was written to withhold.
+        """
         if self._attribute_hidden is None or not isinstance(attributes, dict):
             return attributes
         return {
             name: value
             for name, value in attributes.items()
-            if not self._attribute_hidden(name)
+            if not self._hidden(entity_id, name)
         }
 
-    def strip_attribute_names(self, names: Any) -> Any:
+    def strip_attribute_names(self, entity_id: str | None, names: Any) -> Any:
         """Remove withheld names from a list of them.
 
         A removal diff names attributes without their values, and forwarding one
@@ -69,7 +74,15 @@ class FilterContext:
         """
         if self._attribute_hidden is None or not isinstance(names, list):
             return names
-        return [name for name in names if not self._attribute_hidden(name)]
+        return [name for name in names if not self._hidden(entity_id, name)]
+
+    def _hidden(self, entity_id: str | None, name: str) -> bool:
+        """Return True if an attribute is withheld here."""
+        if self._attribute_hidden is None:
+            return False
+        if entity_id is not None:
+            return self._attribute_hidden(entity_id, name)
+        return self._attribute_hidden(UNKNOWN_ENTITY, name)
 
     @classmethod
     def for_user(cls, hass: HomeAssistant, permissions: Any) -> "FilterContext":
@@ -160,6 +173,11 @@ class FilterRegistry:
 REGISTRY = FilterRegistry()
 
 
+# Stands in for "some entity, we do not know which". A rule targeting a domain
+# or a specific entity will not match it, but an untargeted rule will -- which
+# is the conservative reading when a response does not say what it describes.
+UNKNOWN_ENTITY = "\x00unknown.\x00unknown"
+
 # `config/entity_registry/list_for_display` spells entity_id this way.
 DISPLAY_ENTITY_ID = "ei"
 
@@ -202,10 +220,14 @@ def prune(ctx: FilterContext, node: Any) -> Any:
         out: dict[str, Any] = {}
         for key, value in node.items():
             if key == "attributes" and isinstance(value, dict):
-                out[key] = ctx.strip_attributes(value)
+                out[key] = ctx.strip_attributes(
+                    entity_id if isinstance(entity_id, str) else None, value
+                )
                 continue
             if compressed and key == COMPRESSED_ATTRIBUTES and isinstance(value, dict):
-                out[key] = ctx.strip_attributes(value)
+                out[key] = ctx.strip_attributes(
+                    entity_id if isinstance(entity_id, str) else None, value
+                )
                 continue
             if key in ("entity_id", "entity_ids") and isinstance(value, list):
                 out[key] = [
@@ -242,7 +264,13 @@ def _strip_state(ctx: FilterContext, state: Any) -> Any:
     """Remove withheld attributes from an uncompressed state object."""
     if not isinstance(state, dict) or "attributes" not in state:
         return state
-    return {**state, "attributes": ctx.strip_attributes(state["attributes"])}
+    entity_id = state.get("entity_id")
+    return {
+        **state,
+        "attributes": ctx.strip_attributes(
+            entity_id if isinstance(entity_id, str) else None, state["attributes"]
+        ),
+    }
 
 
 @REGISTRY.event("subscribe_entities")
@@ -261,7 +289,7 @@ def _filter_entity_event(ctx: FilterContext, event: Any) -> Any:
     for key in (ENTITY_EVENT_ADD, ENTITY_EVENT_CHANGE):
         if isinstance(section := event.get(key), dict):
             kept = {
-                entity_id: _strip_compressed(ctx, key, value)
+                entity_id: _strip_compressed(ctx, entity_id, key, value)
                 for entity_id, value in section.items()
                 if ctx.readable(entity_id)
             }
@@ -276,7 +304,7 @@ def _filter_entity_event(ctx: FilterContext, event: Any) -> Any:
     return out or None
 
 
-def _strip_compressed(ctx: FilterContext, key: str, value: Any) -> Any:
+def _strip_compressed(ctx: FilterContext, entity_id: str, key: str, value: Any) -> Any:
     """Remove withheld attributes from one entity's compressed state or diff.
 
     Stripping the same names everywhere is enough -- the client never learns the
@@ -291,7 +319,9 @@ def _strip_compressed(ctx: FilterContext, key: str, value: Any) -> Any:
             return value
         return {
             **value,
-            COMPRESSED_ATTRIBUTES: ctx.strip_attributes(value[COMPRESSED_ATTRIBUTES]),
+            COMPRESSED_ATTRIBUTES: ctx.strip_attributes(
+                entity_id, value[COMPRESSED_ATTRIBUTES]
+            ),
         }
 
     out = dict(value)
@@ -299,11 +329,13 @@ def _strip_compressed(ctx: FilterContext, key: str, value: Any) -> Any:
     if isinstance(added, dict) and COMPRESSED_ATTRIBUTES in added:
         out[STATE_DIFF_ADDITIONS] = {
             **added,
-            COMPRESSED_ATTRIBUTES: ctx.strip_attributes(added[COMPRESSED_ATTRIBUTES]),
+            COMPRESSED_ATTRIBUTES: ctx.strip_attributes(
+                entity_id, added[COMPRESSED_ATTRIBUTES]
+            ),
         }
     removed = out.get(STATE_DIFF_REMOVALS)
     if isinstance(removed, dict) and COMPRESSED_ATTRIBUTES in removed:
-        names = ctx.strip_attribute_names(removed[COMPRESSED_ATTRIBUTES])
+        names = ctx.strip_attribute_names(entity_id, removed[COMPRESSED_ATTRIBUTES])
         if names:
             out[STATE_DIFF_REMOVALS] = {**removed, COMPRESSED_ATTRIBUTES: names}
         else:

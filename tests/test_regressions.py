@@ -851,7 +851,7 @@ async def test_a_template_reading_attributes_is_refused_when_any_are_hidden(
         hass,
         _role(
             allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
-            attributes={"deny": ["latitude", "longitude"]},
+            attributes={"rules": [{"ids": [], "names": ["latitude", "longitude"]}]},
         ),
         _lookup(hass),
     )
@@ -902,19 +902,78 @@ async def test_a_role_without_attribute_rules_keeps_templates(
 async def test_attribute_patterns_match_by_glob(hass: HomeAssistant) -> None:
     """`gps_*` is easier to write than every attribute a tracker reports."""
     role = compile_role(
-        hass, _role(attributes={"deny": ["gps_*", "latitude"]}), _lookup(hass)
+        hass,
+        _role(attributes={"rules": [{"ids": [], "names": ["gps_*", "latitude"]}]}),
+        _lookup(hass),
     )
     perms = Permissions(roles=[role])
-    assert perms.attribute_hidden("gps_accuracy") is True
-    assert perms.attribute_hidden("latitude") is True
-    assert perms.attribute_hidden("friendly_name") is False
+    assert perms.attribute_hidden("person.me", "gps_accuracy") is True
+    assert perms.attribute_hidden("person.me", "latitude") is True
+    assert perms.attribute_hidden("person.me", "friendly_name") is False
     assert perms.hides_attributes is True
+
+
+async def test_an_attribute_rule_is_scoped_to_its_target(
+    hass: HomeAssistant,
+) -> None:
+    """Hiding a person's location must leave the zone that defines home alone."""
+    role = compile_role(
+        hass,
+        _role(
+            attributes={
+                "rules": [
+                    {
+                        "target": "domains",
+                        "ids": ["person", "device_tracker"],
+                        "names": ["latitude", "longitude"],
+                    }
+                ]
+            }
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+    assert perms.attribute_hidden("person.me", "latitude") is True
+    assert perms.attribute_hidden("device_tracker.phone", "latitude") is True
+    assert perms.attribute_hidden("zone.home", "latitude") is False
+
+
+async def test_an_attribute_rule_can_name_one_entity(hass: HomeAssistant) -> None:
+    """The narrowest case: this lock's code, not every lock's."""
+    role = compile_role(
+        hass,
+        _role(
+            attributes={
+                "rules": [
+                    {
+                        "target": "entity_ids",
+                        "ids": ["lock.front_door"],
+                        "names": ["code"],
+                    }
+                ]
+            }
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+    assert perms.attribute_hidden("lock.front_door", "code") is True
+    assert perms.attribute_hidden("lock.back_door", "code") is False
+
+
+async def test_the_original_untargeted_shape_still_works(
+    hass: HomeAssistant,
+) -> None:
+    """Roles written before rules existed must keep working after an upgrade."""
+    role = compile_role(hass, _role(attributes={"deny": ["latitude"]}), _lookup(hass))
+    perms = Permissions(roles=[role])
+    assert perms.attribute_hidden("person.me", "latitude") is True
+    assert perms.attribute_hidden("zone.home", "latitude") is True
 
 
 async def test_the_owner_keeps_every_attribute(hass: HomeAssistant) -> None:
     """Pass-through means pass-through."""
     perms = Permissions(pass_through=True)
-    assert perms.attribute_hidden("latitude") is False
+    assert perms.attribute_hidden("person.me", "latitude") is False
     assert perms.hides_attributes is False
 
 
@@ -931,14 +990,16 @@ async def test_every_transport_gets_the_same_filter_context(
         hass,
         _role(
             allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
-            attributes={"deny": ["latitude"]},
+            attributes={"rules": [{"ids": [], "names": ["latitude"]}]},
         ),
         _lookup(hass),
     )
     ctx = FilterContext.for_user(hass, Permissions(roles=[role]))
 
     assert ctx.hides_attributes is True
-    assert ctx.strip_attributes({"latitude": 51.5, "battery": 80}) == {"battery": 80}
+    assert ctx.strip_attributes("person.me", {"latitude": 51.5, "battery": 80}) == {
+        "battery": 80
+    }
 
     # And a role with no attribute rules must still pay nothing.
     plain = FilterContext.for_user(
