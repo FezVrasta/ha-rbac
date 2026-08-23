@@ -23,6 +23,7 @@ from homeassistant.helpers import (
 from homeassistant.helpers import (
     label_registry as lr,
 )
+from homeassistant.loader import async_get_integration
 
 from . import websocket_api
 from .catalog import Catalog
@@ -36,6 +37,7 @@ from .const import (
     DEFAULT_BIND_ADDRESS,
     DEFAULT_PROXY_PORT,
     DEFAULT_UPSTREAM_HOST,
+    DOMAIN,
     PANEL_URL_PATH,
     STATIC_URL_PATH,
 )
@@ -161,11 +163,15 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
             ]
         )
         hass.data[DATA_STATIC_PATH_REGISTERED] = True
+    # The panel module is fetched by the browser and cached. Without a version
+    # in the URL, upgrading the integration leaves people on the old panel until
+    # they clear their cache, which is not something to ask of them.
+    integration = await async_get_integration(hass, DOMAIN)
     await panel_custom.async_register_panel(
         hass,
         frontend_url_path=PANEL_URL_PATH,
         webcomponent_name="ha-rbac-panel",
-        module_url=f"{STATIC_URL_PATH}/ha-rbac-panel.js",
+        module_url=f"{STATIC_URL_PATH}/ha-rbac-panel.js?v={integration.version}",
         sidebar_title="Access Control",
         sidebar_icon="mdi:shield-account",
         # Defence in depth only; the real gate is require_admin on the commands.
