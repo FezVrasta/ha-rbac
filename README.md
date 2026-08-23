@@ -9,7 +9,7 @@
 <p align="center">
   <img src="https://github.com/FezVrasta/ha-rbac/actions/workflows/ci.yml/badge.svg" alt="CI">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="alpha">
-  <img src="https://img.shields.io/badge/tested%20on-HA%202026.9-41BDF5" alt="tested on Home Assistant 2026.9">
+  <img src="https://img.shields.io/badge/Home%20Assistant-2026.8%2B-41BDF5" alt="Home Assistant">
   <img src="https://img.shields.io/badge/config-no%20YAML-brightgreen" alt="no YAML">
   <img src="https://img.shields.io/badge/licence-MIT-blue" alt="MIT">
 </p>
@@ -24,11 +24,8 @@
 
 > ### ⚠️ This is an alpha
 >
-> It works. It has 184 tests, it has been run against a real Home Assistant, and
-> it has been through two code reviews and a penetration test — which found four
-> leaks, all since fixed and each pinned by a test.
->
-> But it is new, and it has not been through a long tail of real households.
+> It works, it's tested, and it's been through review and a round of trying to
+> break it. But it's new, and it hasn't lived in real houses yet.
 > **Don't make it the only thing standing between someone and your front door
 > yet.** Try it, break it, and
 > [tell me what happened](https://github.com/FezVrasta/ha-rbac/issues).
@@ -216,11 +213,10 @@ Full detail in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Install
 
-Developed against Home Assistant **2026.9**, with the test suite running against
-**2026.8**. It reads a few Home Assistant internals to work out what is
-administrative, so treat other versions as untested rather than unsupported — it
-checks at startup whether it can still make sense of them, and refuses to enforce
-rather than guessing.
+It reads a few Home Assistant internals to work out what is administrative, so
+it checks at startup whether it can still make sense of them — and refuses to
+enforce rather than guessing if it can't. Recent versions only; the CI badge
+above shows what it's currently built against.
 
 **HACS** — add this repository as a custom repository, install, restart.
 

@@ -18,7 +18,7 @@ Decisions follow four gates:
 
 1. **Pass-through** — owner, system users, and full-access roles skip all parsing.
 2. **Tier gate** — HA's own `require_admin` decorator, introspected at runtime. This alone
-   covers 307 of 478 commands without naming any of them.
+   covers the large majority of the command surface without naming any of it.
 3. **Resource gate** — a recursive walk of the payload collecting `entity_id`, `device_id`,
    `area_id`, `label_id`, `floor_id` and `target`, expanded through the registries.
 4. **Boundedness gate** — *an optional resource field does not bound a command*. This is
