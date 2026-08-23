@@ -175,6 +175,12 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         module_url=f"{STATIC_URL_PATH}/ha-rbac-panel.js?v={integration.version}",
         sidebar_title="Access Control",
         sidebar_icon="mdi:shield-account",
+        # Also reachable from Settings, through this integration's own card:
+        # the frontend looks for a panel whose config_panel_domain matches an
+        # integration and offers it as that integration's Configure page. There
+        # is no way to add an entry to the Settings menu itself -- that list is
+        # compiled into the frontend bundle, not served from the backend.
+        config_panel_domain=DOMAIN,
         # Defence in depth only; the real gate is require_admin on the commands.
         require_admin=True,
     )
