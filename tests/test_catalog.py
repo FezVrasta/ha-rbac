@@ -9,6 +9,7 @@ fails *open*. These tests are the alarm for that.
 import pathlib
 from functools import wraps
 
+import homeassistant
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
@@ -21,7 +22,9 @@ from custom_components.ha_rbac.catalog import (
 from custom_components.ha_rbac.const import TIER_ADMIN, TIER_OPEN
 from testsupport.ast_oracle import scan
 
-CORE_ROOT = pathlib.Path("/Users/federicozivolo/Developer/core/homeassistant")
+# The oracle scans the Home Assistant source that is actually installed, so it
+# always agrees with the runtime the rest of the suite exercises.
+CORE_ROOT = pathlib.Path(homeassistant.__file__).parent
 
 
 @pytest.fixture(name="catalog")
