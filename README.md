@@ -2,7 +2,8 @@
 
 <p align="center">
   <strong>Give everyone in the house their own Home Assistant.</strong><br>
-  Guests see the lights. Kids don't see the locks. You see everything.
+  Guests see the lights. Kids get their own dashboard. Nobody but you
+  touches the locks, the add-ons, or the settings.
 </p>
 
 <p align="center">
@@ -39,23 +40,61 @@ every camera, every lock, every sensor. There's no way to hand your house guest 
 dashboard with just the living room lights on it, or to give your kid a tablet
 that can't unlock the front door.
 
-## What you get
+## What you can control
 
-🎭 **Roles that actually mean something** — read, control, or nothing, per entity,
-per device, per area, per label, or per floor, chosen with the same pickers you
-use everywhere else in Home Assistant.
+Three things, set per role:
 
-🙈 **Hidden means hidden** — a restricted entity doesn't appear greyed out. It
-isn't in the dashboard, the search, the history, or the API. As far as that
-person's Home Assistant is concerned, it doesn't exist.
+### 🏠 Entities — what they can see and touch
 
-🖱️ **No YAML** — roles are created and assigned in a normal Home Assistant panel.
+Pick **no access**, **read**, or **read and control**, as a baseline plus
+exceptions. Target them however you already think about your house:
 
-🔌 **Nothing to maintain** — it reads Home Assistant's own permission markings at
-startup, so it keeps working as Home Assistant adds features.
+| | |
+| --- | --- |
+| **Areas** | "nothing in the bedroom" |
+| **Domains** | "no locks, no cameras" |
+| **Labels** | "only what I tagged `shared`" |
+| **Floors** | "the ground floor only" |
+| **Entities / devices** | one specific thing |
 
-🏠 **Your setup is untouched** — no core files patched, no automations rewritten,
+Chosen with the same pickers you use everywhere else in Home Assistant.
+
+### 📱 Apps, dashboards and add-ons — where they can go
+
+Everything in the sidebar, ticked or unticked:
+
+| | |
+| --- | --- |
+| **Dashboards** | give the kids their own and hide yours |
+| **Add-ons** | no File Editor, no Terminal, no Node-RED |
+| **Built-in screens** | Energy, History, Logbook, Map, Media, To-do |
+| **Custom panels** | anything else that shows up there |
+
+Home Assistant treats all of these as the same kind of thing, so this integration
+does too — one list, read from your instance, whatever you happen to have
+installed.
+
+### ⚙️ Commands — what they can change
+
+**Ordinary use** or **everything, including settings and configuration**. The
+administrative half is recognised from Home Assistant's own markings rather than
+a list here, so it stays right as Home Assistant grows.
+
+---
+
+### And the parts that make it usable
+
+🙈 **Hidden means hidden.** A restricted entity isn't greyed out — it isn't in
+the dashboard, the search, the history, or the API. As far as that person's Home
+Assistant is concerned, it doesn't exist.
+
+🖱️ **No YAML.** Everything above is done in a normal Home Assistant panel.
+
+🏠 **Your setup is untouched.** No core files patched, no automations rewritten,
 no entities renamed. Uninstall and everything is exactly as it was.
+
+📋 **A log of every refusal**, so when someone says "it stopped working" you can
+see what and why.
 
 ## Take a look
 
@@ -97,8 +136,33 @@ There's a longer explanation in [docs/DESIGN.md](docs/DESIGN.md) if you want it.
 
 ## Before you install
 
-**One line of config, and it matters.** Because this works by sitting in front of
-Home Assistant, Home Assistant has to stop answering the door itself:
+This works by sitting in front of Home Assistant, so Home Assistant has to stop
+answering the door itself. **One line of config, and it matters** — skip it and
+this does nothing at all, because anyone can just knock on the old door. It warns
+you at startup if you forget.
+
+### Recommended: keep everyone on `:8123`
+
+Move Home Assistant to a port only this integration can reach, and let it answer
+on the address everyone already uses:
+
+```yaml
+# configuration.yaml
+http:
+  server_host: 127.0.0.1
+  server_port: 8124
+```
+
+Nothing else changes. Bookmarks, the companion app, your Google or Alexa setup,
+anything talking to `:8123` — all of it keeps working, and **nobody gets signed
+out**, because as far as browsers are concerned it is the same address as before.
+
+In Docker, keep publishing `8123` and don't publish `8124`.
+
+### Alternative: leave Home Assistant where it is
+
+If you would rather not move it, keep Home Assistant on `8123` and have people
+visit `:8124` instead:
 
 ```yaml
 # configuration.yaml
@@ -106,9 +170,14 @@ http:
   server_host: 127.0.0.1
 ```
 
-Then everyone visits **port 8124** instead of 8123. That's it — but skip it and
-this does nothing at all, because anyone can just knock on the old door. It warns
-you at startup if you forget.
+The catch is that `:8124` is a different address to a browser, so everyone signs
+in once more, and anything pointed at `:8123` needs updating.
+
+> **Either way, if this integration stops loading, Home Assistant is only
+> reachable from the machine it runs on.** That is deliberate — it fails closed
+> rather than throwing the doors open — but it means keeping a way in:
+> `ssh -L 8124:127.0.0.1:8124 your-ha-host` and browse `localhost:8124`. Set that
+> up before you need it.
 
 <details>
 <summary><strong>What this protects against, honestly</strong></summary>
@@ -137,7 +206,9 @@ Full detail in [docs/DESIGN.md](docs/DESIGN.md).
 **By hand** — copy `custom_components/ha_rbac` into your `config/custom_components`,
 restart.
 
-Then add **Access Control** from Settings → Devices & Services.
+Then add **Access Control** from Settings → Devices & Services. The ports it
+offers match the recommended layout above; change them if you chose the
+alternative.
 
 Nothing changes until you assign someone a role, so it's safe to install and
 look around first.
@@ -145,8 +216,9 @@ look around first.
 ## Your first role
 
 1. Open **Access Control** in the sidebar.
-2. **Clone** *Read only*, name it something like *Guest*, and add the domains or
-   areas you want to hide under **Deny**.
+2. **Clone** *Read only*, name it something like *Guest*, and add the areas or
+   domains you want to hide as exceptions. Untick any apps, dashboards or
+   add-ons they shouldn't reach.
 3. Go to **Users**, pick the person, choose the role, save.
 
 <p align="center">
@@ -161,8 +233,9 @@ so you can roll this out one person at a time.
 ### Locked yourself out?
 
 You can't lock the owner account out — that's built in and can't be changed from
-the panel. Failing that, `ssh -L 8123:127.0.0.1:8123 your-ha-host` and browse
-`localhost:8123` for plain unfiltered Home Assistant.
+the panel. Failing that, tunnel to Home Assistant itself:
+`ssh -L 8124:127.0.0.1:8124 your-ha-host`, then browse `localhost:8124` for plain
+unfiltered Home Assistant. (Swap the port if you chose the alternative layout.)
 
 ## What it can't do yet
 
@@ -170,8 +243,14 @@ the panel. Failing that, `ssh -L 8123:127.0.0.1:8123 your-ha-host` and browse
   about that light. No hiding individual attributes.
 - **Automations aren't affected.** They run as the system, not as a person, so an
   automation can still touch anything. Same as stock Home Assistant.
-- **One extra login.** Moving everyone from `:8123` to `:8124` signs them out once.
-- **Not tried on Home Assistant OS.** See the note above about add-ons.
+- **Add-on control is tested only in theory.** Add-ons need Home Assistant OS or
+  Supervised, which this hasn't run on yet. The mechanism is the same one that
+  hides dashboards and built-in screens, and that part is tested — but if you
+  hand someone a link to an add-on they already had open, that link keeps
+  working until it expires.
+- **Hiding an app hides it well, but a determined person knows what exists.**
+  A denied dashboard is gone from the sidebar and its config is refused; it does
+  not pretend the URL was never there.
 
 ## Contributing
 

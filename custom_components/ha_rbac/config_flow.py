@@ -25,6 +25,7 @@ from .const import (
     DEFAULT_BIND_ADDRESS,
     DEFAULT_PROXY_PORT,
     DEFAULT_UPSTREAM_HOST,
+    DEFAULT_UPSTREAM_PORT,
     DOMAIN,
 )
 from .util import async_upstream_is_loopback_only
@@ -51,7 +52,7 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
             ): TextSelector(),
             vol.Required(
                 CONF_UPSTREAM_PORT,
-                default=defaults.get(CONF_UPSTREAM_PORT, 8123),
+                default=defaults.get(CONF_UPSTREAM_PORT, DEFAULT_UPSTREAM_PORT),
             ): port,
         }
     )

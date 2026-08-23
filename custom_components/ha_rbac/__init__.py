@@ -37,6 +37,7 @@ from .const import (
     DEFAULT_BIND_ADDRESS,
     DEFAULT_PROXY_PORT,
     DEFAULT_UPSTREAM_HOST,
+    DEFAULT_UPSTREAM_PORT,
     DOMAIN,
     PANEL_URL_PATH,
     STATIC_URL_PATH,
@@ -113,7 +114,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "can present the token they already have directly to port %s. Set "
             "http.server_host to 127.0.0.1 in configuration.yaml and expose only "
             "the proxy port",
-            config.get(CONF_UPSTREAM_PORT, 8123),
+            config.get(CONF_UPSTREAM_PORT, DEFAULT_UPSTREAM_PORT),
         )
 
     if catalog.degraded:
@@ -130,7 +131,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             decider,
             denylog,
             upstream_host=config.get(CONF_UPSTREAM_HOST, DEFAULT_UPSTREAM_HOST),
-            upstream_port=config.get(CONF_UPSTREAM_PORT, 8123),
+            upstream_port=config.get(CONF_UPSTREAM_PORT, DEFAULT_UPSTREAM_PORT),
             bind_address=config.get(CONF_BIND_ADDRESS, DEFAULT_BIND_ADDRESS),
             port=config.get(CONF_PROXY_PORT, DEFAULT_PROXY_PORT),
         )
