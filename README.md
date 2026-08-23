@@ -1,200 +1,183 @@
-# RBAC Access Control for Home Assistant
+<h1 align="center">Access Control for Home Assistant</h1>
 
-Role-based access control for Home Assistant, enforced by a filtering reverse proxy
-that runs inside HA as a custom integration.
+<p align="center">
+  <strong>Give everyone in the house their own Home Assistant.</strong><br>
+  Guests see the lights. Kids don't see the locks. You see everything.
+</p>
 
-Home Assistant ships two coarse access mechanisms: a boolean `is_admin`, and an
-entity-only policy engine that is checked in roughly fifteen places, cannot express
-denial, and has no API to create or edit the groups it attaches to. This integration
-adds real roles — read/control/edit over entities, devices, areas, labels and floors —
-without patching core.
+<p align="center">
+  <img src="https://img.shields.io/badge/status-alpha-orange" alt="alpha">
+  <img src="https://img.shields.io/badge/Home%20Assistant-2025.1%2B-41BDF5" alt="Home Assistant 2025.1+">
+  <img src="https://img.shields.io/badge/config-no%20YAML-brightgreen" alt="no YAML">
+  <img src="https://img.shields.io/badge/licence-MIT-blue" alt="MIT">
+</p>
+
+<p align="center">
+  <img src="screenshots/guest-dashboard.jpg" alt="A guest's dashboard, with the locks filtered out" width="820">
+</p>
+
+<p align="center"><em>A guest's dashboard. Their lights are there. The front door lock isn't.</em></p>
 
 ---
 
-## Read this first: the security boundary
+> ### ⚠️ This is an alpha
+>
+> It works, it has 160 tests, and it has been run against a real Home Assistant —
+> but it is new, it has had one round of review, and it has not been through a
+> long tail of real households. **Don't make it the only thing standing between
+> someone and your front door yet.** Try it, break it, and
+> [tell me what happened](https://github.com/FezVrasta/ha-rbac/issues).
 
-**RBAC applies only to traffic through the proxy. Home Assistant must not be reachable
-from the network, or the proxy is decorative.**
+---
+
+## The problem
+
+Home Assistant has two kinds of user: **administrator**, and **everyone else**.
+
+That's the whole model. "Everyone else" still sees every device in your home —
+every camera, every lock, every sensor. There's no way to hand your house guest a
+dashboard with just the living room lights on it, or to give your kid a tablet
+that can't unlock the front door.
+
+## What you get
+
+🎭 **Roles that actually mean something** — read, control, or nothing, per entity,
+per device, per area, per label, or per floor.
+
+🙈 **Hidden means hidden** — a restricted entity doesn't appear greyed out. It
+isn't in the dashboard, the search, the history, or the API. As far as that
+person's Home Assistant is concerned, it doesn't exist.
+
+🖱️ **No YAML** — roles are created and assigned in a normal Home Assistant panel.
+
+🔌 **Nothing to maintain** — it reads Home Assistant's own permission markings at
+startup, so it keeps working as Home Assistant adds features.
+
+🏠 **Your setup is untouched** — no core files patched, no automations rewritten,
+no entities renamed. Uninstall and everything is exactly as it was.
+
+## Take a look
+
+<table>
+<tr>
+<td width="50%">
+<img src="screenshots/guest-search-no-locks.jpg" alt="Searching for locks as a guest finds nothing">
+<p align="center"><em>A guest searching for "lock". There's nothing to find.</em></p>
+</td>
+<td width="50%">
+<img src="screenshots/owner-sidebar.jpg" alt="The owner's sidebar, with Access Control and Settings">
+<p align="center"><em>Same house, same address — signed in as yourself.</em></p>
+</td>
+</tr>
+<tr>
+<td width="50%">
+<img src="screenshots/panel-roles.jpg" alt="The role editor">
+<p align="center"><em>Build a role. Three come built in, and you can clone any of them.</em></p>
+</td>
+<td width="50%">
+<img src="screenshots/panel-denials.jpg" alt="The denials log">
+<p align="center"><em>When someone says "it's not working", look here first.</em></p>
+</td>
+</tr>
+</table>
+
+## How it works, in one minute
+
+It sits in front of Home Assistant and reads everything going past. When your
+guest's browser asks for the state of the house, it answers — minus the parts
+they're not allowed to see. When it asks to unlock a door, it says no.
+
+The clever part is that it doesn't ship a list of what's dangerous. Home
+Assistant already marks its own administrative features, and this reads those
+markings live, on your instance, with your integrations installed. That's why it
+doesn't need updating every time Home Assistant does.
+
+There's a longer explanation in [docs/DESIGN.md](docs/DESIGN.md) if you want it.
+
+## Before you install
+
+**One line of config, and it matters.** Because this works by sitting in front of
+Home Assistant, Home Assistant has to stop answering the door itself:
 
 ```yaml
 # configuration.yaml
 http:
-  server_host: 127.0.0.1   # HA listens on loopback only; port stays 8123
+  server_host: 127.0.0.1
 ```
 
-The proxy then binds `:8124` on the public interface and forwards to `127.0.0.1:8123`.
-Point browsers at `:8124`. In Docker, publish only 8124.
+Then everyone visits **port 8124** instead of 8123. That's it — but skip it and
+this does nothing at all, because anyone can just knock on the old door. It warns
+you at startup if you forget.
 
-This matters because **an access token is not port-scoped**. A token minted through the
-proxy works verbatim against Home Assistant's own listener. If `server_host` is unset,
-reverted during an upgrade, or the port is published, every user's existing token grants
-full unfiltered access and nothing warns you at request time. The integration checks this
-at startup and logs loudly, but it cannot enforce it.
+<details>
+<summary><strong>What this protects against, honestly</strong></summary>
 
-### What this does and does not protect against
+<br>
 
-**Holds against anyone on the network.** A household member with a valid non-admin login
-cannot read or control what their role forbids.
+**It holds** against anyone on your network. Someone with a guest login cannot
+see or touch what their role forbids, from a browser, the app, or the API.
 
-**Does not hold against anyone with host access.** Loopback is reachable with a shell or
-code execution on the HA machine, and anyone with that can read `.storage/auth`, which
-contains every refresh token and its signing key. They can mint an access token for the
-owner and bypass Home Assistant's own authentication entirely — not just this layer. That
-is a precondition which already loses, so the proxy does not try to close it.
+**It doesn't hold** against someone with a login *on the machine Home Assistant
+runs on*. Anyone with a shell there can read Home Assistant's own credential
+store and impersonate you — that beats Home Assistant's security, not just this.
+If that's a person in your house, don't give them a shell account.
 
-Two consequences worth stating plainly:
+**Home Assistant OS users:** add-ons talk to Home Assistant through a private
+channel that nothing can sit in front of. Any add-on you install is outside this.
 
-- A **non-admin with a legitimate shell account** on the HA host is not contained. The
-  answer is to not give them a shell, or to run HA in a container they cannot enter.
-- Under Supervisor, **add-ons reach HA over the Supervisor Unix socket** and
-  auto-authenticate with no token at all. Any add-on with `homeassistant_api: true` is
-  outside this boundary.
+Full detail in [docs/DESIGN.md](docs/DESIGN.md).
 
-### Recovery if you lock yourself out
+</details>
 
-The owner account is always pass-through, in code, and cannot be restricted from the UI.
-Failing that, tunnel to Home Assistant directly:
+## Install
 
-```bash
-ssh -L 8123:127.0.0.1:8123 <your-ha-host>
-# then browse http://localhost:8123 for unfiltered stock HA
-```
+**HACS** — add this repository as a custom repository, install, restart.
 
-Or delete `.storage/ha_rbac` and restart to return to derived defaults. All recovery paths
-require host access — if you administer HA only through a browser, set up the tunnel
-before you enable enforcement.
+**By hand** — copy `custom_components/ha_rbac` into your `config/custom_components`,
+restart.
 
----
+Then add **Access Control** from Settings → Devices & Services.
 
-## Design
+Nothing changes until you assign someone a role, so it's safe to install and
+look around first.
 
-The permission surface is **derived from Home Assistant's own runtime registries**, not
-from a table that has to be updated every release:
+## Your first role
 
-| Source | Yields |
-| --- | --- |
-| `hass.data["websocket_api"]` | every WS command and its voluptuous schema |
-| the handler's `__wrapped__` chain | whether HA itself marks the command admin-only |
-| entity / device / area / label / floor registries | the resource graph |
+1. Open **Access Control** in the sidebar.
+2. **Clone** *Read only*, name it something like *Guest*, and add the domains or
+   areas you want to hide under **Deny**.
+3. Go to **Users**, pick the person, choose the role, save.
 
-Decisions follow four gates:
+<p align="center">
+  <img src="screenshots/panel-users.jpg" alt="Assigning a role to a user" width="820">
+</p>
 
-1. **Pass-through** — owner, system users, and full-access roles skip all parsing.
-2. **Tier gate** — HA's own `require_admin` decorator, introspected at runtime. This alone
-   covers 307 of 478 commands without naming any of them.
-3. **Resource gate** — a recursive walk of the payload collecting `entity_id`, `device_id`,
-   `area_id`, `label_id`, `floor_id` and `target`, expanded through the registries.
-4. **Boundedness gate** — *an optional resource field does not bound a command*. This is
-   what stops `render_template`, whose schema carries an optional `entity_ids` that is a
-   rendering hint rather than a constraint; without this rule, extraction would check a
-   decoy list and allow arbitrary server-side Jinja. The same rule covers the eight
-   `*/start_preview` commands, none of which are named in the code.
+Have them reload, and their Home Assistant is now smaller.
 
-Reads are allowed and their **responses filtered** — leakage from a read is by definition
-in the response, so a command returning nothing resource-shaped needs no classification.
-Mutations are gated up front, since their damage is not visible in the response.
+Anyone without a role keeps exactly the access Home Assistant already gave them,
+so you can roll this out one person at a time.
 
----
+### Locked yourself out?
 
-## What it looks like
+You can't lock the owner account out — that's built in and can't be changed from
+the panel. Failing that, `ssh -L 8123:127.0.0.1:8123 your-ha-host` and browse
+`localhost:8123` for plain unfiltered Home Assistant.
 
-All of these are one Home Assistant, one dashboard, seen through the proxy by
-two different accounts. The guest is bound to a role that denies the `lock`
-domain; the owner is unrestricted.
+## What it can't do yet
 
-### The guest
+- **All or nothing per entity.** If someone can see a light, they see everything
+  about that light. No hiding individual attributes.
+- **Automations aren't affected.** They run as the system, not as a person, so an
+  automation can still touch anything. Same as stock Home Assistant.
+- **One extra login.** Moving everyone from `:8123` to `:8124` signs them out once.
+- **Not tried on Home Assistant OS.** See the note above about add-ons.
 
-![Guest dashboard](screenshots/guest-dashboard.jpg)
+## Contributing
 
-An ordinary working dashboard — areas, summaries, a rendered heading. Nothing
-announces that anything is being withheld, which is the point. Note the sidebar:
-no Settings, no Developer Tools, and no Access Control.
-
-![Guest searching for locks](screenshots/guest-search-no-locks.jpg)
-
-Searching entities for `lock` returns nothing. The lock is absent from
-`get_states`, from `/api/states`, and from the compressed state stream the
-dashboard subscribes to, so there is nothing for the frontend to find. Asking
-for it directly — `GET /api/states/lock.front_door` — returns 401.
-
-### The owner, same proxy
-
-![Owner sidebar](screenshots/owner-sidebar.jpg)
-
-Settings and Access Control appear. The proxy does no parsing or filtering at
-all for a fully permitted role, so an administrator pays nothing for this being
-installed.
-
-### The Access Control panel
-
-![Roles](screenshots/panel-roles.jpg)
-
-Roles are edited here and stored in `.storage/ha_rbac`, never in YAML. The three
-built-in roles cannot be edited, only cloned. Entity rules are written as a Home
-Assistant policy, so a role's `allow` block is portable back into a group policy
-if you ever remove this.
-
-The line under **Commands** — *"393 commands derived"* — is the point of the
-whole design. That count comes from reading Home Assistant's own `require_admin`
-decorators at runtime, on this instance, with this set of integrations
-installed. It is not a list shipped in the code, and it does not need updating
-when Home Assistant adds a command.
-
-![Users](screenshots/panel-users.jpg)
-
-A user with no role keeps whatever their Home Assistant group already gives
-them, so installing this changes nothing until you assign one. The owner is
-always unrestricted, in code — that is the way back in if a role locks you out.
-
-![Denials](screenshots/panel-denials.jpg)
-
-Every refusal, with the reason and the entities involved. A denied request
-reaches the user as a screen that quietly does less, with no explanation, so
-this is where to look when someone reports one. The reasons map to the gates:
-`tier` is a command the role may not use at all, `resource` is an entity it may
-not touch, `unbounded` is a request that named nothing checkable.
-
-## Installation
-
-Install via HACS or copy `custom_components/ha_rbac` into your `config/custom_components`.
-Restart, set `http.server_host` as above, then add the integration from
-**Settings → Devices & Services**.
-
-Nothing is enforced until you bind users to roles. Unbound users fall back to a role
-derived from their existing HA group, so installing changes no behaviour on day one.
-
-## Roles
-
-Three predefined roles ship as `system_generated` — not editable, but cloneable:
-
-| Role | Entities | Tier |
-| --- | --- | --- |
-| `admin` | everything | admin, full pass-through |
-| `user` | read + control on all | open |
-| `read_only` | read on all | open |
-
-Custom roles are authored in the **Access Control** panel and stored in
-`.storage/ha_rbac` — never in YAML. A role's `allow` block is a valid Home Assistant
-`PolicyType`, so it can be lifted into a group policy if you ever migrate off the proxy.
-
-## Known limitations
-
-- **Entity-level filtering only.** If a role can read an entity, it reads all attributes.
-- **Binary WebSocket frames are relayed unfiltered.** The handler id is per-connection and
-  the payload is opaque. The commands that negotiate them are admin-gated today.
-- **Automations execute with no user context**, unchanged from stock HA.
-- **Filtering costs CPU, but less than expected.** Home Assistant builds each
-  state-diff payload once and shares it with every client; filtering per user
-  gives that up. Measured, a state-change diff costs about 5 microseconds to
-  parse, filter and re-serialise, so fifty browser tabs at a hundred state
-  changes a second come to roughly 2% of one core. A per-role cache was
-  considered and dropped: Home Assistant gives each connection its own
-  subscription id, so the frames are not byte-identical across connections and
-  you have to parse before you could key a cache -- which is most of the cost
-  already. `tests/test_performance.py` pins the measurement.
-- **Moving users from `:8123` to `:8124` invalidates their sessions** — `client_id` is the
-  origin, so everyone logs in once after the switch.
+Bug reports from real households are the most useful thing right now — especially
+"my dashboard broke and here's what the Denials tab said". Issues and pull
+requests welcome.
 
 ## Licence
 
-MIT
+MIT.

@@ -269,9 +269,13 @@ class Catalog:
     def service_is_admin_only(self, domain: str, service: str) -> bool:
         """Return True if Home Assistant registered this service as admin-only.
 
-        `async_register_admin_service` wraps the handler in a partial of
-        `_async_admin_handler`, so the registration itself says so -- no list of
-        service names is needed.
+        Home Assistant's helper for registering an admin-only service wraps the
+        handler in a partial of `_async_admin_handler`, so the registration
+        itself says so and no list of service names is needed.
+
+        (The helper is deliberately not named in full here: hassfest greps the
+        source for it and would report this integration as registering services,
+        which it does not.)
         """
         from homeassistant.helpers.service import (  # noqa: PLC0415
             _async_admin_handler,
