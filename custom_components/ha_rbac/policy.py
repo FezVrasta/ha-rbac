@@ -113,6 +113,13 @@ TIERS_SCHEMA = vol.Schema(
     }
 )
 
+APPS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("allow", default=list): [str],
+        vol.Optional("deny", default=list): [str],
+    }
+)
+
 ROLE_SCHEMA = vol.Schema(
     {
         vol.Required("id"): str,
@@ -122,6 +129,7 @@ ROLE_SCHEMA = vol.Schema(
         vol.Optional("allow", default=dict): EXTENDED_POLICY_SCHEMA,
         vol.Optional("deny", default=dict): EXTENDED_POLICY_SCHEMA,
         vol.Optional("tiers", default=dict): TIERS_SCHEMA,
+        vol.Optional("apps", default=dict): APPS_SCHEMA,
     }
 )
 
@@ -277,6 +285,8 @@ class CompiledRole:
     tier_max: str
     tier_allow: list[str]
     tier_deny: list[str]
+    app_allow: list[str]
+    app_deny: list[str]
     full_access: bool
 
     def check(self, entity_id: str, key: str) -> bool:
@@ -292,6 +302,7 @@ def compile_role(
     deny_policy = desugar(hass, role.get("deny") or {})
 
     tiers = role.get("tiers") or {}
+    apps = role.get("apps") or {}
     tier_max = _tier_ceiling(tiers.get("max"))
     tier_allow = list(tiers.get("allow") or [])
 
@@ -303,6 +314,8 @@ def compile_role(
         tier_max=tier_max,
         tier_allow=tier_allow,
         tier_deny=[*BASELINE_DENY, *(tiers.get("deny") or [])],
+        app_allow=list(apps.get("allow") or []),
+        app_deny=list(apps.get("deny") or []),
         # Full access skips every gate, so it has to mean *nothing* is
         # restricted. Ignoring the tier denials here silently disabled the whole
         # layer for the obvious authoring flow of cloning Administrator and
@@ -313,6 +326,7 @@ def compile_role(
             and tier_max == TIER_ADMIN
             and "*" in tier_allow
             and not tiers.get("deny")
+            and not apps.get("deny")
         ),
     )
 
@@ -355,6 +369,29 @@ class Permissions:
             return True
         rank = TIER_ORDER.index(tier)
         return any(TIER_ORDER.index(role.tier_max) >= rank for role in self.roles)
+
+    def app_allowed(self, url_path: str) -> bool:
+        """Return True if any role permits this app.
+
+        Denials win, then an explicit allow list, then the default of allowing
+        whatever the tier gate already lets through.
+        """
+        if self.pass_through:
+            return True
+        if any(
+            fnmatch(url_path, pattern)
+            for role in self.roles
+            for pattern in role.app_deny
+        ):
+            return False
+        allow_lists = [role.app_allow for role in self.roles if role.app_allow]
+        if not allow_lists:
+            return True
+        return any(
+            fnmatch(url_path, pattern)
+            for patterns in allow_lists
+            for pattern in patterns
+        )
 
     @property
     def full_access(self) -> bool:

@@ -259,7 +259,9 @@ class HaRbacPanel extends HTMLElement {
 
   _loadDraft() {
     const role = this._roles.find((r) => r.id === this._selected);
-    this._draft = role ? { ...role, ...readRules(role) } : null;
+    this._draft = role
+      ? { ...role, ...readRules(role), appDenied: [...((role.apps || {}).deny || [])] }
+      : null;
   }
 
   _render() {
@@ -358,6 +360,21 @@ class HaRbacPanel extends HTMLElement {
       <div class="actions">
         <button id="add-rule" class="secondary" ${locked ? "disabled" : ""}>Add exception</button>
       </div>
+
+      <h3>Apps this role can open</h3>
+      <p class="hint">Everything in the sidebar, including add-ons. Unticking one
+        hides it and refuses the requests behind it.</p>
+      <div class="checks" id="apps">${(this._catalog ? this._catalog.apps : [])
+        .map(
+          (app) => `<label class="check">
+            <input type="checkbox" data-app="${esc(app.url_path)}"
+                   ${draft.appDenied.includes(app.url_path) ? "" : "checked"}
+                   ${locked ? "disabled" : ""}>
+            <span>${esc(app.title)}${
+              app.addon ? ' <span class="badge">add-on</span>' : ""
+            }</span></label>`
+        )
+        .join("")}</div>
 
       <h3>What this role can do</h3>
       <p class="hint">Administrative commands are recognised from Home Assistant's
@@ -653,6 +670,14 @@ class HaRbacPanel extends HTMLElement {
         allow: lines("tier-allow"),
         deny: lines("tier-deny"),
       },
+      apps: {
+        allow: [],
+        deny: [...root.querySelectorAll("[data-app]")]
+          .filter((box) => !box.checked)
+          // A checkbox with no value attribute reports "on", so read the
+          // dataset rather than falling back to it.
+          .map((box) => box.dataset.app),
+      },
     };
   }
 
@@ -692,6 +717,7 @@ class HaRbacPanel extends HTMLElement {
           allow: source.allow,
           deny: source.deny,
           tiers: source.tiers,
+          apps: source.apps,
         },
       });
       this._selected = role.id;

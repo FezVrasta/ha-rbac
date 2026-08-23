@@ -48,6 +48,10 @@ REASON_TIER = "tier"
 REASON_RESOURCE = "resource"
 REASON_UNBOUNDED = "unbounded"
 REASON_DEGRADED = "degraded"
+REASON_APP = "app"
+
+# Panels registered by Lovelace: every dashboard, sharing one set of commands.
+DASHBOARD_KIND = "lovelace"
 
 # Never a real entity; it makes a domain-level policy rule answer for a call
 # that names no particular entity.
@@ -208,6 +212,14 @@ class Decider:
                 detail=f"role does not permit {tier}-tier request {name!r}",
             )
 
+        # 2b. App gate. Hiding an app from the sidebar is cosmetic on its own --
+        #     the address bar still works -- so the ways into a denied one are
+        #     refused as well.
+        if (
+            app_decision := self._decide_app(permissions, kind, name, payload)
+        ) is not None:
+            return app_decision
+
         found = extract(payload)
         if kind == KIND_HTTP:
             # A path parameter is a resource reference the body never carries.
@@ -283,6 +295,70 @@ class Decider:
         return Decision(allowed=True, resources=sorted(entities), filter_response=True)
 
         return Decision(allowed=True, resources=sorted(entities), filter_response=True)
+
+    @callback
+    def _decide_app(
+        self,
+        permissions: Permissions,
+        kind: str,
+        name: str,
+        payload: dict[str, Any],
+    ) -> Decision | None:
+        """Refuse a request that reaches into an app the role cannot see.
+
+        Hiding an app from the sidebar is cosmetic on its own -- the address bar
+        still works -- so the routes behind it are refused too. Three ways in,
+        in order of precision:
+
+        * the request names the app outright, which is how dashboards work:
+          `lovelace/config` carries the dashboard's own `url_path`;
+        * an add-on is reached through the Supervisor API, which names its slug;
+        * anything else, by the convention that an app's data comes from
+          commands sharing its name.
+        """
+        denied = [
+            app
+            for app in self._catalog.apps()
+            if not permissions.app_allowed(app["url_path"])
+        ]
+        if not denied:
+            return None
+
+        named = payload.get("url_path")
+        for app in denied:
+            url_path = app["url_path"]
+
+            if isinstance(named, str) and named == url_path:
+                return Decision(
+                    allowed=False,
+                    reason=REASON_APP,
+                    detail=f"no access to {app['title']}",
+                )
+
+            if slug := app.get("addon"):
+                endpoint = payload.get("endpoint")
+                if isinstance(endpoint, str) and f"/{slug}" in endpoint:
+                    return Decision(
+                        allowed=False,
+                        reason=REASON_APP,
+                        detail=f"no access to the {app['title']} add-on",
+                    )
+                continue
+
+            # Dashboards all share the `lovelace/` commands, so the prefix rule
+            # would take every dashboard down with one of them. They are covered
+            # by the `url_path` check above instead.
+            if app.get("kind") == DASHBOARD_KIND:
+                continue
+
+            prefix = url_path.replace("-", "_")
+            if kind != KIND_HTTP and name.startswith(f"{prefix}/"):
+                return Decision(
+                    allowed=False,
+                    reason=REASON_APP,
+                    detail=f"no access to {app['title']}",
+                )
+        return None
 
     @callback
     def _decide_service(

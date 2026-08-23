@@ -266,6 +266,44 @@ class Catalog:
         return info.tier
 
     @callback
+    def apps(self) -> list[dict[str, Any]]:
+        """Return the sidebar apps, read from the panel registry.
+
+        Add-ons are panels: `hassio` registers each one with the add-on slug as
+        its url path and `{"addon": slug}` as its config, so a single list
+        covers both built-in apps and add-ons with nothing enumerated here.
+        """
+        from homeassistant.components.frontend import (  # noqa: PLC0415
+            DATA_PANELS,
+        )
+
+        panels = self._hass.data.get(DATA_PANELS) or {}
+        return sorted(
+            (
+                {
+                    "url_path": panel.frontend_url_path,
+                    "title": panel.sidebar_title or panel.frontend_url_path,
+                    "kind": panel.component_name,
+                    "icon": panel.sidebar_icon,
+                    "require_admin": panel.require_admin,
+                    "addon": (panel.config or {}).get("addon"),
+                }
+                for panel in panels.values()
+            ),
+            key=lambda item: item["title"].lower(),
+        )
+
+    @callback
+    def addon_slug_for(self, url_path: str) -> str | None:
+        """Return the add-on slug an app belongs to, if it is one."""
+        from homeassistant.components.frontend import (  # noqa: PLC0415
+            DATA_PANELS,
+        )
+
+        panel = (self._hass.data.get(DATA_PANELS) or {}).get(url_path)
+        return (panel.config or {}).get("addon") if panel else None
+
+    @callback
     def service_is_admin_only(self, domain: str, service: str) -> bool:
         """Return True if Home Assistant registered this service as admin-only.
 

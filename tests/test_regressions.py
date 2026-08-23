@@ -34,12 +34,13 @@ from custom_components.ha_rbac.const import (
 from custom_components.ha_rbac.decide import (
     KIND_HTTP,
     KIND_WS,
+    REASON_APP,
     REASON_TIER,
     Decider,
     _invokes_a_service,
 )
 from custom_components.ha_rbac.extract import extract
-from custom_components.ha_rbac.filters import REGISTRY
+from custom_components.ha_rbac.filters import REGISTRY, FilterContext
 from custom_components.ha_rbac.policy import (
     ROLE_SCHEMA,
     Permissions,
@@ -61,10 +62,10 @@ def _lookup(hass: HomeAssistant) -> PermissionLookup:
     return PermissionLookup(er.async_get(hass), dr.async_get(hass))
 
 
-def _role(**kwargs: Any) -> dict[str, Any]:
+def _role(role_id: str = "r", **kwargs: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
-        "id": "r",
-        "name": "r",
+        "id": role_id,
+        "name": role_id,
         "allow": {},
         "deny": {},
         "tiers": {"max": TIER_OPEN, "allow": [], "deny": []},
@@ -628,3 +629,211 @@ async def test_an_unknown_service_is_treated_as_administrative(
 ) -> None:
     """A service this build has never seen cannot be reasoned about."""
     assert decider._catalog.service_is_admin_only("nope", "nope") is True
+
+
+async def test_a_denied_app_is_removed_from_the_sidebar(hass: HomeAssistant) -> None:
+    """Add-ons are panels, so one rule covers both them and built-in apps."""
+    ctx = FilterContext(hass, lambda e, k: True, lambda url: url != "energy")
+    panels = {
+        "energy": {"title": "Energy"},
+        "history": {"title": "History"},
+        "a0d7b954_nodered": {"title": "Node-RED"},
+    }
+    result = REGISTRY.filter_result("get_panels", ctx, panels)
+    assert set(result) == {"history", "a0d7b954_nodered"}
+
+
+async def test_app_rules_are_deny_by_default_open(hass: HomeAssistant) -> None:
+    """No app rules means the tier gate alone decides, as before."""
+    role = compile_role(hass, _role(), _lookup(hass))
+    assert Permissions(roles=[role]).app_allowed("energy") is True
+
+
+async def test_an_app_denial_survives_another_role_allowing_it(
+    hass: HomeAssistant,
+) -> None:
+    """Denials win, so composing roles cannot hand back a hidden app."""
+    denying = compile_role(
+        hass, _role("a", apps={"allow": [], "deny": ["energy"]}), _lookup(hass)
+    )
+    permissive = compile_role(hass, _role("b"), _lookup(hass))
+    perms = Permissions(roles=[denying, permissive])
+    assert perms.app_allowed("energy") is False
+    assert perms.app_allowed("history") is True
+
+
+async def test_an_app_allow_list_hides_everything_else(hass: HomeAssistant) -> None:
+    """An explicit list is the 'only these' case."""
+    role = compile_role(
+        hass,
+        _role(apps={"allow": ["history", "a0d7b954_*"], "deny": []}),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+    assert perms.app_allowed("history") is True
+    assert perms.app_allowed("a0d7b954_nodered") is True
+    assert perms.app_allowed("energy") is False
+
+
+async def test_denying_an_app_also_refuses_the_commands_behind_it(
+    hass: HomeAssistant,
+) -> None:
+    """Hiding a sidebar entry is cosmetic; the address bar still works."""
+    await async_setup_component(hass, "websocket_api", {})
+    await async_setup_component(hass, "frontend", {})
+    await hass.async_block_till_done()
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    decider = Decider(hass, catalog, REGISTRY)
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            apps={"allow": [], "deny": ["energy"]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+
+    # Only meaningful if the panel is actually registered on this instance.
+    if any(app["url_path"] == "energy" for app in catalog.apps()):
+        decision = decider.decide(
+            perms, KIND_WS, "energy/info", {"type": "energy/info"}
+        )
+        assert decision.allowed is False
+        assert decision.reason == REASON_APP
+
+
+async def test_denying_one_dashboard_leaves_the_others_alone(
+    hass: HomeAssistant,
+) -> None:
+    """Dashboards are panels, but they all share the `lovelace/` commands.
+
+    Matching by command prefix would take every dashboard down with one of
+    them, so a dashboard is matched by the `url_path` the request carries.
+    """
+    await async_setup_component(hass, "websocket_api", {})
+    await hass.async_block_till_done()
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    # Two dashboards, as a real instance has.
+    catalog.apps = lambda: [
+        {
+            "url_path": "lovelace",
+            "title": "Overview",
+            "kind": "lovelace",
+            "addon": None,
+        },
+        {"url_path": "map", "title": "Map", "kind": "lovelace", "addon": None},
+    ]
+    # Isolate the app gate: this command is not registered in this
+    # fixture, so the tier gate would answer first and prove nothing.
+    catalog.tier_for = lambda command: TIER_OPEN
+    decider = Decider(hass, catalog, REGISTRY)
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            apps={"allow": [], "deny": ["map"]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+
+    blocked = decider.decide(
+        perms,
+        KIND_WS,
+        "lovelace/config",
+        {"type": "lovelace/config", "url_path": "map"},
+    )
+    allowed = decider.decide(
+        perms,
+        KIND_WS,
+        "lovelace/config",
+        {"type": "lovelace/config", "url_path": "lovelace"},
+    )
+    assert blocked.allowed is False
+    assert blocked.reason == REASON_APP
+    assert allowed.allowed is True
+
+
+async def test_the_default_dashboard_is_not_refused_by_accident(
+    hass: HomeAssistant,
+) -> None:
+    """`lovelace/config` with no url_path means the default dashboard.
+
+    Guessing which one that is and refusing it would take out the home screen
+    for everyone, so an unnamed dashboard is left alone.
+    """
+    await async_setup_component(hass, "websocket_api", {})
+    await hass.async_block_till_done()
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    catalog.apps = lambda: [
+        {"url_path": "lovelace", "title": "Overview", "kind": "lovelace", "addon": None}
+    ]
+    catalog.tier_for = lambda command: TIER_OPEN
+    decider = Decider(hass, catalog, REGISTRY)
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            apps={"allow": [], "deny": ["lovelace"]},
+        ),
+        _lookup(hass),
+    )
+    decision = decider.decide(
+        Permissions(roles=[role]),
+        KIND_WS,
+        "lovelace/config",
+        {"type": "lovelace/config"},
+    )
+    assert decision.allowed is True
+
+
+async def test_a_denied_addon_is_refused_at_the_supervisor_api(
+    hass: HomeAssistant,
+) -> None:
+    """An add-on is reached through an endpoint that names its slug."""
+    await async_setup_component(hass, "websocket_api", {})
+    await hass.async_block_till_done()
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    catalog.apps = lambda: [
+        {
+            "url_path": "a0d7b954_nodered",
+            "title": "Node-RED",
+            "kind": "app",
+            "addon": "a0d7b954_nodered",
+        }
+    ]
+    catalog.tier_for = lambda command: TIER_OPEN
+    decider = Decider(hass, catalog, REGISTRY)
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            apps={"allow": [], "deny": ["a0d7b954_nodered"]},
+        ),
+        _lookup(hass),
+    )
+    decision = decider.decide(
+        Permissions(roles=[role]),
+        KIND_WS,
+        "hassio/api",
+        {
+            "type": "hassio/api",
+            "endpoint": "/addons/a0d7b954_nodered/info",
+            "method": "get",
+        },
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_APP

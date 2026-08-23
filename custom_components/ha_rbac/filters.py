@@ -27,10 +27,20 @@ type CheckFn = Callable[[str, str], bool]
 class FilterContext:
     """What a filter needs to know about the requesting user."""
 
-    def __init__(self, hass: HomeAssistant, check: CheckFn) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        check: CheckFn,
+        app_allowed: "Callable[[str], bool] | None" = None,
+    ) -> None:
         """Initialise the context."""
         self.hass = hass
         self.check = check
+        self._app_allowed = app_allowed
+
+    def app_visible(self, url_path: str) -> bool:
+        """Return True if the user may see this sidebar app."""
+        return self._app_allowed(url_path) if self._app_allowed else True
 
     def readable(self, entity_id: str) -> bool:
         """Return True if the user may read an entity."""
@@ -260,6 +270,23 @@ def _filter_template_event(ctx: FilterContext, event: Any) -> Any:
             return None
 
     return event
+
+
+@REGISTRY.result("get_panels")
+def _filter_panels(ctx: FilterContext, result: Any) -> Any:
+    """Remove denied apps from the sidebar.
+
+    Add-ons appear here too -- `hassio` registers each one as a panel keyed by
+    its slug -- so denying an add-on and denying a built-in app are the same
+    operation.
+    """
+    if not isinstance(result, dict):
+        return result
+    return {
+        url_path: panel
+        for url_path, panel in result.items()
+        if ctx.app_visible(url_path)
+    }
 
 
 @REGISTRY.result("get_services")
