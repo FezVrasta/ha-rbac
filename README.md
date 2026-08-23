@@ -8,7 +8,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="alpha">
-  <img src="https://img.shields.io/badge/Home%20Assistant-2025.1%2B-41BDF5" alt="Home Assistant 2025.1+">
+  <img src="https://img.shields.io/badge/tested%20on-HA%202026.9-41BDF5" alt="tested on Home Assistant 2026.9">
   <img src="https://img.shields.io/badge/config-no%20YAML-brightgreen" alt="no YAML">
   <img src="https://img.shields.io/badge/licence-MIT-blue" alt="MIT">
 </p>
@@ -211,6 +211,11 @@ Full detail in [docs/DESIGN.md](docs/DESIGN.md).
 </details>
 
 ## Install
+
+Built and tested against Home Assistant **2026.9**. It reads a few Home
+Assistant internals to work out what is administrative, so treat older versions
+as untested rather than unsupported — it will tell you at startup if it cannot
+make sense of them, and refuse to enforce rather than guess.
 
 **HACS** — add this repository as a custom repository, install, restart.
 
