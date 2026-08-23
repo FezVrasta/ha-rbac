@@ -361,6 +361,15 @@ class HaRbacPanel extends HTMLElement {
         <button id="add-rule" class="secondary" ${locked ? "disabled" : ""}>Add exception</button>
       </div>
 
+      <h3>Details to withhold</h3>
+      <p class="hint">Attributes hidden on every entity this role can see. The
+        usual reason is location: letting someone see that you are home without
+        seeing where you are. One per line; <code>gps_*</code> works.</p>
+      <textarea id="attr-deny" placeholder="latitude&#10;longitude&#10;gps_*"
+        ${locked ? "disabled" : ""}>${esc(
+          ((draft.attributes || {}).deny || []).join("\n")
+        )}</textarea>
+
       <h3>Apps this role can open</h3>
       <p class="hint">Everything in the sidebar, including add-ons. Unticking one
         hides it and refuses the requests behind it.</p>
@@ -670,6 +679,7 @@ class HaRbacPanel extends HTMLElement {
         allow: lines("tier-allow"),
         deny: lines("tier-deny"),
       },
+      attributes: { deny: lines("attr-deny") },
       apps: {
         allow: [],
         deny: [...root.querySelectorAll("[data-app]")]
@@ -718,6 +728,7 @@ class HaRbacPanel extends HTMLElement {
           deny: source.deny,
           tiers: source.tiers,
           apps: source.apps,
+          attributes: source.attributes,
         },
       });
       this._selected = role.id;

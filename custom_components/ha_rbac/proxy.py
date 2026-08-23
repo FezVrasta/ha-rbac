@@ -749,8 +749,12 @@ class _WsSession:
             _LOGGER.debug("Dropping websocket frame with uncorrelated id %s", msg_id)
             return None
 
+        permissions = self._permissions
         ctx = FilterContext(
-            self._hass, self._permissions.check_entity, self._permissions.app_allowed
+            self._hass,
+            permissions.check_entity,
+            permissions.app_allowed,
+            permissions.attribute_hidden if permissions.hides_attributes else None,
         )
 
         if msg_type == TYPE_RESULT:

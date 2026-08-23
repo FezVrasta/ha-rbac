@@ -837,3 +837,82 @@ async def test_a_denied_addon_is_refused_at_the_supervisor_api(
     )
     assert decision.allowed is False
     assert decision.reason == REASON_APP
+
+
+async def test_a_template_reading_attributes_is_refused_when_any_are_hidden(
+    hass: HomeAssistant, decider: Decider
+) -> None:
+    """A render reports the entities it read, never the attributes.
+
+    So `{{ state_attr('person.me', 'latitude') }}` would come back through the
+    response filter looking like an ordinary read of an entity the role can see.
+    """
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            attributes={"deny": ["latitude", "longitude"]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+
+    blocked = decider.decide(
+        perms,
+        KIND_WS,
+        "render_template",
+        {
+            "type": "render_template",
+            "template": "{{ state_attr('person.me','latitude') }}",
+        },
+    )
+    assert blocked.allowed is False
+
+    # A template that reads no attribute is unaffected.
+    allowed = decider.decide(
+        perms,
+        KIND_WS,
+        "render_template",
+        {"type": "render_template", "template": "{{ states('person.me') }}"},
+    )
+    assert allowed.allowed is True
+
+
+async def test_a_role_without_attribute_rules_keeps_templates(
+    hass: HomeAssistant, decider: Decider
+) -> None:
+    """The restriction only applies to roles that actually withhold something."""
+    role = compile_role(
+        hass,
+        _role(allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}}),
+        _lookup(hass),
+    )
+    decision = decider.decide(
+        Permissions(roles=[role]),
+        KIND_WS,
+        "render_template",
+        {
+            "type": "render_template",
+            "template": "{{ state_attr('person.me','latitude') }}",
+        },
+    )
+    assert decision.allowed is True
+
+
+async def test_attribute_patterns_match_by_glob(hass: HomeAssistant) -> None:
+    """`gps_*` is easier to write than every attribute a tracker reports."""
+    role = compile_role(
+        hass, _role(attributes={"deny": ["gps_*", "latitude"]}), _lookup(hass)
+    )
+    perms = Permissions(roles=[role])
+    assert perms.attribute_hidden("gps_accuracy") is True
+    assert perms.attribute_hidden("latitude") is True
+    assert perms.attribute_hidden("friendly_name") is False
+    assert perms.hides_attributes is True
+
+
+async def test_the_owner_keeps_every_attribute(hass: HomeAssistant) -> None:
+    """Pass-through means pass-through."""
+    perms = Permissions(pass_through=True)
+    assert perms.attribute_hidden("latitude") is False
+    assert perms.hides_attributes is False

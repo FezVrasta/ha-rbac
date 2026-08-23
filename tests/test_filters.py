@@ -320,3 +320,120 @@ async def test_an_empty_denied_domain_is_still_withheld(hass: HomeAssistant) -> 
     )
     assert event is None
     assert check("lock.anything", POLICY_READ) is False
+
+
+def _attr_ctx(hass: HomeAssistant, hidden: set[str]) -> FilterContext:
+    """Return a context that withholds the given attribute names."""
+    return FilterContext(
+        hass, lambda entity_id, key: True, None, lambda name: name in hidden
+    )
+
+
+async def test_hidden_attributes_are_stripped_from_states(
+    hass: HomeAssistant,
+) -> None:
+    """Seeing that someone is home should not mean seeing where they are."""
+    result = REGISTRY.filter_result(
+        "get_states",
+        _attr_ctx(hass, {"latitude", "longitude"}),
+        [
+            {
+                "entity_id": "person.me",
+                "state": "home",
+                "attributes": {
+                    "latitude": 51.5,
+                    "longitude": -0.1,
+                    "friendly_name": "Me",
+                },
+            }
+        ],
+    )
+    assert result[0]["attributes"] == {"friendly_name": "Me"}
+    assert result[0]["state"] == "home"
+
+
+async def test_hidden_attributes_are_stripped_from_the_initial_state(
+    hass: HomeAssistant,
+) -> None:
+    """subscribe_entities sends a full state first, under `a`."""
+    event = REGISTRY.filter_event(
+        "subscribe_entities",
+        _attr_ctx(hass, {"latitude"}),
+        {"a": {"person.me": {"s": "home", "a": {"latitude": 51.5, "source": "gps"}}}},
+    )
+    assert event["a"]["person.me"]["a"] == {"source": "gps"}
+
+
+async def test_hidden_attributes_are_stripped_from_diffs(hass: HomeAssistant) -> None:
+    """Otherwise the attribute would arrive on the next change instead."""
+    event = REGISTRY.filter_event(
+        "subscribe_entities",
+        _attr_ctx(hass, {"latitude"}),
+        {
+            "c": {
+                "person.me": {
+                    "+": {"s": "not_home", "a": {"latitude": 52.0, "source": "gps"}}
+                }
+            }
+        },
+    )
+    diff = event["c"]["person.me"]["+"]
+    assert diff["a"] == {"source": "gps"}
+    assert diff["s"] == "not_home"
+
+
+async def test_a_removal_diff_does_not_disclose_a_hidden_attribute(
+    hass: HomeAssistant,
+) -> None:
+    """A removal names the attribute without its value, which is still a leak."""
+    event = REGISTRY.filter_event(
+        "subscribe_entities",
+        _attr_ctx(hass, {"latitude"}),
+        {"c": {"person.me": {"+": {"s": "home"}, "-": {"a": ["latitude", "source"]}}}},
+    )
+    assert event["c"]["person.me"]["-"]["a"] == ["source"]
+
+
+async def test_a_removal_of_only_hidden_attributes_is_dropped(
+    hass: HomeAssistant,
+) -> None:
+    """An empty removal block would still say something changed."""
+    event = REGISTRY.filter_event(
+        "subscribe_entities",
+        _attr_ctx(hass, {"latitude"}),
+        {"c": {"person.me": {"+": {"s": "home"}, "-": {"a": ["latitude"]}}}},
+    )
+    assert "-" not in event["c"]["person.me"]
+
+
+async def test_hidden_attributes_are_stripped_from_state_changed_events(
+    hass: HomeAssistant,
+) -> None:
+    """The other stream carries whole state objects rather than diffs."""
+    event = REGISTRY.filter_event(
+        "subscribe_events",
+        _attr_ctx(hass, {"latitude"}),
+        {
+            "event_type": "state_changed",
+            "data": {
+                "entity_id": "person.me",
+                "new_state": {
+                    "entity_id": "person.me",
+                    "state": "home",
+                    "attributes": {"latitude": 51.5, "source": "gps"},
+                },
+            },
+        },
+    )
+    assert event["data"]["new_state"]["attributes"] == {"source": "gps"}
+
+
+async def test_attributes_are_untouched_when_no_rules_apply(
+    hass: HomeAssistant,
+) -> None:
+    """A role with no attribute rules must pay nothing and change nothing."""
+    payload = [
+        {"entity_id": "person.me", "attributes": {"latitude": 51.5, "source": "gps"}}
+    ]
+    result = REGISTRY.filter_result("get_states", _ctx(hass, set()), payload)
+    assert result[0]["attributes"] == {"latitude": 51.5, "source": "gps"}

@@ -113,6 +113,12 @@ TIERS_SCHEMA = vol.Schema(
     }
 )
 
+ATTRIBUTES_SCHEMA = vol.Schema(
+    {
+        vol.Optional("deny", default=list): [str],
+    }
+)
+
 APPS_SCHEMA = vol.Schema(
     {
         vol.Optional("allow", default=list): [str],
@@ -130,6 +136,7 @@ ROLE_SCHEMA = vol.Schema(
         vol.Optional("deny", default=dict): EXTENDED_POLICY_SCHEMA,
         vol.Optional("tiers", default=dict): TIERS_SCHEMA,
         vol.Optional("apps", default=dict): APPS_SCHEMA,
+        vol.Optional("attributes", default=dict): ATTRIBUTES_SCHEMA,
     }
 )
 
@@ -287,6 +294,7 @@ class CompiledRole:
     tier_deny: list[str]
     app_allow: list[str]
     app_deny: list[str]
+    attribute_deny: list[str]
     full_access: bool
 
     def check(self, entity_id: str, key: str) -> bool:
@@ -303,6 +311,7 @@ def compile_role(
 
     tiers = role.get("tiers") or {}
     apps = role.get("apps") or {}
+    attributes = role.get("attributes") or {}
     tier_max = _tier_ceiling(tiers.get("max"))
     tier_allow = list(tiers.get("allow") or [])
 
@@ -316,6 +325,7 @@ def compile_role(
         tier_deny=[*BASELINE_DENY, *(tiers.get("deny") or [])],
         app_allow=list(apps.get("allow") or []),
         app_deny=list(apps.get("deny") or []),
+        attribute_deny=list(attributes.get("deny") or []),
         # Full access skips every gate, so it has to mean *nothing* is
         # restricted. Ignoring the tier denials here silently disabled the whole
         # layer for the obvious authoring flow of cloning Administrator and
@@ -327,6 +337,7 @@ def compile_role(
             and "*" in tier_allow
             and not tiers.get("deny")
             and not apps.get("deny")
+            and not attributes.get("deny")
         ),
     )
 
@@ -369,6 +380,27 @@ class Permissions:
             return True
         rank = TIER_ORDER.index(tier)
         return any(TIER_ORDER.index(role.tier_max) >= rank for role in self.roles)
+
+    def attribute_hidden(self, name: str) -> bool:
+        """Return True if this attribute must be withheld.
+
+        Attribute rules apply to every entity the role can already see -- an
+        entity it cannot see is gone entirely, attributes and all. Hiding
+        `latitude` is the case this exists for: letting someone see that you are
+        home without seeing where you are.
+        """
+        if self.pass_through:
+            return False
+        return any(
+            fnmatch(name, pattern)
+            for role in self.roles
+            for pattern in role.attribute_deny
+        )
+
+    @property
+    def hides_attributes(self) -> bool:
+        """Return True if any role withholds attributes."""
+        return not self.pass_through and any(role.attribute_deny for role in self.roles)
 
     def app_allowed(self, url_path: str) -> bool:
         """Return True if any role permits this app.

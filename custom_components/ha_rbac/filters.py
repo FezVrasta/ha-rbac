@@ -14,6 +14,12 @@ from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.core import HomeAssistant
 
 # Keys of the compressed state-diff protocol used by subscribe_entities.
+# Within one entity's compressed state, "a" holds its attributes; at the event
+# level the same letter means "added entity". Different levels, same letter.
+COMPRESSED_ATTRIBUTES = "a"
+STATE_DIFF_ADDITIONS = "+"
+STATE_DIFF_REMOVALS = "-"
+
 ENTITY_EVENT_ADD = "a"
 ENTITY_EVENT_CHANGE = "c"
 ENTITY_EVENT_REMOVE = "r"
@@ -32,11 +38,38 @@ class FilterContext:
         hass: HomeAssistant,
         check: CheckFn,
         app_allowed: "Callable[[str], bool] | None" = None,
+        attribute_hidden: "Callable[[str], bool] | None" = None,
     ) -> None:
         """Initialise the context."""
         self.hass = hass
         self.check = check
         self._app_allowed = app_allowed
+        self._attribute_hidden = attribute_hidden
+
+    @property
+    def hides_attributes(self) -> bool:
+        """Return True if any attribute is withheld from this user."""
+        return self._attribute_hidden is not None
+
+    def strip_attributes(self, attributes: Any) -> Any:
+        """Remove withheld attributes from a mapping of them."""
+        if self._attribute_hidden is None or not isinstance(attributes, dict):
+            return attributes
+        return {
+            name: value
+            for name, value in attributes.items()
+            if not self._attribute_hidden(name)
+        }
+
+    def strip_attribute_names(self, names: Any) -> Any:
+        """Remove withheld names from a list of them.
+
+        A removal diff names attributes without their values, and forwarding one
+        would disclose that the attribute exists at all.
+        """
+        if self._attribute_hidden is None or not isinstance(names, list):
+            return names
+        return [name for name in names if not self._attribute_hidden(name)]
 
     def app_visible(self, url_path: str) -> bool:
         """Return True if the user may see this sidebar app."""
@@ -131,6 +164,9 @@ def prune(ctx: FilterContext, node: Any) -> Any:
 
         out: dict[str, Any] = {}
         for key, value in node.items():
+            if key == "attributes" and isinstance(value, dict):
+                out[key] = ctx.strip_attributes(value)
+                continue
             if key in ("entity_id", "entity_ids") and isinstance(value, list):
                 out[key] = [
                     item
@@ -156,10 +192,17 @@ def _filter_get_states(ctx: FilterContext, result: Any) -> Any:
     if not isinstance(result, list):
         return result
     return [
-        state
+        _strip_state(ctx, state)
         for state in result
         if not isinstance(state, dict) or ctx.readable(state.get("entity_id", ""))
     ]
+
+
+def _strip_state(ctx: FilterContext, state: Any) -> Any:
+    """Remove withheld attributes from an uncompressed state object."""
+    if not isinstance(state, dict) or "attributes" not in state:
+        return state
+    return {**state, "attributes": ctx.strip_attributes(state["attributes"])}
 
 
 @REGISTRY.event("subscribe_entities")
@@ -178,7 +221,7 @@ def _filter_entity_event(ctx: FilterContext, event: Any) -> Any:
     for key in (ENTITY_EVENT_ADD, ENTITY_EVENT_CHANGE):
         if isinstance(section := event.get(key), dict):
             kept = {
-                entity_id: value
+                entity_id: _strip_compressed(ctx, key, value)
                 for entity_id, value in section.items()
                 if ctx.readable(entity_id)
             }
@@ -191,6 +234,41 @@ def _filter_entity_event(ctx: FilterContext, event: Any) -> Any:
             out[ENTITY_EVENT_REMOVE] = kept_ids
 
     return out or None
+
+
+def _strip_compressed(ctx: FilterContext, key: str, value: Any) -> Any:
+    """Remove withheld attributes from one entity's compressed state or diff.
+
+    Stripping the same names everywhere is enough -- the client never learns the
+    attribute exists, so its picture stays consistent without the proxy having
+    to track a shadow copy of it.
+    """
+    if not ctx.hides_attributes or not isinstance(value, dict):
+        return value
+
+    if key == ENTITY_EVENT_ADD:
+        if COMPRESSED_ATTRIBUTES not in value:
+            return value
+        return {
+            **value,
+            COMPRESSED_ATTRIBUTES: ctx.strip_attributes(value[COMPRESSED_ATTRIBUTES]),
+        }
+
+    out = dict(value)
+    added = out.get(STATE_DIFF_ADDITIONS)
+    if isinstance(added, dict) and COMPRESSED_ATTRIBUTES in added:
+        out[STATE_DIFF_ADDITIONS] = {
+            **added,
+            COMPRESSED_ATTRIBUTES: ctx.strip_attributes(added[COMPRESSED_ATTRIBUTES]),
+        }
+    removed = out.get(STATE_DIFF_REMOVALS)
+    if isinstance(removed, dict) and COMPRESSED_ATTRIBUTES in removed:
+        names = ctx.strip_attribute_names(removed[COMPRESSED_ATTRIBUTES])
+        if names:
+            out[STATE_DIFF_REMOVALS] = {**removed, COMPRESSED_ATTRIBUTES: names}
+        else:
+            out.pop(STATE_DIFF_REMOVALS)
+    return out
 
 
 @REGISTRY.event("subscribe_events")
@@ -208,7 +286,19 @@ def _filter_subscribed_event(ctx: FilterContext, event: Any) -> Any:
     entity_id = data.get("entity_id")
     if _looks_like_entity_id(entity_id) and not ctx.readable(entity_id):
         return None
-    return event
+    if not ctx.hides_attributes:
+        return event
+    return {
+        **event,
+        "data": {
+            **data,
+            **{
+                key: _strip_state(ctx, data[key])
+                for key in ("new_state", "old_state")
+                if isinstance(data.get(key), dict)
+            },
+        },
+    }
 
 
 # Keys of the `listeners` payload a template subscription reports.

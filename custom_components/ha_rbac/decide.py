@@ -44,6 +44,9 @@ QUERY_RESOURCE_ALIASES = {
 # Keys that mean "invoke something", wherever they appear in a payload.
 SERVICE_KEYS = frozenset({"service", "action"})
 
+# How a Home Assistant template reaches an entity's attributes.
+ATTRIBUTE_TEMPLATE_MARKERS = ("state_attr", ".attributes", "attributes[")
+
 REASON_TIER = "tier"
 REASON_RESOURCE = "resource"
 REASON_UNBOUNDED = "unbounded"
@@ -56,6 +59,24 @@ DASHBOARD_KIND = "lovelace"
 # Never a real entity; it makes a domain-level policy rule answer for a call
 # that names no particular entity.
 DOMAIN_PROBE = "_rbac_probe"
+
+
+def _reads_attributes(node: Any, depth: int = 0) -> bool:
+    """Return True if a payload contains a template that reads attributes.
+
+    A rendered template reports the entities it read but not the attributes, so
+    there is nothing in the response to check. These markers are how Home
+    Assistant templates reach an attribute.
+    """
+    if depth > MAX_WALK_DEPTH:
+        return True
+    if isinstance(node, str):
+        return any(marker in node for marker in ATTRIBUTE_TEMPLATE_MARKERS)
+    if isinstance(node, dict):
+        return any(_reads_attributes(value, depth + 1) for value in node.values())
+    if isinstance(node, list):
+        return any(_reads_attributes(item, depth + 1) for item in node)
+    return False
 
 
 def _invokes_a_service(node: Any, depth: int = 0) -> bool:
@@ -219,6 +240,18 @@ class Decider:
             app_decision := self._decide_app(permissions, kind, name, payload)
         ) is not None:
             return app_decision
+
+        # 2c. A template reports which entities it read, but not which
+        #     attributes -- so a role that withholds any cannot let one through.
+        if permissions.hides_attributes and _reads_attributes(payload):
+            return Decision(
+                allowed=False,
+                reason=REASON_UNBOUNDED,
+                detail=(
+                    "a template that reads attributes cannot be checked against "
+                    "a role that withholds them"
+                ),
+            )
 
         found = extract(payload)
         if kind == KIND_HTTP:
