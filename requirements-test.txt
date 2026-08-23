@@ -1,4 +1,3 @@
-pytest
-pytest-asyncio
-pytest-aiohttp
-pytest-homeassistant-custom-component
+# Home Assistant's own test fixtures, packaged for custom components. Pins the
+# Home Assistant version the suite runs against.
+pytest-homeassistant-custom-component==0.13.357

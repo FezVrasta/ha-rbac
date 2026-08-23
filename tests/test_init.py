@@ -6,8 +6,8 @@ from typing import Any
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
-from tests.common import MockConfigEntry
-from tests.typing import WebSocketGenerator
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.ha_rbac import async_setup_entry, async_unload_entry
 from custom_components.ha_rbac.const import (

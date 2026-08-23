@@ -7,6 +7,7 @@
 </p>
 
 <p align="center">
+  <img src="https://github.com/FezVrasta/ha-rbac/actions/workflows/ci.yml/badge.svg" alt="CI">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="alpha">
   <img src="https://img.shields.io/badge/tested%20on-HA%202026.9-41BDF5" alt="tested on Home Assistant 2026.9">
   <img src="https://img.shields.io/badge/config-no%20YAML-brightgreen" alt="no YAML">

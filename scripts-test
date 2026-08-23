@@ -1,24 +1,11 @@
 #!/usr/bin/env bash
 # Run the test suite.
 #
-# The suite reuses Home Assistant core's own pytest fixtures, so it needs a
-# checkout of home-assistant/core rather than just the installed package. Point
-# HA_CORE at one; its virtualenv supplies the dependencies.
-#
-#   git clone https://github.com/home-assistant/core ~/src/home-assistant-core
-#   cd ~/src/home-assistant-core && script/setup
-#   HA_CORE=~/src/home-assistant-core ./scripts-test
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r requirements-test.txt
+#   ./scripts-test
 set -euo pipefail
-
-CORE="${HA_CORE:-${HOME}/Developer/core}"
-if [ ! -d "$CORE/tests" ]; then
-  echo "Home Assistant core checkout not found at: $CORE" >&2
-  echo "Set HA_CORE to one. See the comments in this script." >&2
-  exit 1
-fi
-
-PYTHON="${HA_PYTHON:-$CORE/venv/bin/python}"
-[ -x "$PYTHON" ] || PYTHON="$(command -v python3)"
-
 cd "$(dirname "$0")"
-PYTHONPATH="$CORE:." exec "$PYTHON" -m pytest "$@"
+PYTHON="${HA_PYTHON:-.venv/bin/python}"
+[ -x "$PYTHON" ] || PYTHON="$(command -v python3)"
+exec "$PYTHON" -m pytest "$@"

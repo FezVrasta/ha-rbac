@@ -5,16 +5,17 @@ especially "my dashboard broke, and here's what the Denials tab said".
 
 ## Running the tests
 
-The suite reuses Home Assistant core's own pytest fixtures, so it needs a
-checkout of [home-assistant/core][core], not just the installed package:
-
 ```bash
-git clone https://github.com/home-assistant/core ~/src/home-assistant-core
-cd ~/src/home-assistant-core && script/setup
-
-cd /path/to/ha-rbac
-HA_CORE=~/src/home-assistant-core ./scripts-test
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-test.txt
+./scripts-test
 ```
+
+That pulls in `pytest-homeassistant-custom-component`, which packages Home
+Assistant's own test fixtures — so the suite needs nothing but the installed
+package, and runs identically here and in CI. It pins the Home Assistant version
+the suite exercises; bump it in `requirements-test.txt` to test against a newer
+one.
 
 Lint and format with the same configuration Home Assistant uses:
 
@@ -35,5 +36,3 @@ knowing about before changing anything:
   before. Each one failed before its fix.
 - `tests/test_deployment_guard.py` covers the check for the single
   configuration mistake that reduces the whole thing to decoration.
-
-[core]: https://github.com/home-assistant/core

@@ -14,7 +14,7 @@ import pytest
 from aiohttp import web
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
-from tests.common import MockUser
+from pytest_homeassistant_custom_component.common import MockUser
 
 from custom_components.ha_rbac.catalog import Catalog
 from custom_components.ha_rbac.const import ROLE_READ_ONLY
