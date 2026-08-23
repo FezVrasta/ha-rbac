@@ -159,9 +159,20 @@ There's a longer explanation in [docs/DESIGN.md](docs/DESIGN.md) if you want it.
 ## Before you install
 
 This works by sitting in front of Home Assistant, so Home Assistant has to stop
-answering the door itself. **One line of config, and it matters** — skip it and
-this does nothing at all, because anyone can just knock on the old door. It warns
-you at startup if you forget.
+answering the door itself. **One setting, and it matters** — skip it and this
+does nothing at all, because anyone can just knock on the old door. It warns you
+at startup if you forget.
+
+> **On recent Home Assistant versions, `http:` in `configuration.yaml` no
+> longer applies** once Home Assistant has migrated that config into its own
+> store, which it does on first start. (Verified on 2026.8; the change
+> landed in mid-2026.) Editing the YAML afterwards changes
+> nothing and raises a repair issue saying so; the setting is due to be removed
+> in 2027.2. Set it through Home Assistant's HTTP settings instead — the
+> `http/config/configure` websocket command takes the same keys, stages the
+> change as a trial, and reverts it automatically if it locks you out. The YAML
+> below is still correct for older versions and for a first start on a fresh
+> install.
 
 ### Recommended: keep everyone on `:8123`
 
@@ -214,8 +225,12 @@ runs on*. Anyone with a shell there can read Home Assistant's own credential
 store and impersonate you — that beats Home Assistant's security, not just this.
 If that's a person in your house, don't give them a shell account.
 
-**Home Assistant OS users:** add-ons talk to Home Assistant through a private
-channel that nothing can sit in front of. Any add-on you install is outside this.
+**Home Assistant OS and Supervised users:** add-ons talk to Home Assistant
+through a private channel that nothing can sit in front of, so any add-on you
+install is outside this — an add-on with API access can do what it likes
+regardless of anyone's role. The loopback hardening itself works fine here:
+Supervisor reaches Home Assistant over a Unix socket, not the network port, so
+binding Home Assistant to `127.0.0.1` does not cut Supervisor off.
 
 Full detail in [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -278,11 +293,13 @@ unfiltered Home Assistant. (Swap the port if you chose the alternative layout.)
 
 - **Automations aren't affected.** They run as the system, not as a person, so an
   automation can still touch anything. Same as stock Home Assistant.
-- **Add-on control is tested only in theory.** Add-ons need Home Assistant OS or
-  Supervised, which this hasn't run on yet. The mechanism is the same one that
-  hides dashboards and built-in screens, and that part is tested — but if you
-  hand someone a link to an add-on they already had open, that link keeps
-  working until it expires.
+- **Denying an add-on hides it, but doesn't pretend it was never installed.**
+  Add-on control now runs against a real Supervised install with real add-ons:
+  a denied add-on leaves the sidebar, its Supervisor endpoints are refused, it
+  is dropped from the add-on and panel listings, and its own web page is
+  refused even to someone who already knows its address. What it does not do is
+  erase every trace — Supervisor still knows it is installed, and someone
+  determined can tell that something is being withheld.
 - **Hiding an app hides it well, but a determined person knows what exists.**
   A denied dashboard is gone from the sidebar and its config is refused; it does
   not pretend the URL was never there.

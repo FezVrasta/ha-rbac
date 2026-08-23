@@ -31,9 +31,18 @@ from homeassistant.util.json import json_loads
 from multidict import CIMultiDict
 from yarl import URL
 
-from .decide import KIND_HTTP, KIND_WS, Decider, Decision
+from .decide import KIND_HTTP, KIND_WS, REASON_APP, Decider, Decision
 from .denylog import Denial, DenyLog
-from .filters import REGISTRY, FilterContext
+from .filters import REGISTRY, FilterContext, strip_denied_addons
+from .ingress import (
+    SESSION_COOKIE,
+    SESSION_ENDPOINT,
+    VALIDATE_ENDPOINT,
+    IngressGuard,
+    IngressUnavailable,
+    session_from,
+    token_from,
+)
 from .policy import Evaluator
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,6 +76,8 @@ RESPONSE_HEADERS_FILTER = {
 MAX_WEBSOCKET_MESSAGE_SIZE = 16 * 1024 * 1024
 # Correlations outlive their result, so the map needs a ceiling.
 MAX_PENDING_IDS = 8192
+# Supervisor calls in flight on one connection: a handful, not a stream.
+MAX_ENDPOINTS = 64
 # Bodies above this are not filtered, and are refused rather than forwarded.
 MAX_FILTERABLE_RESPONSE_SIZE = 16 * 1024 * 1024
 DISABLED_TIMEOUT = ClientTimeout(total=None)
@@ -173,6 +184,7 @@ class RbacProxy:
         self._forward_client_ip = forward_client_ip
         self._runner: web.AppRunner | None = None
         self._websession = async_get_clientsession(hass)
+        self._ingress = IngressGuard(hass)
 
     async def async_start(self) -> None:
         """Bind the listener."""
@@ -245,6 +257,9 @@ class RbacProxy:
 
     async def _handle_http(self, request: web.Request) -> web.StreamResponse:
         """Proxy one HTTP request, filtering the response where needed."""
+        if (refusal := await self._refuse_ingress(request)) is not None:
+            return refusal
+
         user = await self._resolve_user(request)
         permissions = self._evaluator.async_permissions(user)
 
@@ -277,6 +292,51 @@ class RbacProxy:
         except aiohttp.ClientError as err:
             _LOGGER.debug("Upstream error for %s: %s", request.path, err)
             raise web.HTTPBadGateway from None
+
+    async def _refuse_ingress(self, request: web.Request) -> web.Response | None:
+        """Refuse an add-on's ingress route the caller may not open.
+
+        Home Assistant serves these unauthenticated, so there is no bearer
+        token to resolve and the ordinary path cannot judge them. The
+        `ingress_session` cookie is the only identity, and the proxy knows who
+        each session was issued to because it saw the command that minted it.
+        """
+        if (token := token_from(request.path)) is None:
+            return None
+
+        try:
+            slug = await self._ingress.async_slug_for(token)
+        except IngressUnavailable:
+            return web.json_response({"message": "Unauthorized"}, status=401)
+
+        if slug is None:
+            # Not an add-on this installation has. Home Assistant answers 404.
+            return None
+
+        user_id = self._ingress.user_id_for(request.cookies.get(SESSION_COOKIE))
+        user = await self._hass.auth.async_get_user(user_id) if user_id else None
+        if user is not None:
+            permissions = self._evaluator.async_permissions(user)
+            if permissions.full_access or permissions.app_allowed(slug):
+                return None
+            decision = Decision(
+                allowed=False,
+                reason=REASON_APP,
+                detail=f"no access to the {slug} add-on",
+            )
+        else:
+            decision = Decision(
+                allowed=False,
+                reason=REASON_APP,
+                detail=(
+                    "ingress session was not issued through this proxy, so the "
+                    "add-on it opens cannot be checked against a role"
+                ),
+            )
+
+        name = f"{request.method} {request.path}"
+        self._record(user, KIND_HTTP, name, decision)
+        return web.json_response({"message": "Unauthorized"}, status=401)
 
     async def _peek_json(self, request: web.Request) -> dict[str, Any]:
         """Read a JSON body without consuming it for the upstream request."""
@@ -455,6 +515,7 @@ class RbacProxy:
                     self._record,
                     client_ws,
                     server_ws,
+                    self._ingress,
                 )
                 pumps = [
                     create_eager_task(session.pump_inbound()),
@@ -491,6 +552,7 @@ class _WsSession:
         record: "Callable[[User | None, str, str, Decision], None]",
         client_ws: web.WebSocketResponse,
         server_ws: ClientWebSocketResponse,
+        ingress: IngressGuard,
     ) -> None:
         """Initialise the session."""
         self._hass = hass
@@ -504,6 +566,11 @@ class _WsSession:
         # Correlates a result or event back to the command that asked for it.
         # Without it an outbound frame cannot be filtered, so an unknown id is
         # dropped rather than forwarded.
+        self._ingress = ingress
+        # Supervisor endpoints by request id. The command name alone does not
+        # say which add-on a `supervisor/api` call reaches, and the reply has
+        # to be judged by the endpoint that asked for it.
+        self._endpoints: OrderedDict[int, str] = OrderedDict()
         # Correlations for one-shot commands, bounded because a long-lived
         # session issues a lot of them.
         self._pending: OrderedDict[int, str] = OrderedDict()
@@ -525,6 +592,15 @@ class _WsSession:
         self._pending[msg_id] = msg_type
         while len(self._pending) > MAX_PENDING_IDS:
             self._pending.popitem(last=False)
+
+    @callback
+    def _remember_ingress(self, message: dict[str, Any]) -> None:
+        """Tie an ingress session to the user whose connection minted it."""
+        if not message.get("success") or self._user is None:
+            return
+        if (session := session_from(message.get("result"))) is None:
+            return
+        self._ingress.remember_session(session, self._user.id)
 
     @callback
     def _correlate(self, msg_id: int) -> str | None:
@@ -631,6 +707,22 @@ class _WsSession:
                 )
                 return False
             self._remember(msg_id, msg_type)
+
+        # Note the ingress command whose reply mints a session, so the
+        # unauthenticated ingress route can be tied back to this user. The
+        # renewal carries its session in the request instead of the reply, so
+        # it is handled here rather than on the way back.
+        endpoint = message.get("endpoint")
+        if isinstance(endpoint, str) and isinstance(msg_id, int):
+            self._endpoints[msg_id] = endpoint
+            while len(self._endpoints) > MAX_ENDPOINTS:
+                self._endpoints.popitem(last=False)
+        if (
+            self._user is not None
+            and endpoint == VALIDATE_ENDPOINT
+            and (session := session_from(message.get("data")))
+        ):
+            self._ingress.touch_session(session)
 
         if msg_type == TYPE_AUTH:
             await self._on_auth(message)
@@ -740,6 +832,10 @@ class _WsSession:
         if not isinstance(msg_id, int):
             return message
 
+        endpoint = self._endpoints.pop(msg_id, None)
+        if endpoint == SESSION_ENDPOINT:
+            self._remember_ingress(message)
+
         command = self._correlate(msg_id)
         if command is None:
             # A frame that cannot be correlated cannot be filtered, and
@@ -757,10 +853,10 @@ class _WsSession:
             # uncorrelated and were discarded, so history graphs never updated.
             # The map is bounded instead, in _remember.
             if message.get("success") and "result" in message:
-                return {
-                    **message,
-                    "result": REGISTRY.filter_result(command, ctx, message["result"]),
-                }
+                filtered = REGISTRY.filter_result(command, ctx, message["result"])
+                if endpoint is not None:
+                    filtered = strip_denied_addons(ctx, endpoint, filtered)
+                return {**message, "result": filtered}
             return message
 
         if msg_type == TYPE_EVENT and "event" in message:

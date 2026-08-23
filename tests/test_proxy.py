@@ -81,6 +81,7 @@ async def proxy_env_fixture(
 
     yield {
         "hass": hass,
+        "proxy": proxy,
         "store": store,
         "denylog": denylog,
         "base": f"http://127.0.0.1:{port}",
@@ -472,3 +473,84 @@ async def test_a_subscription_keeps_streaming_after_its_result(
 
     assert "c" in second["event"]
     assert "light.kitchen" in second["event"]["c"]
+
+
+async def _seed_ingress(proxy_env: dict[str, Any], token: str, slug: str) -> Any:
+    """Give the proxy an ingress token map without a Supervisor to read one from."""
+    guard = proxy_env["proxy"]._ingress
+    guard._slugs = {token: slug}
+    guard._loaded_at = float("inf")
+    return guard
+
+
+async def test_ingress_refuses_unknown_session(proxy_env: dict[str, Any]) -> None:
+    """An ingress session the proxy never issued belongs to nobody.
+
+    Home Assistant serves ingress with `requires_auth = False`, so there is no
+    bearer token to fall back on. Anyone who learns an add-on's ingress path --
+    a value stable for the life of the installation -- would otherwise reach it.
+    """
+    await _bind(proxy_env["store"], proxy_env["read_only_user"], ROLE_READ_ONLY)
+    await _seed_ingress(proxy_env, "tok", "core_ssh")
+
+    async with (
+        aiohttp.ClientSession(cookies={"ingress_session": "forged"}) as session,
+        session.get(
+            f"{proxy_env['base']}/api/hassio_ingress/tok/", allow_redirects=False
+        ) as response,
+    ):
+        assert response.status == 401
+
+
+async def test_ingress_refuses_denied_addon(proxy_env: dict[str, Any]) -> None:
+    """A session of a user whose role denies the add-on does not open it."""
+    store = proxy_env["store"]
+    user = proxy_env["read_only_user"]
+    await store.async_create_role(
+        {
+            "id": "no_ssh",
+            "name": "No SSH",
+            "allow": {"entities": {"all": {"read": True}}},
+            "tiers": {"max": "admin", "allow": ["*"], "deny": []},
+            "apps": {"deny": ["core_ssh"]},
+        }
+    )
+    await _bind(store, user, "no_ssh")
+    guard = await _seed_ingress(proxy_env, "tok", "core_ssh")
+    guard.remember_session("mine", user.id)
+
+    async with (
+        aiohttp.ClientSession(cookies={"ingress_session": "mine"}) as session,
+        session.get(
+            f"{proxy_env['base']}/api/hassio_ingress/tok/", allow_redirects=False
+        ) as response,
+    ):
+        assert response.status == 401
+
+
+async def test_ingress_allows_permitted_addon(proxy_env: dict[str, Any]) -> None:
+    """Denying one add-on must not take the rest of ingress down with it."""
+    store = proxy_env["store"]
+    user = proxy_env["read_only_user"]
+    await store.async_create_role(
+        {
+            "id": "no_ssh_only",
+            "name": "No SSH only",
+            "allow": {"entities": {"all": {"read": True}}},
+            "tiers": {"max": "admin", "allow": ["*"], "deny": []},
+            "apps": {"deny": ["core_ssh"]},
+        }
+    )
+    await _bind(store, user, "no_ssh_only")
+    guard = await _seed_ingress(proxy_env, "tok", "core_configurator")
+    guard.remember_session("mine", user.id)
+
+    async with (
+        aiohttp.ClientSession(cookies={"ingress_session": "mine"}) as session,
+        session.get(
+            f"{proxy_env['base']}/api/hassio_ingress/tok/", allow_redirects=False
+        ) as response,
+    ):
+        # Upstream has no Supervisor, so 404 is the expected answer. What
+        # matters is that the gate did not refuse it.
+        assert response.status != 401

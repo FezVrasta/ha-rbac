@@ -583,3 +583,46 @@ def _filter_current_user(ctx: FilterContext, result: Any) -> Any:
 def _passthrough(ctx: FilterContext, result: Any) -> Any:
     """Return the payload unchanged."""
     return result
+
+
+# Supervisor endpoints that list add-ons without naming any, so the app gate
+# never fires on them.
+SUPERVISOR_ADDON_LISTINGS = frozenset(
+    {"/addons", "/apps", "/store", "/store/addons", "/store/apps", "/ingress/panels"}
+)
+
+
+def strip_denied_addons(ctx: FilterContext, endpoint: str, result: Any) -> Any:
+    """Remove add-ons the role cannot open from a Supervisor listing.
+
+    The app gate refuses a request that names a denied add-on, but these name
+    none -- so without this they list every add-on the sidebar correctly hides,
+    which is the same gap `lovelace/dashboards/list` had for dashboards.
+    """
+    if not isinstance(result, dict):
+        return result
+    if endpoint.split("?", 1)[0].rstrip("/") not in SUPERVISOR_ADDON_LISTINGS:
+        return result
+
+    # Supervisor answers `{"result": "ok", "data": {...}}`, but Home Assistant
+    # unwraps `data` on some paths, so both shapes reach here.
+    wrapped = isinstance(result.get("data"), dict)
+    body = result["data"] if wrapped else result
+    cleaned = dict(body)
+
+    if isinstance(entries := body.get("addons"), list):
+        cleaned["addons"] = [
+            entry
+            for entry in entries
+            if not isinstance(entry, dict)
+            or not isinstance(slug := entry.get("slug"), str)
+            or ctx.app_visible(slug)
+        ]
+    if isinstance(panels := body.get("panels"), dict):
+        cleaned["panels"] = {
+            slug: panel
+            for slug, panel in panels.items()
+            if not isinstance(slug, str) or ctx.app_visible(slug)
+        }
+
+    return {**result, "data": cleaned} if wrapped else cleaned
