@@ -134,7 +134,7 @@ see what and why.
 <tr>
 <td width="50%">
 <img src="screenshots/panel-roles.jpg" alt="The role editor">
-<p align="center"><em>"Read everything, except the locks — and never their location." One role, all three axes.</em></p>
+<p align="center"><em>"Read everything, except the locks. And don't show me where anyone is." Every rule picks what it applies to.</em></p>
 </td>
 <td width="50%">
 <img src="screenshots/panel-denials.jpg" alt="The denials log">
