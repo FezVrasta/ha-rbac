@@ -382,11 +382,13 @@ class HaRbacPanel extends HTMLElement {
       </div>
 
       <h3>Details to withhold</h3>
-      <p class="hint">Hide particular attributes on particular entities. The
-        usual reason is location — hide <code>latitude</code> on people and
-        trackers, and the zones that define where home is still work.
-        Comma separated; <code>gps_*</code> matches a group. Leave the picker
-        empty to apply a rule to everything.</p>
+      <p class="hint">An entity someone can see, they see in full — every
+        attribute it reports. Hide the ones you did not mean to share: where
+        someone is, an access code, an IP address, a serial number. Rules are
+        targeted, so hiding <code>latitude</code> on people leaves the zones
+        that define where home is working. Comma separated;
+        <code>gps_*</code> matches a group, and an empty picker means every
+        entity.</p>
       <div id="attr-rules"></div>
       <div class="actions">
         <button id="add-attr" class="secondary" ${locked ? "disabled" : ""}>Hide an attribute</button>

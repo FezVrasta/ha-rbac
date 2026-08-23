@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: Sync manifest version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set version from the tag
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          python3 - "$VERSION" <<'PY'
+          import json, pathlib, sys
+          path = pathlib.Path("custom_components/ha_rbac/manifest.json")
+          manifest = json.loads(path.read_text())
+          manifest["version"] = sys.argv[1]
+          path.write_text(json.dumps(manifest, indent=2) + "\n")
+          print(f"manifest version -> {sys.argv[1]}")
+          PY
+
+      - name: Commit if it changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add custom_components/ha_rbac/manifest.json
+          git diff --staged --quiet || {
+            git commit -m "Set version to ${{ github.event.release.tag_name }}"
+            git push
+          }

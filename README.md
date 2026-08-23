@@ -2,12 +2,13 @@
 
 <p align="center">
   <strong>Give everyone in the house their own Home Assistant.</strong><br>
-  Guests see the lights. Kids get their own dashboard. Nobody sees where
-  your phone is, and nobody but you touches the locks.
+  Guests see the lights. Kids get their own dashboard. Nobody but you
+  touches the locks, the add-ons, or the settings.
 </p>
 
 <p align="center">
   <img src="https://github.com/FezVrasta/ha-rbac/actions/workflows/ci.yml/badge.svg" alt="CI">
+  <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-custom-41BDF5.svg" alt="HACS custom repository"></a>
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="alpha">
   <img src="https://img.shields.io/badge/Home%20Assistant-2026.8%2B-41BDF5" alt="Home Assistant">
   <img src="https://img.shields.io/badge/config-no%20YAML-brightgreen" alt="no YAML">
@@ -62,16 +63,23 @@ Chosen with the same pickers you use everywhere else in Home Assistant.
 
 ### 📍 Details — how much of an entity they see
 
-Withhold individual attributes from entities someone can otherwise see. The
-reason this exists is location:
+An entity someone can see, they normally see in full — every attribute it
+reports. Often that's more than you meant to share:
 
-> Your partner's phone shows as **home**. It does not show *where* home is, or
-> where they were an hour ago.
+| | |
+| --- | --- |
+| **Where someone is** | `latitude`, `longitude` on people and trackers |
+| **Access codes** | the code attribute a lock or alarm exposes |
+| **Network details** | IP addresses, MAC addresses, hostnames |
+| **Identifiers** | serial numbers, device IDs, account names |
+| **Noise** | diagnostics and internals nobody needs to read |
 
-Rules are targeted the same way entity rules are, so hiding `latitude` on people
-and trackers leaves the zones that define where home is working normally. Named
-attributes are gone from the dashboard, the state API, the live updates, and
-templates.
+Name the attributes and the entities they apply to. Rules are targeted the same
+way entity rules are, so hiding `latitude` on people and trackers leaves the
+zones that define where home is working normally.
+
+Hidden attributes are gone from the dashboard, the state API, history, the live
+updates, and templates.
 
 ### 📱 Apps, dashboards and add-ons — where they can go
 
@@ -220,9 +228,19 @@ it checks at startup whether it can still make sense of them — and refuses to
 enforce rather than guessing if it can't. Recent versions only; the CI badge
 above shows what it's currently built against.
 
-**HACS** — add this repository as a custom repository, install, restart.
+### With HACS
 
-**By hand** — copy `custom_components/ha_rbac` into your `config/custom_components`,
+<a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=FezVrasta&repository=ha-rbac&category=integration"><img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Open your Home Assistant instance and open this repository inside the Home Assistant Community Store."></a>
+
+That button adds this as a custom repository in your own Home Assistant. Then
+**Download**, and restart.
+
+Doing it by hand instead: HACS → ⋮ → *Custom repositories* → paste
+`https://github.com/FezVrasta/ha-rbac`, category **Integration**.
+
+### Without HACS
+
+Copy `custom_components/ha_rbac` into your `config/custom_components` and
 restart.
 
 Then add **Access Control** from Settings → Devices & Services. The ports it
