@@ -22,6 +22,10 @@ const BASE = [
   { value: "none", label: "Nothing by default" },
   { value: "read", label: "Read everything" },
   { value: "control", label: "Read and control everything" },
+  // Distinct from "control": this is the policy Home Assistant itself treats as
+  // unrestricted, and it lets the proxy skip filtering entirely. Collapsing it
+  // into "control" would quietly cost a clone of Administrator that fast path.
+  { value: "full", label: "Everything, unfiltered" },
 ];
 
 // Where each kind of exception lives in a stored policy.
@@ -141,15 +145,15 @@ function valueOf(access) {
 function readRules(role) {
   const allow = role.allow || {};
   const deny = role.deny || {};
-  const base = accessOf((allow.entities || {}).all);
+  const base =
+    allow.entities === true ? "full" : accessOf((allow.entities || {}).all);
   const rules = [];
 
   const collect = (policy, denying) => {
     for (const target of TARGETS) {
+      const entities = policy.entities === true ? {} : policy.entities || {};
       const bucket =
-        target.block === "entities"
-          ? (policy.entities || {})[target.value]
-          : policy[target.value];
+        target.block === "entities" ? entities[target.value] : policy[target.value];
       if (!bucket || typeof bucket !== "object") continue;
       // Group ids that share an access level so one row can hold several.
       const byAccess = {};
@@ -169,8 +173,25 @@ function readRules(role) {
 
 /** Write a base level and exception list back into a policy pair. */
 function writeRules(base, rules) {
-  const allow = { entities: {} };
   const deny = { entities: {} };
+  if (base === "full") {
+    // Nothing narrows an unrestricted baseline except a denial, so exceptions
+    // that grant are meaningless here and are dropped rather than half-applied.
+    const allow = { entities: true };
+    for (const rule of rules.filter((r) => r.access === "none")) {
+      const target = TARGETS.find((t) => t.value === rule.target);
+      if (!target || !rule.ids || !rule.ids.length) continue;
+      const holder =
+        target.block === "entities"
+          ? (deny.entities[target.value] ||= {})
+          : (deny[target.value] ||= {});
+      for (const id of rule.ids) holder[id] = true;
+    }
+    if (!Object.keys(deny.entities).length) delete deny.entities;
+    return { allow, deny };
+  }
+
+  const allow = { entities: {} };
   if (base !== "none") allow.entities.all = valueOf(base);
 
   for (const rule of rules) {

@@ -42,7 +42,8 @@ that can't unlock the front door.
 ## What you get
 
 🎭 **Roles that actually mean something** — read, control, or nothing, per entity,
-per device, per area, per label, or per floor.
+per device, per area, per label, or per floor, chosen with the same pickers you
+use everywhere else in Home Assistant.
 
 🙈 **Hidden means hidden** — a restricted entity doesn't appear greyed out. It
 isn't in the dashboard, the search, the history, or the API. As far as that
@@ -72,11 +73,11 @@ no entities renamed. Uninstall and everything is exactly as it was.
 <tr>
 <td width="50%">
 <img src="screenshots/panel-roles.jpg" alt="The role editor">
-<p align="center"><em>Build a role. Three come built in, and you can clone any of them.</em></p>
+<p align="center"><em>"Read everything, except the locks." Pick a baseline, add exceptions.</em></p>
 </td>
 <td width="50%">
 <img src="screenshots/panel-denials.jpg" alt="The denials log">
-<p align="center"><em>When someone says "it's not working", look here first.</em></p>
+<p align="center"><em>When someone says "it stopped working", look here first.</em></p>
 </td>
 </tr>
 </table>
