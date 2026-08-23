@@ -24,10 +24,13 @@
 
 > ### ⚠️ This is an alpha
 >
-> It works, it has 160 tests, and it has been run against a real Home Assistant —
-> but it is new, it has had one round of review, and it has not been through a
-> long tail of real households. **Don't make it the only thing standing between
-> someone and your front door yet.** Try it, break it, and
+> It works. It has 184 tests, it has been run against a real Home Assistant, and
+> it has been through two code reviews and a penetration test — which found four
+> leaks, all since fixed and each pinned by a test.
+>
+> But it is new, and it has not been through a long tail of real households.
+> **Don't make it the only thing standing between someone and your front door
+> yet.** Try it, break it, and
 > [tell me what happened](https://github.com/FezVrasta/ha-rbac/issues).
 
 ---
@@ -124,7 +127,7 @@ see what and why.
 <tr>
 <td width="50%">
 <img src="screenshots/panel-roles.jpg" alt="The role editor">
-<p align="center"><em>"Read everything, except the locks." Pick a baseline, add exceptions.</em></p>
+<p align="center"><em>"Read everything, except the locks — and never their location." One role, all three axes.</em></p>
 </td>
 <td width="50%">
 <img src="screenshots/panel-denials.jpg" alt="The denials log">
@@ -213,10 +216,11 @@ Full detail in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Install
 
-Built and tested against Home Assistant **2026.9**. It reads a few Home
-Assistant internals to work out what is administrative, so treat older versions
-as untested rather than unsupported — it will tell you at startup if it cannot
-make sense of them, and refuse to enforce rather than guess.
+Developed against Home Assistant **2026.9**, with the test suite running against
+**2026.8**. It reads a few Home Assistant internals to work out what is
+administrative, so treat other versions as untested rather than unsupported — it
+checks at startup whether it can still make sense of them, and refuses to enforce
+rather than guessing.
 
 **HACS** — add this repository as a custom repository, install, restart.
 
