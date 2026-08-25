@@ -153,7 +153,18 @@ reachable from the network, or the proxy is decorative.**
 
 Set the server host to `127.0.0.1` and the port to `8124` under **Settings >
 System > Network**, and leave this integration on `8123`, which is its default.
-In Docker, publish only `8123`.
+Do it in that order: move the port first, install this, then close the host.
+Each step leaves a reachable instance, and taking the port before Home Assistant
+has vacated it is a bind error rather than a working setup.
+
+`127.0.0.1` is doing the work here, not any firewall. It is the only address
+Home Assistant will accept a connection on, so after that setting it is not
+listening on the network at all and `8124` cannot be opened from off the
+machine. This layer is in-process and reaches it over the same loopback address,
+so it never needs the port exposed. That holds identically on Home Assistant OS,
+Supervised, Container and Core. Not publishing `8124` in Docker is worth doing
+as well, but it is not what makes this safe, and publishing it would not undo
+the setting either.
 
 > On recent Home Assistant versions the `http:` block in `configuration.yaml` is
 > ignored: that configuration was migrated into Home Assistant's own store, and

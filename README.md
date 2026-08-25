@@ -195,7 +195,30 @@ Longer version in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Install
 
-### 1. Add the integration
+Three steps, in this order. Each one leaves you with a Home Assistant you can
+still reach, so there is no point where you are locked out waiting for the next
+step to work.
+
+The end state: **Home Assistant on `127.0.0.1:8124`**, reachable only from its
+own machine, and **this integration on `8123`**, the address everyone already
+uses. Bookmarks, the companion app, your Google or Alexa setup all keep working,
+and nobody gets signed out, because to a browser it is the same address as
+before.
+
+### 1. Move Home Assistant to port 8124
+
+**Settings → System → Network**, under **HTTP**, set **Server port** to `8124`.
+Leave **Server host** alone for now.
+
+Home Assistant restarts, then asks you to confirm you can still reach it, at
+`http://your-ha:8124`. Confirm there. If you can't reach it, it puts the old
+port back by itself.
+
+Port `8123` is now free, which is what the next step needs. Until step 2 is
+done, `8123` answers nothing, so do this at a time when a few minutes of that is
+fine.
+
+### 2. Install this integration
 
 **With HACS:**
 
@@ -208,41 +231,61 @@ paste `https://github.com/FezVrasta/ha-rbac`, category **Integration**.
 **Without HACS:** copy `custom_components/ha_rbac` into your
 `config/custom_components` and restart.
 
-Then add **Access Control** from Settings → Devices & Services.
+Then add **Access Control** from Settings → Devices & Services. It defaults to
+answering on `8123` and forwarding to `127.0.0.1:8124`, so there is nothing to
+fill in.
+
+`http://your-ha:8123` now works again, and everything through it is filtered.
+`8124` still works too, unfiltered, which the last step closes.
 
 > [!NOTE]
-> Nothing changes until you give someone a role, so it's safe to install and
-> look around first.
+> Nothing changes for anyone until you give someone a role, so it is safe to
+> stop here and look around first.
 
-### 2. Close Home Assistant's own door
+### 3. Close Home Assistant's own door
 
 > [!IMPORTANT]
-> **This step is the one that matters.** This works by standing in front of
-> Home Assistant, so Home Assistant has to stop answering directly. Otherwise
-> anyone can walk straight around it with the login they already have. It warns
-> you at startup if you skip it.
+> **This is the step that makes it real.** Until you do it, anyone can walk
+> straight around the filtering by connecting to `8124` with the login they
+> already have. It warns you at startup if you skip it.
 
-What you want is Home Assistant listening on `127.0.0.1:8124`, and this
-integration (which defaults to exactly that) answering on `8123`, the address
-everyone already uses. Nothing else changes: bookmarks, the companion app, your
-Google or Alexa setup all keep working, and **nobody gets signed out**, because
-to a browser it is the same address as before. In Docker, keep publishing `8123`
-and don't publish `8124`.
+Back to **Settings → System → Network**, and this time set **Server host**
+(under *Advanced*) to `127.0.0.1`.
 
-Set it in **Settings → System → Network**, in the **HTTP** section:
+Home Assistant restarts and asks you to confirm once more. Confirm from
+`http://your-ha:8123`, which is the proxy, and still works. If something has
+gone wrong it reverts by itself.
 
-| | |
-| --- | --- |
-| **Server port** | `8124` |
-| **Server host** (under *Advanced*) | `127.0.0.1` |
+That's it.
 
-Home Assistant restarts to apply it, then asks you to confirm once you can
-still reach it. If you can't, it puts the old settings back by itself, so a
-mistake here locks you out for a few minutes rather than for good.
+<details>
+<summary><strong>"So is port 8124 wide open?"</strong></summary>
+
+<br>
+
+No, and it is worth being clear about this because it is the first thing
+everyone asks.
+
+`127.0.0.1` is not a firewall rule, it is the only address Home Assistant will
+accept a connection on, and it means "this machine, nothing else". After step 3
+Home Assistant is not listening on your network at all. Port `8124` still
+exists, but only from inside the box. Nothing on your LAN can open it, whatever
+it tries.
+
+This integration runs *inside* Home Assistant, so it reaches `8124` over that
+same internal address. It never needs the port to be reachable from anywhere
+else, which is why closing it costs nothing.
+
+**This works the same on every install type**: Home Assistant OS, Supervised,
+Container and Core. It is a Home Assistant setting, not a Docker or firewall
+one. If you run in Docker you can also simply not publish `8124`, but you do not
+have to for this to hold.
+
+</details>
 
 > [!CAUTION]
 > **If this integration ever fails to load, Home Assistant is reachable only
-> from its own machine.** That's deliberate: it fails closed rather than
+> from its own machine.** That is deliberate: it fails closed rather than
 > throwing the doors open. But keep a way in,
 > `ssh -L 8124:127.0.0.1:8124 your-ha-host` and then browse `localhost:8124`,
 > and set that up before you need it.
@@ -262,9 +305,9 @@ If that's a person in your house, don't give them a shell account.
 
 **On Home Assistant OS and Supervised**, add-ons talk to Home Assistant through
 a private channel nothing can sit in front of, so an add-on with API access can
-do as it likes regardless of anyone's role. The loopback setting above is fine
-here, though: Supervisor reaches Home Assistant over a Unix socket rather than
-the network port.
+do as it likes regardless of anyone's role. Step 3 is fine here, though:
+Supervisor reaches Home Assistant over a Unix socket rather than the network
+port, so it keeps working.
 
 Full detail in [docs/DESIGN.md](docs/DESIGN.md).
 

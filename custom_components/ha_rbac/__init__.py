@@ -8,6 +8,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import Event, HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import (
     area_registry as ar,
 )
@@ -115,8 +116,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "Home Assistant is reachable from the network, so this integration "
             "enforces nothing: an access token is not port-scoped, and any user "
             "can present the token they already have directly to port %s. Set "
-            "http.server_host to 127.0.0.1 in configuration.yaml and expose only "
-            "the proxy port",
+            "Server host to 127.0.0.1 under Settings > System > Network",
             config.get(CONF_UPSTREAM_PORT, DEFAULT_UPSTREAM_PORT),
         )
 
@@ -124,6 +124,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.error(
             "Permission derivation is not working on this Home Assistant version, "
             "so every request will be denied rather than silently allowed"
+        )
+
+    proxy_port = config.get(CONF_PROXY_PORT, DEFAULT_PROXY_PORT)
+    upstream_port = config.get(CONF_UPSTREAM_PORT, DEFAULT_UPSTREAM_PORT)
+
+    def _port_taken() -> str:
+        """Explain the one setup mistake that produces a bare bind error."""
+        return (
+            f"Port {proxy_port} is already in use, which is what happens when "
+            f"Home Assistant is still answering on it. Move Home Assistant to "
+            f"port {upstream_port} under Settings > System > Network first, "
+            f"then this can take over {proxy_port}."
         )
 
     async def _start_proxy(_event: Event | None = None) -> None:
@@ -134,20 +146,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             decider,
             denylog,
             upstream_host=config.get(CONF_UPSTREAM_HOST, DEFAULT_UPSTREAM_HOST),
-            upstream_port=config.get(CONF_UPSTREAM_PORT, DEFAULT_UPSTREAM_PORT),
+            upstream_port=upstream_port,
             bind_address=config.get(CONF_BIND_ADDRESS, DEFAULT_BIND_ADDRESS),
-            port=config.get(CONF_PROXY_PORT, DEFAULT_PROXY_PORT),
+            port=proxy_port,
         )
         await proxy.async_start()
         data.proxy = proxy
         # Dashboards can only be read once Home Assistant has loaded them.
         await dashboard_entities.async_start()
 
+    async def _start_proxy_later(event: Event) -> None:
+        """Start on the started event, where nothing can catch a raise."""
+        try:
+            await _start_proxy(event)
+        except OSError:
+            _LOGGER.error("%s", _port_taken())
+
     if hass.is_running:
-        await _start_proxy()
+        try:
+            await _start_proxy()
+        except OSError as err:
+            raise ConfigEntryNotReady(_port_taken()) from err
     else:
         data.unsubscribes.append(
-            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _start_proxy)
+            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _start_proxy_later)
         )
 
     entry.async_on_unload(entry.add_update_listener(_async_reload))

@@ -91,10 +91,12 @@ class RbacConfigFlow(ConfigFlow, domain=DOMAIN):
                     ""
                     if async_upstream_is_loopback_only(self.hass)
                     else (
-                        "Home Assistant is currently reachable from the network. "
-                        "Set http.server_host to 127.0.0.1 in configuration.yaml, "
-                        "or anyone can bypass these rules by connecting to it "
-                        "directly with the token they already have."
+                        "Home Assistant is currently reachable from the "
+                        "network, so nothing here is enforced yet. Once this is "
+                        "answering, set Server host to 127.0.0.1 under Settings "
+                        "> System > Network. Until you do, anyone can bypass "
+                        "these rules by connecting to Home Assistant directly "
+                        "with the token they already have."
                     )
                 )
             },

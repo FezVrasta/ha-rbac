@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
@@ -232,3 +233,39 @@ async def test_binding_an_unknown_role_is_refused(
     response = await client.receive_json()
     assert response["success"] is False
     assert response["error"]["code"] == "not_found"
+
+
+async def test_a_taken_port_explains_the_setup_order(
+    hass: HomeAssistant, socket_enabled: None
+) -> None:
+    """Home Assistant still holding 8123 is the one predictable install mistake.
+
+    The proxy takes the port Home Assistant used to answer on, so installing
+    before moving Home Assistant off it fails to bind. Left bare that surfaces
+    as "Failed to set up" with an errno, which says nothing about the fix.
+    """
+    for domain in ("http", "websocket_api"):
+        await async_setup_component(hass, domain, {"http": {}})
+    await hass.async_block_till_done()
+
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={
+                CONF_PROXY_PORT: taken.getsockname()[1],
+                CONF_BIND_ADDRESS: "127.0.0.1",
+                CONF_UPSTREAM_HOST: "127.0.0.1",
+                CONF_UPSTREAM_PORT: 8124,
+            },
+        )
+        entry.add_to_hass(hass)
+
+        with pytest.raises(ConfigEntryNotReady) as raised:
+            await async_setup_entry(hass, entry)
+
+    message = str(raised.value)
+    assert "already in use" in message
+    assert "8124" in message, "it must name the port to move Home Assistant to"
+    assert "Settings > System > Network" in message, "and where to do it"

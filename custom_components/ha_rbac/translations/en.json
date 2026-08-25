@@ -3,12 +3,18 @@
     "step": {
       "user": {
         "title": "RBAC access control",
-        "description": "The proxy serves Home Assistant with per-user filtering applied. Point browsers at the proxy port and keep Home Assistant on loopback.\n\n{warning}",
+        "description": "This answers on the port your browsers already use and forwards to Home Assistant, with each user's role applied on the way through.\n\nThe defaults are correct if you have just moved Home Assistant to port 8124.\n\n{warning}",
         "data": {
           "proxy_port": "Proxy port",
           "bind_address": "Bind address",
           "upstream_host": "Home Assistant host",
           "upstream_port": "Home Assistant port"
+        },
+        "data_description": {
+          "proxy_port": "The port browsers connect to. Normally 8123, the one Home Assistant used to answer on.",
+          "bind_address": "Which network to answer on. 0.0.0.0 means all of them.",
+          "upstream_host": "Where Home Assistant itself is listening. Leave this as 127.0.0.1.",
+          "upstream_port": "The port you moved Home Assistant to under Settings > System > Network."
         }
       }
     },
@@ -28,6 +34,12 @@
           "bind_address": "Bind address",
           "upstream_host": "Home Assistant host",
           "upstream_port": "Home Assistant port"
+        },
+        "data_description": {
+          "proxy_port": "The port browsers connect to. Normally 8123, the one Home Assistant used to answer on.",
+          "bind_address": "Which network to answer on. 0.0.0.0 means all of them.",
+          "upstream_host": "Where Home Assistant itself is listening. Leave this as 127.0.0.1.",
+          "upstream_port": "The port you moved Home Assistant to under Settings > System > Network."
         }
       }
     }
