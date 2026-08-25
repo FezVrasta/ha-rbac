@@ -68,7 +68,7 @@ const STYLES = `
   .hint { color: var(--secondary-text-color); font-size: var(--ha-font-size-s, .85rem);
           margin: 0 0 12px; line-height: 1.45; }
   .field { display: block; margin: 12px 0; }
-  ha-textfield, ha-textarea, ha-select { width: 100%; }
+  ha-input, ha-textarea, ha-select { width: 100%; }
   .tabs { display: flex; gap: 4px; padding: 0 8px; overflow-x: auto; }
   .tabs button {
     background: none; border: 0; cursor: pointer; font: inherit;
@@ -76,12 +76,13 @@ const STYLES = `
     padding: 12px 16px; border-bottom: 2px solid transparent; white-space: nowrap;
   }
   .tabs button[aria-selected="true"] { opacity: 1; border-bottom-color: currentColor; }
-  .rule { display: grid; grid-template-columns: 170px 1fr 180px 48px;
-          gap: 8px; align-items: center; margin-bottom: 8px; }
-  @media (max-width: 700px) { .rule { grid-template-columns: 1fr; } }
+  .rule { display: grid; grid-template-columns: minmax(150px, 200px) minmax(0, 1fr) minmax(150px, 220px) 48px;
+          gap: 12px; align-items: end; margin-bottom: 20px; }
+  @media (max-width: 900px) { .rule { grid-template-columns: 1fr; align-items: stretch; } }
   .rule .picker { min-width: 0; }
+  .rule ha-icon-button { margin-bottom: 4px; justify-self: start; }
   .rule.deny { border-inline-start: 2px solid var(--error-color);
-               padding-inline-start: 10px; margin-inline-start: -12px; }
+               padding-inline-start: 12px; margin-inline-start: -14px; }
   .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
   .actions .spacer { flex: 1; }
   ul.roles { list-style: none; margin: 0; padding: 0; }
@@ -103,7 +104,8 @@ const STYLES = `
   code { font-family: var(--ha-font-family-code, monospace); font-size: .82rem; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
-  .checks { display: flex; flex-wrap: wrap; gap: 0 16px; }
+  .checks { display: grid; gap: 0 16px;
+            grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
   ha-alert { display: block; margin-bottom: 16px; }
   ha-expansion-panel { margin-top: 24px; }
 `;
@@ -431,8 +433,8 @@ class HaRbacPanel extends HTMLElement {
       }</p>
 
       <div class="field">
-        <ha-textfield id="name" label="Name" value="${esc(draft.name)}"
-          ${locked ? "disabled" : ""}></ha-textfield>
+        <ha-input id="name" label="Name" value="${esc(draft.name)}"
+          ${locked ? "disabled" : ""}></ha-input>
       </div>
 
       <h3>What this role can see</h3>
@@ -593,7 +595,7 @@ class HaRbacPanel extends HTMLElement {
     picker.className = "picker";
     picker.appendChild(this._pickerFor(rule, locked));
 
-    const names = document.createElement("ha-textfield");
+    const names = document.createElement("ha-input");
     names.label = "Attributes";
     names.value = rule.names.join(", ");
     names.placeholder = "latitude, longitude, gps_*";
