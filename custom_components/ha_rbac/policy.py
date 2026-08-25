@@ -48,7 +48,9 @@ from homeassistant.helpers import (
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CAPABILITY_PATTERNS,
     ROLE_ADMIN,
+    ROLE_EDITOR,
     ROLE_READ_ONLY,
     ROLE_USER,
     TIER_ADMIN,
@@ -185,6 +187,11 @@ ROLE_SCHEMA = vol.Schema(
         vol.Optional("allow", default=dict): EXTENDED_POLICY_SCHEMA,
         vol.Optional("deny", default=dict): EXTENDED_POLICY_SCHEMA,
         vol.Optional("tiers", default=dict): TIERS_SCHEMA,
+        # Named parts of the administrative surface. An id this build does not
+        # know is kept and ignored rather than rejected: it grants nothing, and
+        # refusing the role outright would take away the access it still
+        # describes correctly.
+        vol.Optional("capabilities", default=list): [str],
         vol.Optional("apps", default=dict): APPS_SCHEMA,
         vol.Optional("attributes", default=dict): ATTRIBUTES_SCHEMA,
         vol.Optional("schedule", default=dict): SCHEDULE_SCHEMA,
@@ -268,8 +275,25 @@ def _window_active(window: dict[str, Any], now: datetime) -> bool:
     return not days or DAYS[opened.weekday()] in days
 
 
+def capability_patterns(capabilities: Any) -> list[str]:
+    """Return the tier patterns a role's named capabilities stand for.
+
+    Stored as names rather than as the globs they expand to, so a role follows
+    the grouping as Home Assistant's command surface moves under it, and so the
+    editor can show what was actually chosen rather than reverse-engineering it
+    from a list of patterns.
+    """
+    if not isinstance(capabilities, list):
+        return []
+    return [
+        pattern
+        for name in capabilities
+        for pattern in CAPABILITY_PATTERNS.get(name, ())
+    ]
+
+
 def default_roles() -> dict[str, dict[str, Any]]:
-    """Return the three predefined roles.
+    """Return the predefined roles.
 
     `user` deliberately diverges from HA's USER_POLICY, which is `{entities: True}`
     and therefore identical to ADMIN_POLICY. Withholding `edit` lets this layer
@@ -284,6 +308,28 @@ def default_roles() -> dict[str, dict[str, Any]]:
             "allow": {CAT_ENTITIES: True},
             "deny": {},
             "tiers": {"max": TIER_ADMIN, "allow": ["*"], "deny": []},
+        },
+        ROLE_EDITOR: {
+            "id": ROLE_EDITOR,
+            "name": "Editor",
+            "description": (
+                "Everything a User can do, plus building automations, scripts, "
+                "scenes, dashboards and helpers. Not users, backups or "
+                "integrations."
+            ),
+            "system_generated": True,
+            "allow": {
+                CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}}
+            },
+            "deny": {},
+            "tiers": {"max": TIER_USER, "allow": [], "deny": list(ACTS_ON_INTENT)},
+            "capabilities": [
+                "automations",
+                "scripts",
+                "scenes",
+                "dashboards",
+                "helpers",
+            ],
         },
         ROLE_USER: {
             "id": ROLE_USER,
@@ -543,7 +589,10 @@ def compile_role(
     apps = role.get("apps") or {}
     attributes = role.get("attributes") or {}
     tier_max = _tier_ceiling(tiers.get("max"))
-    tier_allow = list(tiers.get("allow") or [])
+    tier_allow = [
+        *capability_patterns(role.get("capabilities")),
+        *(tiers.get("allow") or []),
+    ]
     attribute_rules = _compile_attribute_rules(hass, attributes)
 
     return CompiledRole(

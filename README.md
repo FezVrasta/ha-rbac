@@ -139,6 +139,34 @@ what they had until they close the tab.
 read from Home Assistant's own markings rather than a list kept here, so it
 stays right as Home Assistant grows.
 
+Between those two, hand over one part of the settings without the rest:
+
+| | |
+| --- | --- |
+| **Automations** | build and debug automations, blueprints and traces |
+| **Scripts**, **Scenes** | write them, and reach nothing else |
+| **Dashboards** | create and edit them for everyone |
+| **Helpers** | counters, timers, schedules, tags |
+| **Areas, floors and labels** | rearrange how the house is organised |
+| **Devices and integrations** | add and configure the hardware |
+| **Users** | create people and change their passwords |
+| **Backups** | make them, download them, restore them |
+
+Each one says how many commands it covers on your instance, because they're
+found there rather than listed here.
+
+> [!NOTE]
+> Automations, scripts and scenes run with no user context, exactly as they do
+> in stock Home Assistant. Someone who can write one can make it do anything,
+> whatever their role allows directly. Those three record that you trust
+> someone rather than containing them.
+
+Four roles come ready to use — **Administrator**, **Editor**, **User** and
+**Read only** — and any of them can be cloned and changed. Editor is the one
+most people are after: everything a User can do, plus building automations,
+scripts, scenes, dashboards and helpers, and nothing that reaches users, backups
+or integrations.
+
 ---
 
 And the parts that make it usable:

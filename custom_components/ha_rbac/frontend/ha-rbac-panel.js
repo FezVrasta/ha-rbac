@@ -143,6 +143,7 @@ const STYLES = `
   .checks { display: grid; gap: 4px 16px; align-items: center;
             grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
   .checks ha-formfield { display: flex; align-items: center; min-height: 40px; }
+  .cap p { margin: -6px 0 10px 44px; }
   /* Seven three-letter labels do not need the width an app name does. */
   /* A time picker is hh:mm, a meridiem dropdown and a clear button, which is
      wider than it looks; four controls abreast clipped it. Days take the first
@@ -433,6 +434,7 @@ class HaRbacPanel extends HTMLElement {
           appDenied: [...((role.apps || {}).deny || [])],
           dashboardLevels: { ...((role.apps || {}).dashboards || {}) },
           schedule: readSchedule(role),
+          capabilities: [...(role.capabilities || [])],
           tierAllow: [...((role.tiers || {}).allow || [])],
           tierDeny: [...((role.tiers || {}).deny || [])],
           attrRules: readAttributeRules(role),
@@ -617,6 +619,32 @@ class HaRbacPanel extends HTMLElement {
         ${this._catalog ? this._catalog.commands.length : 0} commands,
         nothing hard-coded.</p>
       <div class="field" id="tier-host"></div>
+      <p class="hint">Ordinary use covers living in the house: reading and
+        controlling whatever the role is allowed above. Tick a part of the
+        settings here to hand that over as well, without granting the rest.</p>
+      <div id="caps">${(this._catalog ? this._catalog.capabilities || [] : [])
+        .map(
+          (cap) => `<div class="cap">
+            <ha-formfield label="${esc(cap.title)}">
+              <ha-checkbox data-cap="${esc(cap.id)}"
+                ${(draft.capabilities || []).includes(cap.id) ? "checked" : ""}
+                ${locked ? "disabled" : ""}></ha-checkbox>
+            </ha-formfield>
+            <p class="hint">${esc(cap.description)}${
+              cap.commands.length
+                ? ` ${cap.commands.length} command${
+                    cap.commands.length === 1 ? "" : "s"
+                  } on this instance.`
+                : ""
+            }</p>
+          </div>`
+        )
+        .join("")}</div>
+      <ha-alert alert-type="warning">Automations, scripts and scenes run with no
+        user context, exactly as they do in stock Home Assistant. Someone who can
+        write one can make it do anything, whatever their role allows directly.
+        These are a statement that you trust the person, not a way to contain
+        them.</ha-alert>
 
       <h3>When this role applies</h3>
       <p class="hint">Leave this empty and the role is always in force. Add a
@@ -1176,6 +1204,9 @@ class HaRbacPanel extends HTMLElement {
       name: root.getElementById("name").value.trim(),
       allow,
       deny,
+      capabilities: [...root.querySelectorAll("[data-cap]")]
+        .filter((box) => box.checked)
+        .map((box) => box.dataset.cap),
       tiers: {
         max: root.getElementById("tier").value,
         allow: [...this._draft.tierAllow],
@@ -1265,6 +1296,7 @@ class HaRbacPanel extends HTMLElement {
           allow: source.allow,
           deny: source.deny,
           tiers: source.tiers,
+          capabilities: source.capabilities,
           apps: source.apps,
           attributes: source.attributes,
           schedule: source.schedule,

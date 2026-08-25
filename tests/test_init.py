@@ -19,6 +19,7 @@ from custom_components.ha_rbac.const import (
     DATA_RBAC,
     DOMAIN,
     ROLE_ADMIN,
+    ROLE_EDITOR,
     ROLE_READ_ONLY,
 )
 
@@ -110,6 +111,7 @@ async def test_roles_crud_over_websocket(
     listed = await client.receive_json()
     assert {role["id"] for role in listed["result"]} == {
         ROLE_ADMIN,
+        ROLE_EDITOR,
         "user",
         ROLE_READ_ONLY,
     }

@@ -6,6 +6,7 @@ from homeassistant.core import HomeAssistant
 from custom_components.ha_rbac.const import (
     EVENT_RBAC_DENIED,
     ROLE_ADMIN,
+    ROLE_EDITOR,
     ROLE_READ_ONLY,
     ROLE_USER,
 )
@@ -22,8 +23,8 @@ async def store_fixture(hass: HomeAssistant) -> RbacStore:
 
 
 async def test_predefined_roles_are_seeded(store: RbacStore) -> None:
-    """A fresh install has the three roles without any configuration."""
-    assert set(store.roles) == {ROLE_ADMIN, ROLE_USER, ROLE_READ_ONLY}
+    """A fresh install has the predefined roles without any configuration."""
+    assert set(store.roles) == {ROLE_ADMIN, ROLE_EDITOR, ROLE_USER, ROLE_READ_ONLY}
     assert all(role["system_generated"] for role in store.roles.values())
 
 

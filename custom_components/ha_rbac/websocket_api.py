@@ -236,6 +236,7 @@ def handle_catalog(
         msg["id"],
         {
             "commands": data.catalog.as_dict(),
+            "capabilities": data.catalog.capabilities(),
             "apps": data.catalog.apps(),
             "degraded": data.catalog.degraded,
             "domains": sorted(

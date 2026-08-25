@@ -19,7 +19,8 @@ from custom_components.ha_rbac.catalog import (
     derive_tier,
     introspection_works,
 )
-from custom_components.ha_rbac.const import TIER_ADMIN, TIER_OPEN
+from custom_components.ha_rbac.const import CAPABILITIES, TIER_ADMIN, TIER_OPEN
+from custom_components.ha_rbac.policy import default_roles
 from testsupport.ast_oracle import scan
 
 # The oracle scans the Home Assistant source that is actually installed, so it
@@ -173,3 +174,74 @@ def test_derive_tier_survives_both_decorator_orderings() -> None:
     assert derive_tier(require_admin(async_response(handler_a))) == TIER_ADMIN
     assert derive_tier(async_response(require_admin(handler_b))) == TIER_ADMIN
     assert derive_tier(async_response(handler_a)) == TIER_OPEN
+
+
+@pytest.fixture(name="broad_catalog")
+async def broad_catalog_fixture(hass: HomeAssistant) -> Catalog:
+    """Return a catalogue with the components the capabilities name."""
+    for domain in (
+        "websocket_api",
+        "config",
+        "automation",
+        "script",
+        "scene",
+        "lovelace",
+        "counter",
+        "timer",
+        "input_boolean",
+        "tag",
+        "backup",
+        "blueprint",
+        "person",
+    ):
+        await async_setup_component(hass, domain, {domain: {}})
+    await hass.async_block_till_done()
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    return catalog
+
+
+async def test_every_capability_reaches_something(broad_catalog: Catalog) -> None:
+    """A capability matching nothing is a checkbox that silently does nothing.
+
+    Home Assistant renames its namespaces from time to time, and a pattern left
+    behind by one of those fails in the direction nobody notices: the box is
+    still there, ticking it still saves, and the access never arrives.
+
+    A REST pattern -- one with a method in front of a path -- counts on its own,
+    because the config views that serve `/api/config/scene/config/{id}` build
+    their URL per instance and so are absent from the derived route table. That
+    is why scenes match no websocket command at all.
+    """
+    matched = {
+        capability["id"]
+        for capability in broad_catalog.capabilities()
+        if capability["commands"]
+    }
+    for capability in CAPABILITIES:
+        rest_only = any(" " in pattern for pattern in capability["patterns"])
+        assert capability["id"] in matched or rest_only, capability["id"]
+
+
+async def test_capabilities_do_not_overlap(broad_catalog: Catalog) -> None:
+    """Each command belongs to one group, so revoking one means what it says."""
+    seen: dict[str, str] = {}
+    for capability in broad_catalog.capabilities():
+        for command in capability["commands"]:
+            assert command not in seen, (
+                f"{command} is in both {seen.get(command)} and {capability['id']}"
+            )
+            seen[command] = capability["id"]
+
+
+async def test_the_predefined_roles_name_real_capabilities() -> None:
+    """An unknown capability id grants nothing and raises nothing.
+
+    That is the right way round for a role written by a newer build, and the
+    wrong way round for a typo in our own presets: the Editor would quietly ship
+    with less than it claims.
+    """
+    known = {capability["id"] for capability in CAPABILITIES}
+    for role in default_roles().values():
+        assert set(role.get("capabilities") or []) <= known, role["id"]

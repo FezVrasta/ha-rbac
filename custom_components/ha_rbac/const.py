@@ -38,8 +38,121 @@ TIER_ORDER: Final = (TIER_OPEN, TIER_USER, TIER_ADMIN)
 
 # Predefined role ids. system_generated, not editable, but cloneable.
 ROLE_ADMIN: Final = "admin"
+ROLE_EDITOR: Final = "editor"
 ROLE_USER: Final = "user"
 ROLE_READ_ONLY: Final = "read_only"
+
+# Named parts of the administrative surface, so that granting one does not mean
+# writing a glob. The commands themselves are still derived -- this only says
+# which of them belong together under a name an administrator recognises,
+# because a role editor offering four hundred command names is not a role
+# editor.
+#
+# Patterns match the same request name the tier gate sees: a websocket command,
+# or `"METHOD /path"` for REST, which is why the ones with a space in them match
+# a URL. A namespace nobody has grouped stays behind the `admin` ceiling, which
+# is the conservative direction -- it is withheld rather than handed out.
+CAPABILITIES: Final = (
+    {
+        "id": "automations",
+        "title": "Automations",
+        "description": "Create, edit, debug and run automations and blueprints.",
+        "patterns": (
+            "automation/*",
+            "blueprint/*",
+            "trace/*",
+            "validate_config",
+            "test_condition",
+            "subscribe_trigger",
+            "subscribe_condition",
+            "execute_script",
+            "* /api/config/automation/config/*",
+        ),
+    },
+    {
+        "id": "scripts",
+        "title": "Scripts",
+        "description": "Create and edit scripts.",
+        "patterns": ("script/*", "* /api/config/script/config/*"),
+    },
+    {
+        "id": "scenes",
+        "title": "Scenes",
+        "description": "Create and edit scenes.",
+        "patterns": ("scene/*", "* /api/config/scene/config/*"),
+    },
+    {
+        "id": "dashboards",
+        "title": "Dashboards",
+        "description": (
+            "Create, edit and delete dashboards. Loading custom resources into "
+            "everyone's frontend stays with administrators."
+        ),
+        # `lovelace/resources/*` is deliberately absent: a resource is
+        # JavaScript loaded into every browser including an owner's, so granting
+        # it hands over a good deal more than dashboards.
+        "patterns": ("lovelace/config/*", "lovelace/dashboards/*"),
+    },
+    {
+        "id": "helpers",
+        "title": "Helpers",
+        "description": "Create and edit helpers, timers, schedules and tags.",
+        "patterns": (
+            "input_boolean/*",
+            "input_button/*",
+            "input_datetime/*",
+            "input_number/*",
+            "input_select/*",
+            "input_text/*",
+            "counter/*",
+            "timer/*",
+            "schedule/*",
+            "image/*",
+            "tag/*",
+        ),
+    },
+    {
+        "id": "organisation",
+        "title": "Areas, floors and labels",
+        "description": "Rename and rearrange how the house is organised.",
+        "patterns": (
+            "config/area_registry/*",
+            "config/floor_registry/*",
+            "config/label_registry/*",
+            "config/category_registry/*",
+        ),
+    },
+    {
+        "id": "devices",
+        "title": "Devices and integrations",
+        "description": "Add, configure and remove integrations, devices and entities.",
+        "patterns": (
+            "config_entries/*",
+            "config/device_registry/*",
+            "config/entity_registry/*",
+            "diagnostics/*",
+            "homeassistant/expose_entity*",
+            "homeassistant/expose_new_entities/*",
+            "* /api/config/config_entries/*",
+        ),
+    },
+    {
+        "id": "users",
+        "title": "Users",
+        "description": "Create users, change their passwords and delete them.",
+        "patterns": ("config/auth/*", "config/auth_provider/*"),
+    },
+    {
+        "id": "backups",
+        "title": "Backups",
+        "description": "Create, download and restore backups.",
+        "patterns": ("backup/*",),
+    },
+)
+
+CAPABILITY_PATTERNS: Final[dict[str, tuple[str, ...]]] = {
+    capability["id"]: capability["patterns"] for capability in CAPABILITIES
+}
 
 # Resource keys the extractor collects. Each accepts str | list[str].
 KEY_ENTITY: Final = "entity"

@@ -137,7 +137,16 @@ not a correctness boundary, so it fails closed.
   consulted on the hottest path there is. A denial is checked first, so putting
   a forbidden entity on a granted dashboard does not unlock it, which would
   otherwise hand a grant to anyone who can edit a dashboard.
-- **Commands**: ordinary use, or everything including settings.
+- **Commands**: ordinary use, or everything including settings, plus any
+  *capabilities* — named parts of the administrative surface, so that granting
+  automations or dashboards does not mean writing a glob. A role stores the
+  names rather than the patterns they expand to, which is what lets the editor
+  show what was chosen and lets a role follow the grouping when Home Assistant
+  moves a command under it. An unknown name grants nothing and is kept, since a
+  role written by a newer build should lose that one grant rather than all of
+  them. What the grouping cannot make safe is that automations, scripts and
+  scenes run with no user context: whoever can write one can make it do
+  anything, so those capabilities record trust rather than confine it.
 - **Schedule**: a list of windows, each with its own days and times. The role is
   in force if any window is open. A window whose end precedes its start runs
   through midnight and belongs to the day it *opened*, so Friday 22:00 to 02:00

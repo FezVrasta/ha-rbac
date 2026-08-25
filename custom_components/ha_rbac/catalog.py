@@ -9,12 +9,13 @@ across releases instead of rotting.
 import logging
 import re
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from typing import Any
 
 from homeassistant.components.websocket_api import const as ws_const
 from homeassistant.core import HomeAssistant, callback
 
-from .const import RESOURCE_KEYS, TIER_ADMIN, TIER_OPEN, TIER_USER
+from .const import CAPABILITIES, RESOURCE_KEYS, TIER_ADMIN, TIER_OPEN, TIER_USER
 from .extract import schema_resource_markers
 
 _LOGGER = logging.getLogger(__name__)
@@ -377,6 +378,30 @@ class Catalog:
     def info_for(self, command: str) -> CommandInfo | None:
         """Return the derived information for a command, if known."""
         return self._commands.get(command)
+
+    @callback
+    def capabilities(self) -> list[dict[str, Any]]:
+        """Return the named capability groups with what each covers here.
+
+        The commands are matched against this instance rather than declared, so
+        the editor can show what granting one actually reaches instead of asking
+        an administrator to trust the label.
+        """
+        return [
+            {
+                "id": capability["id"],
+                "title": capability["title"],
+                "description": capability["description"],
+                "commands": sorted(
+                    command
+                    for command in self._commands
+                    if any(
+                        fnmatch(command, pattern) for pattern in capability["patterns"]
+                    )
+                ),
+            }
+            for capability in CAPABILITIES
+        ]
 
     @callback
     def as_dict(self) -> list[dict[str, Any]]:

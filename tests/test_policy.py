@@ -23,10 +23,17 @@ from homeassistant.helpers import (
 )
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.ha_rbac.const import TIER_ADMIN, TIER_OPEN, TIER_USER
+from custom_components.ha_rbac.const import (
+    ROLE_EDITOR,
+    TIER_ADMIN,
+    TIER_OPEN,
+    TIER_USER,
+)
 from custom_components.ha_rbac.policy import (
+    ROLE_SCHEMA,
     Permissions,
     compile_role,
+    default_roles,
     desugar,
 )
 
@@ -279,3 +286,78 @@ async def test_open_ceiling_is_raised_to_user(hass: HomeAssistant) -> None:
         hass, _role(tiers={"max": TIER_OPEN, "allow": [], "deny": []}), _lookup(hass)
     )
     assert role.tier_max == TIER_USER
+
+
+async def test_a_capability_grants_the_commands_it_names(hass: HomeAssistant) -> None:
+    """A role names a capability; the globs it stands for are derived from it.
+
+    Storing the name rather than the globs is what lets the editor show what was
+    chosen, and lets a role follow the grouping when Home Assistant moves a
+    command under it.
+    """
+    role = compile_role(
+        hass,
+        {
+            "id": "r",
+            "name": "R",
+            "capabilities": ["automations"],
+            "tiers": {"max": TIER_USER, "allow": [], "deny": []},
+        },
+        PermissionLookup(er.async_get(hass), dr.async_get(hass)),
+    )
+    permissions = Permissions(roles=[role])
+
+    assert permissions.tier_allowed("automation/config", TIER_ADMIN) is True
+    assert (
+        permissions.tier_allowed("POST /api/config/automation/config/1756", TIER_ADMIN)
+        is True
+    ), "the REST half of the automation editor has to come with it"
+    assert permissions.tier_allowed("backup/generate", TIER_ADMIN) is False
+    assert permissions.tier_allowed("config/auth/create", TIER_ADMIN) is False
+
+
+async def test_an_unknown_capability_grants_nothing_and_is_kept(
+    hass: HomeAssistant,
+) -> None:
+    """A name from a newer build must not take the whole role down with it.
+
+    Rejecting it would strip a user of the access the rest of the role still
+    describes correctly, and the failure is safe in this direction: an
+    unrecognised name simply grants nothing.
+    """
+    stored = ROLE_SCHEMA(
+        {"id": "r", "name": "R", "capabilities": ["automations", "quantum_drive"]}
+    )
+    assert stored["capabilities"] == ["automations", "quantum_drive"]
+
+    role = compile_role(
+        hass, stored, PermissionLookup(er.async_get(hass), dr.async_get(hass))
+    )
+    permissions = Permissions(roles=[role])
+    assert permissions.tier_allowed("automation/config", TIER_ADMIN) is True
+    assert permissions.tier_allowed("backup/generate", TIER_ADMIN) is False
+
+
+async def test_the_editor_role_stops_short_of_the_house_itself(
+    hass: HomeAssistant,
+) -> None:
+    """The preset most people asked for: build things, do not administer them."""
+    roles = default_roles()
+    editor = compile_role(
+        hass,
+        roles[ROLE_EDITOR],
+        PermissionLookup(er.async_get(hass), dr.async_get(hass)),
+    )
+    permissions = Permissions(roles=[editor])
+
+    assert permissions.full_access is False
+    assert permissions.check_entity("light.kitchen", POLICY_CONTROL) is True
+    for command in ("automation/config", "lovelace/config/save", "counter/create"):
+        assert permissions.tier_allowed(command, TIER_ADMIN) is True, command
+    for command in (
+        "config/auth/create",
+        "backup/generate",
+        "config_entries/disable",
+        "lovelace/resources/create",
+    ):
+        assert permissions.tier_allowed(command, TIER_ADMIN) is False, command
