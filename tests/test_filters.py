@@ -551,3 +551,57 @@ async def test_a_targeted_rule_applies_per_entity_in_a_subscription(
     )
     assert event["a"]["person.me"]["a"] == {"name": "Me"}
     assert event["a"]["zone.home"]["a"] == {"latitude": 51.5, "radius": 100}
+
+
+async def test_denied_cameras_are_dropped_from_the_media_browser(
+    hass: HomeAssistant,
+) -> None:
+    """The camera media source lists every camera by name, with a thumbnail.
+
+    `get_panels` and `get_states` hide a denied camera, and this listed it again
+    by another route: the request named no app and no resource key, so neither
+    the app gate nor the generic walk had anything to match on.
+    """
+    hass.states.async_set("camera.bedroom", "idle")
+    hass.states.async_set("camera.porch", "idle")
+    result = REGISTRY.filter_result(
+        "media_source/browse_media",
+        _ctx(hass, {"camera.bedroom"}),
+        {
+            "title": "Camera",
+            "media_content_id": "media-source://camera",
+            "children": [
+                {
+                    "title": "Bedroom",
+                    "media_content_id": "media-source://camera/camera.bedroom",
+                    "thumbnail": "/api/camera_proxy/camera.bedroom",
+                },
+                {
+                    "title": "Porch",
+                    "media_content_id": "media-source://camera/camera.porch",
+                    "thumbnail": "/api/camera_proxy/camera.porch",
+                },
+            ],
+        },
+    )
+    assert [child["title"] for child in result["children"]] == ["Porch"]
+
+
+async def test_media_that_is_not_an_entity_is_left_alone(
+    hass: HomeAssistant,
+) -> None:
+    """A local file's id ends in something entity-shaped that is not an entity."""
+    result = REGISTRY.filter_result(
+        "media_source/browse_media",
+        _ctx(hass, {"camera.bedroom"}),
+        {
+            "media_content_id": "media-source://media_source/local",
+            "children": [
+                {
+                    "title": "song.mp3",
+                    "media_content_id": "media-source://media_source/local/song.mp3",
+                }
+            ],
+        },
+    )
+    assert [child["title"] for child in result["children"]] == ["song.mp3"]

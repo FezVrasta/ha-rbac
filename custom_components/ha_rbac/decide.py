@@ -28,7 +28,7 @@ from homeassistant.helpers import (
 
 from .catalog import Catalog
 from .const import MAX_WALK_DEPTH, RESOURCE_KEYS, TIER_ADMIN
-from .extract import Extracted, extract, is_bounded
+from .extract import Extracted, entity_ids_in, extract, is_bounded
 from .filters import FilterRegistry
 from .policy import Permissions
 
@@ -269,6 +269,14 @@ class Decider:
             for key, value in (query or {}).items():
                 self._merge_query_resource(found, key, value)
         entities = expand_to_entities(self._hass, found)
+        # A payload can also name an entity where no resource key reaches: as a
+        # mapping key, which is how `scene.apply` says which states to
+        # reproduce, or in the tail of a `media-source://` URI. Only the
+        # registry can tell either from an ordinary string, so these are
+        # confirmed against it rather than assumed -- and they are added to the
+        # check without counting as a bound, so a payload that names nothing a
+        # schema recognises stays unbounded.
+        entities |= entity_ids_in(payload, self._entity_exists)
         key = POLICY_CONTROL if self._is_mutation(kind, name, payload) else POLICY_READ
 
         # 3. Resource gate. Every entity the request names must be permitted.
@@ -442,6 +450,19 @@ class Decider:
                 detail=f"no control access to the {domain} domain",
             )
         return Decision(allowed=True, filter_response=True)
+
+    @callback
+    def _entity_exists(self, entity_id: str) -> bool:
+        """Return True if an entity id names something on this instance.
+
+        The registry is consulted as well as the state machine, so a disabled or
+        not-yet-loaded entity is still recognised rather than read as an
+        ordinary string.
+        """
+        return (
+            self._hass.states.get(entity_id) is not None
+            or er.async_get(self._hass).async_get(entity_id) is not None
+        )
 
     @staticmethod
     @callback

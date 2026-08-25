@@ -30,7 +30,9 @@ from custom_components.ha_rbac.policy import Permissions, compile_role
 @pytest.fixture(name="decider")
 async def decider_fixture(hass: HomeAssistant) -> Decider:
     """Return a decider backed by a real command catalogue."""
-    for domain in ("websocket_api", "config", "api"):
+    # `media_source` is loaded so its commands classify as themselves rather
+    # than as the unknown-and-therefore-admin default.
+    for domain in ("websocket_api", "config", "api", "media_source"):
         await async_setup_component(hass, domain, {})
     await hass.async_block_till_done()
     catalog = Catalog(hass)
@@ -278,3 +280,102 @@ async def test_http_method_decides_read_versus_control(
     )
     assert allowed.allowed is True
     assert denied.allowed is False
+
+
+async def test_scene_apply_cannot_reach_a_denied_entity(
+    hass: HomeAssistant, decider: Decider
+) -> None:
+    """The entities a scene reproduces are mapping keys, not values.
+
+    `scene.apply` takes `{"entities": {"lock.front": "unlocked"}}`, so the
+    payload names no resource any key-based extraction can see. It reached
+    `_decide_service`, which reads a call naming nothing as bounded by its
+    service, and a role allowed to control the scene domain then set the state
+    of anything at all.
+    """
+    hass.states.async_set("lock.front", "locked")
+    role = compile_role(
+        hass,
+        {
+            "id": "s",
+            "name": "s",
+            "allow": {CAT_ENTITIES: {"domains": {"scene": {POLICY_CONTROL: True}}}},
+            "deny": {},
+            "tiers": {"max": TIER_OPEN, "allow": [], "deny": []},
+        },
+        PermissionLookup(er.async_get(hass), dr.async_get(hass)),
+    )
+    decision = decider.decide(
+        Permissions(roles=[role]),
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "scene",
+            "service": "apply",
+            "service_data": {"entities": {"lock.front": "unlocked"}},
+        },
+    )
+    assert decision.allowed is False
+    assert "lock.front" in decision.detail
+
+
+async def test_resolving_a_denied_camera_as_media_is_refused(
+    hass: HomeAssistant, decider: Decider
+) -> None:
+    """Cameras are a media source, and resolving one returns a stream URL.
+
+    The entity is named in the tail of a `media-source://` URI rather than under
+    any resource key, and the URL that comes back authenticates on its own, so
+    nothing downstream could recover what the request gave away.
+    """
+    hass.states.async_set("camera.bedroom", "idle")
+    permissions = _read_only(hass)
+    assert permissions.check_entity("camera.bedroom", POLICY_READ) is True
+
+    denying = Permissions(
+        roles=[
+            compile_role(
+                hass,
+                {
+                    "id": "d",
+                    "name": "d",
+                    "allow": {CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+                    "deny": {CAT_ENTITIES: {"domains": {"camera": True}}},
+                    "tiers": {"max": TIER_OPEN, "allow": [], "deny": []},
+                },
+                PermissionLookup(er.async_get(hass), dr.async_get(hass)),
+            )
+        ]
+    )
+    decision = decider.decide(
+        denying,
+        KIND_WS,
+        "media_source/resolve_media",
+        {
+            "type": "media_source/resolve_media",
+            "media_content_id": "media-source://camera/camera.bedroom",
+        },
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_RESOURCE
+
+
+async def test_an_ordinary_media_id_is_not_read_as_an_entity(
+    hass: HomeAssistant, decider: Decider
+) -> None:
+    """`local/song.mp3` has the shape of an entity id and is not one.
+
+    Treating the tail of every media URI as an entity would deny the whole media
+    browser, so the registry decides rather than the shape.
+    """
+    decision = decider.decide(
+        _read_only(hass),
+        KIND_WS,
+        "media_source/resolve_media",
+        {
+            "type": "media_source/resolve_media",
+            "media_content_id": "media-source://media_source/local/song.mp3",
+        },
+    )
+    assert decision.allowed is True

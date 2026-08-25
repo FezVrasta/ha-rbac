@@ -35,10 +35,25 @@ TARGET_KEY = "target"
 # unbounded reach is detected without naming the commands that accept one.
 TEMPLATE_MARKERS = ("{{", "{%")
 
+# A media source names its entity in the tail of a URI rather than under a
+# resource key: `media-source://camera/camera.front_door`.
+MEDIA_SOURCE_PREFIX = "media-source://"
+
 
 def _is_template(value: str) -> bool:
     """Return True if a string would be interpreted as a Jinja template."""
     return any(marker in value for marker in TEMPLATE_MARKERS)
+
+
+def entity_candidate(value: Any) -> str | None:
+    """Return the entity id a string might name, for the registry to confirm."""
+    if not isinstance(value, str):
+        return None
+    if value.startswith(MEDIA_SOURCE_PREFIX):
+        value = value.rpartition("/")[2]
+    if value.count(".") != 1 or " " in value:
+        return None
+    return value.lower()
 
 
 @dataclass(slots=True)
@@ -149,6 +164,10 @@ def entity_ids_in(payload: Any, exists: "Callable[[str], bool]") -> set[str]:
     project exists to avoid, so instead every string is tested for the shape of
     an entity id and then against the machine: something that both looks like
     one and is one is one. A card key nobody has heard of costs nothing.
+
+    Mapping *keys* are tested too, because Home Assistant sometimes keys a
+    structure by entity id instead of naming one in a value: `scene.apply` takes
+    `{"entities": {"lock.front": "unlocked"}}` and reproduces those states.
     """
     found: set[str] = set()
     nodes = 0
@@ -162,10 +181,13 @@ def entity_ids_in(payload: Any, exists: "Callable[[str], bool]") -> set[str]:
             break
 
         if isinstance(node, str):
-            if node.count(".") == 1 and " " not in node and exists(node):
-                found.add(node.lower())
+            if (candidate := entity_candidate(node)) and exists(candidate):
+                found.add(candidate)
         elif isinstance(node, dict):
-            stack.extend((value, depth + 1) for value in node.values())
+            for key, value in node.items():
+                if (candidate := entity_candidate(key)) and exists(candidate):
+                    found.add(candidate)
+                stack.append((value, depth + 1))
         elif isinstance(node, list):
             stack.extend((item, depth + 1) for item in node)
 

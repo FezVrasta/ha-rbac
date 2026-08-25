@@ -54,6 +54,16 @@ through the registries, and requires every resulting entity to be permitted.
 Path and query parameters are folded in for REST, because `?filter_entity_id=`
 names its own target and a minimal history response would not give it back.
 
+Those keys are not the only place an entity is named. `scene.apply` takes
+`{"entities": {"lock.front": "unlocked"}}`, where the entity is a mapping *key*,
+and a media source names one in the tail of a URI,
+`media-source://camera/camera.bedroom`. Neither can be recognised by shape
+alone — the tail of `media-source://media_source/local/song.mp3` looks exactly
+the same — so a second walk tests every string and every key against the
+registry and folds in whatever really is an entity. It adds to the check without
+counting as a bound, so a payload that names nothing a schema recognises stays
+unbounded and is judged as before.
+
 **5. Boundedness gate.** A payload that names nothing does not constrain its own
 command. The rule that decides this is:
 
@@ -91,6 +101,15 @@ spelling of a thing and Home Assistant has several: `entity_id` and `ei`,
 `attributes` and `a`. Each abbreviation is a potential leak and they cannot be
 enumerated in advance, which is the argument for re-running an adversarial sweep
 periodically rather than trusting the walk.
+
+Position varies as well as spelling. Cameras are a media source, so
+`media_source/browse_media` listed every one of them — friendly name and
+`/api/camera_proxy/` thumbnail — after the same cameras had been hidden from the
+sidebar, the states and the registry listings, because the entity sits in the
+tail of a `media-source://` URI rather than under any key. That has its own
+filter now, and the request side refuses to resolve one, which matters more:
+`media_source/resolve_media` returns a signed stream URL that authenticates on
+its own, so nothing downstream could have recovered what the request gave away.
 
 A response too large to filter is refused rather than streamed. A size limit is
 not a correctness boundary, so it fails closed.

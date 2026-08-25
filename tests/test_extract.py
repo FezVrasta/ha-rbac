@@ -268,3 +268,26 @@ def test_entity_ids_in_ignores_strings_that_only_look_like_one() -> None:
         ],
     }
     assert entity_ids_in(config, known.__contains__) == {"light.kitchen"}
+
+
+def test_an_entity_named_as_a_mapping_key_is_found() -> None:
+    """`scene.apply` says which states to reproduce by keying on entity id."""
+    payload = {"entities": {"lock.front": "unlocked", "light.a": {"state": "on"}}}
+    assert entity_ids_in(payload, {"lock.front", "light.a"}.__contains__) == {
+        "lock.front",
+        "light.a",
+    }
+
+
+def test_a_media_source_uri_names_the_entity_in_its_tail() -> None:
+    """And only where the registry agrees that tail is really an entity."""
+    known = {"camera.bedroom"}.__contains__
+    assert entity_ids_in(
+        {"media_content_id": "media-source://camera/camera.bedroom"}, known
+    ) == {"camera.bedroom"}
+    assert (
+        entity_ids_in(
+            {"media_content_id": "media-source://media_source/local/song.mp3"}, known
+        )
+        == set()
+    )

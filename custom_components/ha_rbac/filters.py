@@ -13,6 +13,8 @@ from typing import Any
 from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.core import HomeAssistant
 
+from .extract import entity_candidate
+
 # Keys of the compressed state-diff protocol used by subscribe_entities.
 # Within one entity's compressed state, "a" holds its attributes; at the event
 # level the same letter means "added entity". Different levels, same letter.
@@ -495,6 +497,47 @@ def _filter_dashboards(ctx: FilterContext, result: Any) -> Any:
         or not isinstance(dashboard.get("url_path"), str)
         or ctx.app_visible(dashboard["url_path"])
     ]
+
+
+def _media_readable(ctx: FilterContext, item: Any) -> bool:
+    """Return True unless a media item is an entity the role cannot read."""
+    if not isinstance(item, dict):
+        return True
+    candidate = entity_candidate(item.get("media_content_id"))
+    # Anything that is not really an entity is left alone: a local file is
+    # `media-source://media_source/local/song.mp3`, whose tail has the shape of
+    # an entity id and would otherwise empty the media browser.
+    if candidate is None or ctx.hass.states.get(candidate) is None:
+        return True
+    return ctx.readable(candidate)
+
+
+@REGISTRY.result(
+    "media_source/browse_media",
+    "media_source/search_media",
+    "media_player/browse_media",
+)
+def _filter_media(ctx: FilterContext, result: Any) -> Any:
+    """Drop media items naming entities the role cannot read.
+
+    Cameras are a media source: `camera/media_source.py` lists every one with
+    its friendly name and a `/api/camera_proxy/` thumbnail, and resolving one
+    returns a stream URL that authenticates on its own. The entity is named in
+    the tail of a `media-source://` URI, which is no resource key and which the
+    generic walk reads as an ordinary string, so denied cameras were listed here
+    after being hidden everywhere else.
+    """
+    if not isinstance(result, dict):
+        return result
+    filtered = dict(result)
+    for key in ("children", "result"):
+        if isinstance(children := filtered.get(key), list):
+            filtered[key] = [
+                _filter_media(ctx, item)
+                for item in children
+                if _media_readable(ctx, item)
+            ]
+    return filtered
 
 
 @REGISTRY.result("get_services")
