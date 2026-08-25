@@ -359,7 +359,7 @@ class HaRbacPanel extends HTMLElement {
       <p class="hint">${
         locked
           ? "Built-in roles cannot be edited. Clone this one to start from its settings."
-          : "Changes apply as soon as you save — no restart, no reload for the people affected."
+          : "Changes apply as soon as you save. No restart, no reload for the people affected."
       }</p>
 
       <label class="field" for="name">Name</label>
@@ -382,7 +382,7 @@ class HaRbacPanel extends HTMLElement {
       </div>
 
       <h3>Details to withhold</h3>
-      <p class="hint">An entity someone can see, they see in full — every
+      <p class="hint">An entity someone can see, they see in full: every
         attribute it reports. Hide the ones you did not mean to share: where
         someone is, an access code, an IP address, a serial number. Rules are
         targeted, so hiding <code>latitude</code> on people leaves the zones
@@ -394,9 +394,9 @@ class HaRbacPanel extends HTMLElement {
         <button id="add-attr" class="secondary" ${locked ? "disabled" : ""}>Hide an attribute</button>
       </div>
 
-      <h3>Apps this role can open</h3>
-      <p class="hint">Everything in the sidebar, including add-ons. Unticking one
-        hides it and refuses the requests behind it.</p>
+      <h3>Where this role can go</h3>
+      <p class="hint">Every dashboard, add-on and built-in screen in the sidebar.
+        Unticking one hides it and refuses the requests behind it.</p>
       <div class="checks" id="apps">${(this._catalog ? this._catalog.apps : [])
         .map(
           (app) => `<label class="check">
@@ -411,7 +411,7 @@ class HaRbacPanel extends HTMLElement {
 
       <h3>What this role can do</h3>
       <p class="hint">Administrative commands are recognised from Home Assistant's
-        own markings, read on this instance —
+        own markings, read on this instance,
         <span class="pill">${this._catalog ? this._catalog.commands.length : 0} commands</span>
         nothing hard-coded.</p>
       <label class="field" for="tier">Command level</label>
@@ -462,7 +462,7 @@ class HaRbacPanel extends HTMLElement {
   _mountRules(host, locked) {
     host.innerHTML = "";
     if (!this._draft.rules.length) {
-      host.innerHTML = `<p class="hint">No exceptions — the baseline applies to everything.</p>`;
+      host.innerHTML = `<p class="hint">No exceptions. The baseline applies to everything.</p>`;
       return;
     }
     this._draft.rules.forEach((rule, index) => {
@@ -473,7 +473,7 @@ class HaRbacPanel extends HTMLElement {
   _mountAttrRules(host, locked) {
     host.innerHTML = "";
     if (!this._draft.attrRules.length) {
-      host.innerHTML = `<p class="hint">Nothing hidden — entities this role can
+      host.innerHTML = `<p class="hint">Nothing hidden. Entities this role can
         see, it sees in full.</p>`;
       return;
     }
