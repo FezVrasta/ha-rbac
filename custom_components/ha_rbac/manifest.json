@@ -1,6 +1,9 @@
 {
   "domain": "ha_rbac",
   "name": "RBAC Access Control",
+  "after_dependencies": [
+    "hassio"
+  ],
   "codeowners": [
     "@FezVrasta"
   ],
