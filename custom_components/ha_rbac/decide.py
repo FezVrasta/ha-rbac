@@ -396,9 +396,7 @@ class Decider:
                 # the convention is narrowed to requests that change something;
                 # its reads are filtered like any other, and the tier gate
                 # already refuses the administrative half outright.
-                if url_path != CONFIG_PANEL or self._is_mutation(
-                    kind, name, payload
-                ):
+                if url_path != CONFIG_PANEL or self._is_mutation(kind, name, payload):
                     return Decision(
                         allowed=False,
                         reason=REASON_APP,
