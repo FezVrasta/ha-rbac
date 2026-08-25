@@ -46,7 +46,6 @@ const TARGETS = [
   { value: "floor_ids", label: "Floors", block: "root", selector: { floor: { multiple: true } } },
 ];
 
-const TIERS = ["user", "admin"];
 
 // Home Assistant's own list of panels that are internal and are kept out of
 // user-facing navigation. Nobody is choosing whether a role may open
@@ -144,6 +143,7 @@ const STYLES = `
             grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
   .checks ha-formfield { display: flex; align-items: center; min-height: 40px; }
   .cap p { margin: -6px 0 10px 44px; }
+  .cap.indent { margin-left: 28px; }
   /* Seven three-letter labels do not need the width an app name does. */
   /* A time picker is hh:mm, a meridiem dropdown and a clear button, which is
      wider than it looks; four controls abreast clipped it. Days take the first
@@ -618,13 +618,22 @@ class HaRbacPanel extends HTMLElement {
         own markings, read on this instance,
         ${this._catalog ? this._catalog.commands.length : 0} commands,
         nothing hard-coded.</p>
-      <div class="field" id="tier-host"></div>
-      <p class="hint">Ordinary use covers living in the house: reading and
-        controlling whatever the role is allowed above. Tick a part of the
-        settings here to hand that over as well, without granting the rest.</p>
+      <p class="hint">Unticked, this role can live in the house but not
+        administer it: it reads and controls whatever it is allowed above and
+        reaches no settings at all. Tick a part of the settings to hand that
+        over, without granting the rest.</p>
+      <div class="cap">
+        <ha-formfield label="All settings">
+          <ha-checkbox id="tier-admin"
+            ${(draft.tiers || {}).max === "admin" ? "checked" : ""}
+            ${locked ? "disabled" : ""}></ha-checkbox>
+        </ha-formfield>
+        <p class="hint">Everything below, and anything Home Assistant adds
+          later. A full administrator.</p>
+      </div>
       <div id="caps">${(this._catalog ? this._catalog.capabilities || [] : [])
         .map(
-          (cap) => `<div class="cap">
+          (cap) => `<div class="cap indent">
             <ha-formfield label="${esc(cap.title)}">
               <ha-checkbox data-cap="${esc(cap.id)}"
                 ${(draft.capabilities || []).includes(cap.id) ? "checked" : ""}
@@ -703,27 +712,46 @@ class HaRbacPanel extends HTMLElement {
         this._syncRaw();
       })
     );
-    host.querySelector("#tier-host").appendChild(
-      this._select(
-        TIERS.map((t) => ({
-          value: t,
-          label:
-            t === "admin"
-              ? "Everything, including settings and configuration"
-              : "Ordinary use only",
-        })),
-        (draft.tiers || {}).max,
-        locked,
-        "Command level",
-        () => {},
-        "tier"
-      )
+    host.querySelector("#tier-admin").addEventListener("change", () =>
+      this._refreshCapabilities()
     );
+    host.querySelectorAll("[data-cap]").forEach((box) => {
+      box.addEventListener("change", () => {
+        const chosen = new Set(this._draft.capabilities || []);
+        if (box.checked) chosen.add(box.dataset.cap);
+        else chosen.delete(box.dataset.cap);
+        this._draft.capabilities = [...chosen];
+      });
+    });
+    this._refreshCapabilities();
 
     this._wireDashboards(locked);
     this._mountSchedule(host.querySelector("#schedule"), locked);
     this._mountRules(host.querySelector("#rules"), locked);
     this._mountAttrRules(host.querySelector("#attr-rules"), locked);
+  }
+
+  /**
+   * How much of the settings a role reaches is one question, so it is one
+   * list: "All settings" over the parts it covers. It began as a dropdown
+   * beside the list, which read as two controls that could contradict each
+   * other, and then as a row that hid the rest, which lost sight of what had
+   * been picked. Ticking the parent now ticks the children, which is what a
+   * parent checkbox is expected to do.
+   */
+  _refreshCapabilities() {
+    const root = this.shadowRoot;
+    const everything = root.getElementById("tier-admin");
+    if (!everything) return;
+    const locked = (this._draft || {}).system_generated;
+    const chosen = this._draft.capabilities || [];
+    root.querySelectorAll("[data-cap]").forEach((box) => {
+      // While "All settings" is on, the children show what it covers rather
+      // than what was picked. The pick itself is held on the draft, so turning
+      // it off again puts the ticks back where they were.
+      box.checked = everything.checked || chosen.includes(box.dataset.cap);
+      box.disabled = locked || everything.checked;
+    });
   }
 
   /**
@@ -1204,11 +1232,9 @@ class HaRbacPanel extends HTMLElement {
       name: root.getElementById("name").value.trim(),
       allow,
       deny,
-      capabilities: [...root.querySelectorAll("[data-cap]")]
-        .filter((box) => box.checked)
-        .map((box) => box.dataset.cap),
+      capabilities: [...(this._draft.capabilities || [])],
       tiers: {
-        max: root.getElementById("tier").value,
+        max: root.getElementById("tier-admin").checked ? "admin" : "user",
         allow: [...this._draft.tierAllow],
         deny: [...this._draft.tierDeny],
       },
