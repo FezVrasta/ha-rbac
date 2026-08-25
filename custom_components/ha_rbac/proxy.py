@@ -97,16 +97,6 @@ ERR_UNAUTHORIZED = "unauthorized"
 # Home Assistant's signed-path parameter.
 SIGN_QUERY_PARAM = "authSig"
 
-# Anonymous requests are forwarded so the login flow and the static frontend
-# work. These are the exception: they reach the API and act, with no user to
-# check them against.
-UNGOVERNED_API_PREFIXES = ("/api/webhook/",)
-
-
-def _is_ungoverned_api_path(path: str) -> bool:
-    """Return True if an unauthenticated request here would act ungoverned."""
-    return path.startswith(UNGOVERNED_API_PREFIXES)
-
 
 def _unverified_issuer(signature: str) -> str | None:
     """Return the refresh-token id a signed path claims, without verifying it.
@@ -274,18 +264,26 @@ class RbacProxy:
 
         decision = Decision(allowed=True)
         if user is None:
-            # Anonymous traffic is the login flow and the static frontend, which
-            # must pass. Anything that reaches Home Assistant's own API without
-            # identifying a user cannot be reasoned about, so it is refused
-            # rather than forwarded ungoverned -- `/api/webhook/{id}` is the
-            # live example, and the mobile app's webhook can call any service.
-            if _is_ungoverned_api_path(request.path):
-                _LOGGER.warning(
-                    "Refusing unauthenticated %s %s: no user to check it against",
-                    request.method,
-                    request.path,
-                )
-                return web.json_response({"message": "Unauthorized"}, status=401)
+            # Anonymous traffic is the login flow, the static frontend, and
+            # webhooks. All of it is forwarded for Home Assistant to
+            # authenticate as it always has.
+            #
+            # Webhooks were refused here at first, on the grounds that a request
+            # naming no user cannot be reasoned about and the companion app's
+            # webhook can call any service. Running it against a real household
+            # showed what that costs: every mobile_app registration talks over
+            # `/api/webhook/{id}`, so the proxy took the phones offline the
+            # moment it became the only way in.
+            #
+            # The reasoning was wrong as well as expensive. A webhook id is an
+            # unguessable secret that Home Assistant treats as the credential
+            # for that endpoint, and the body may be encrypted end to end, so
+            # there is nothing for this layer to read even when the owner is
+            # known -- `mobile_app` does record a `user_id`. Refusing them
+            # protects nobody who already holds the id and breaks everyone who
+            # holds it legitimately. Webhooks sit outside this boundary, in the
+            # same place as automations and add-ons, and DESIGN.md says so.
+            pass
         elif not permissions.full_access:
             body = await self._peek_json(request)
             name = f"{request.method} {request.path}"

@@ -69,6 +69,11 @@ async def proxy_env_fixture(
 
     hass.http.app.router.add_route("GET", "/rbac_probe", _probe)
 
+    async def _webhook(request: web.Request) -> web.Response:
+        return web.Response(text="webhook reached")
+
+    hass.http.app.router.add_route("POST", "/api/webhook/{id}", _webhook)
+
     upstream = await aiohttp_server(hass.http.app)
 
     store = RbacStore(hass)
@@ -665,3 +670,38 @@ async def test_a_signed_path_is_filtered_for_its_owner(
 
     assert "light.kitchen" in body
     assert "lock.front" not in body
+
+
+async def test_a_webhook_reaches_home_assistant(proxy_env: dict[str, Any]) -> None:
+    """The companion app talks over `/api/webhook/{id}` and carries no user.
+
+    These were refused, on the grounds that a request naming no user cannot be
+    judged. That took every mobile_app registration offline as soon as the
+    proxy was the only way in, and protected nobody: the id is the credential
+    Home Assistant itself checks, and the body may be encrypted end to end, so
+    there is nothing here to read even when the owner is known.
+    """
+    async with (
+        aiohttp.ClientSession() as session,
+        session.post(f"{proxy_env['base']}/api/webhook/abc123") as response,
+    ):
+        assert response.status == HTTPStatus.OK
+        assert await response.text() == "webhook reached"
+
+
+async def test_the_login_flow_still_reaches_home_assistant(
+    proxy_env: dict[str, Any],
+) -> None:
+    """The other anonymous traffic that has to pass, or nobody can sign in."""
+    async with (
+        aiohttp.ClientSession() as session,
+        session.post(
+            f"{proxy_env['base']}/auth/login_flow",
+            json={
+                "client_id": proxy_env["base"] + "/",
+                "handler": ["homeassistant", None],
+                "redirect_uri": proxy_env["base"] + "/",
+            },
+        ) as response,
+    ):
+        assert response.status != HTTPStatus.UNAUTHORIZED

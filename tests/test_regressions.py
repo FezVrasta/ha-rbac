@@ -55,7 +55,6 @@ from custom_components.ha_rbac.proxy import (
     MAX_ENDPOINTS,
     MAX_PENDING_IDS,
     _carries_entity_data,
-    _is_ungoverned_api_path,
     _WsSession,
 )
 from custom_components.ha_rbac.store import RbacStore
@@ -520,19 +519,6 @@ async def test_a_streaming_id_survives_eviction() -> None:
 
     assert 1 not in session._pending
     assert session._correlate(1) == "subscribe_entities"
-
-
-def test_unauthenticated_api_paths_that_act_are_refused() -> None:
-    """A webhook carries no auth header and can call any service.
-
-    Anonymous traffic is forwarded so the login flow and static frontend work,
-    which meant these reached Home Assistant with no policy applied at all.
-    """
-    assert _is_ungoverned_api_path("/api/webhook/abc123") is True
-    # The login flow and the frontend must still load.
-    assert _is_ungoverned_api_path("/auth/login_flow") is False
-    assert _is_ungoverned_api_path("/static/app.js") is False
-    assert _is_ungoverned_api_path("/") is False
 
 
 def test_media_responses_are_not_refused_for_being_unfilterable() -> None:

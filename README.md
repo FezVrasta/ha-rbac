@@ -275,6 +275,10 @@ install step for plain, unfiltered Home Assistant.
 
 - **Automations aren't affected.** They run as the system, not as a person, so
   an automation can still touch anything. Same as stock Home Assistant.
+- **Webhooks aren't either.** The companion app and anything else using
+  `/api/webhook/...` is authenticated by an unguessable id rather than by a
+  person, and its body can be encrypted, so there is nothing for a role to
+  apply to. Anyone holding one of those ids can act through it.
 
 ## Contributing
 

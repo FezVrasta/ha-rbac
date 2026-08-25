@@ -176,7 +176,20 @@ can mint an access token for the owner and bypass Home Assistant's own
 authentication entirely, not just this layer. That is a precondition which
 already loses, so the proxy does not try to close it.
 
-Two consequences worth stating plainly:
+**Webhooks are outside it too.** `/api/webhook/{id}` carries no user, and the
+id is an unguessable secret that Home Assistant treats as the credential for
+that endpoint. The body may be encrypted end to end, so there is nothing for
+this layer to read even where the owner is recorded, as `mobile_app` records a
+`user_id`. They are forwarded for Home Assistant to authenticate as it always
+has. Anyone holding a webhook id can act through it without a role applying,
+which is the same standing as an automation.
+
+This was learned the expensive way. Webhooks were refused at first, on the
+grounds that a request naming no user cannot be judged. The first time the
+proxy became the only way in on a real household it took every companion app
+offline, because that is the transport `mobile_app` uses.
+
+Three consequences worth stating plainly:
 
 - A **non-admin with a legitimate shell account** on the host is not contained.
   The answer is to not give them a shell, or to run Home Assistant in a
