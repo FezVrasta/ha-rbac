@@ -113,6 +113,10 @@ is still in force at one on Saturday morning.
 It takes effect on connections that are already open, so someone does not keep
 what they had until they close the tab.
 
+<p align="center">
+  <img src="screenshots/panel-schedule.jpg" alt="Two time windows on the same role" width="820">
+</p>
+
 ### ⚙️ Commands: what they can change
 
 **Ordinary use**, or **everything including settings**. Which half is which is
@@ -271,12 +275,6 @@ install step for plain, unfiltered Home Assistant.
 
 - **Automations aren't affected.** They run as the system, not as a person, so
   an automation can still touch anything. Same as stock Home Assistant.
-- **Hiding something hides it well, but doesn't rewrite history.** A denied
-  dashboard is gone from the sidebar and its config is refused; a denied add-on
-  leaves the sidebar, its Supervisor endpoints are refused, it's dropped from
-  the add-on listings, and its own web page is refused even to someone who
-  knows its address. What none of it does is pretend the thing was never
-  installed. Someone determined can still tell something is being withheld.
 
 ## Contributing
 
