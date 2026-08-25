@@ -1166,3 +1166,58 @@ async def test_supervisor_calls_in_flight_are_refused_not_forgotten() -> None:
     )
     assert len(session._endpoints) == MAX_ENDPOINTS
     assert 1 in session._endpoints, "the oldest call kept its correlation"
+
+
+async def test_denying_settings_leaves_the_registries_readable(
+    hass: HomeAssistant,
+) -> None:
+    """`config/` is Home Assistant's namespace, not the Settings panel's.
+
+    The convention that an app's data comes from commands sharing its name is a
+    guess. For Settings it was wrong in the worst way: `config/area_registry/list`
+    and its siblings are what every dashboard reads before it can draw, so
+    hiding one sidebar entry left the user staring at a dashboard that failed
+    to load.
+    """
+    await async_setup_component(hass, "websocket_api", {})
+    await async_setup_component(hass, "frontend", {})
+    await hass.async_block_till_done()
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    decider = Decider(hass, catalog, REGISTRY)
+    perms = Permissions(
+        roles=[
+            compile_role(
+                hass,
+                _role(
+                    allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+                    tiers={"max": TIER_ADMIN, "allow": ["*"], "deny": []},
+                    apps={"allow": [], "deny": ["config"]},
+                ),
+                _lookup(hass),
+            )
+        ]
+    )
+    assert any(app["url_path"] == "config" for app in catalog.apps()), (
+        "precondition: the Settings panel is registered"
+    )
+
+    for command in (
+        "config/area_registry/list",
+        "config/device_registry/list",
+        "config/entity_registry/list_for_display",
+        "config/floor_registry/list",
+    ):
+        decision = decider.decide(perms, KIND_WS, command, {"type": command})
+        assert decision.allowed is True, f"{command} must still be readable"
+
+    # Changing something through the panel that was denied is still refused.
+    blocked = decider.decide(
+        perms,
+        KIND_WS,
+        "config/area_registry/create",
+        {"type": "config/area_registry/create", "name": "New"},
+    )
+    assert blocked.allowed is False
+    assert blocked.reason == REASON_APP

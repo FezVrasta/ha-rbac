@@ -60,6 +60,10 @@ DASHBOARD_KIND = "lovelace"
 # that names no particular entity.
 DOMAIN_PROBE = "_rbac_probe"
 
+# The Settings panel, whose url path is also the namespace every
+# registry command lives under.
+CONFIG_PANEL = "config"
+
 
 def _reads_attributes(node: Any, depth: int = 0) -> bool:
     """Return True if a payload contains a template that reads attributes.
@@ -384,11 +388,22 @@ class Decider:
 
             prefix = url_path.replace("-", "_")
             if kind != KIND_HTTP and name.startswith(f"{prefix}/"):
-                return Decision(
-                    allowed=False,
-                    reason=REASON_APP,
-                    detail=f"no access to {app['title']}",
-                )
+                # `config/` is not the Settings panel's own namespace, it is
+                # Home Assistant's namespace for every registry, and the area,
+                # device, entity and floor lists behind it are what any
+                # dashboard reads before it can draw anything at all. Denying
+                # Settings emptied the whole interface. So for this one panel
+                # the convention is narrowed to requests that change something;
+                # its reads are filtered like any other, and the tier gate
+                # already refuses the administrative half outright.
+                if url_path != CONFIG_PANEL or self._is_mutation(
+                    kind, name, payload
+                ):
+                    return Decision(
+                        allowed=False,
+                        reason=REASON_APP,
+                        detail=f"no access to {app['title']}",
+                    )
         return None
 
     @callback

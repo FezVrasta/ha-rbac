@@ -16,10 +16,10 @@
 </p>
 
 <p align="center">
-  <img src="screenshots/guest-dashboard.jpg" alt="A guest's dashboard, with the locks filtered out" width="820">
+  <img src="screenshots/panel-roles.jpg" alt="The Access Control panel, editing a Guests role" width="880">
 </p>
 
-<p align="center"><em>A guest's dashboard. Their lights are there. The front door lock isn't.</em></p>
+<p align="center"><em>One role, read out loud: see and control everything, except the locks and cameras, and don't show anyone where people are.</em></p>
 
 ---
 
@@ -119,18 +119,18 @@ see what and why.
 <table>
 <tr>
 <td width="50%">
-<img src="screenshots/guest-search-no-locks.jpg" alt="Searching for locks as a guest finds nothing">
+<img src="screenshots/guest-search-no-locks.jpg" alt="A guest searching for locks finds none">
 <p align="center"><em>A guest searching for "lock". There's nothing to find.</em></p>
 </td>
 <td width="50%">
-<img src="screenshots/owner-sidebar.jpg" alt="The owner's sidebar, with Access Control and Settings">
-<p align="center"><em>Same house, same address, signed in as yourself.</em></p>
+<img src="screenshots/owner-sidebar.jpg" alt="The same search as the owner, showing four locks">
+<p align="center"><em>The same search, same house, signed in as yourself.</em></p>
 </td>
 </tr>
 <tr>
 <td width="50%">
-<img src="screenshots/panel-roles.jpg" alt="The role editor">
-<p align="center"><em>"Read everything, except the locks. And don't show me where anyone is."</em></p>
+<img src="screenshots/panel-users.jpg" alt="Assigning roles to people">
+<p align="center"><em>Who gets what. Leave someone unassigned and nothing changes for them.</em></p>
 </td>
 <td width="50%">
 <img src="screenshots/panel-denials.jpg" alt="The denials log">
@@ -236,10 +236,6 @@ Full detail in [docs/DESIGN.md](docs/DESIGN.md).
    domains to hide as exceptions. Untick any apps, dashboards or add-ons they
    shouldn't reach.
 3. Go to **Users**, pick the person, choose the role, save.
-
-<p align="center">
-  <img src="screenshots/panel-users.jpg" alt="Assigning a role to a user" width="820">
-</p>
 
 Have them reload, and their Home Assistant is now smaller.
 
