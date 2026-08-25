@@ -15,6 +15,7 @@ domain and punch a hole in it.
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from fnmatch import fnmatch
 from typing import Any
 
@@ -44,6 +45,7 @@ from homeassistant.helpers import (
 from homeassistant.helpers import (
     entity_registry as er,
 )
+from homeassistant.util import dt as dt_util
 
 from .const import (
     ROLE_ADMIN,
@@ -134,6 +136,19 @@ ATTRIBUTES_SCHEMA = vol.Schema(
     }
 )
 
+# Monday first, matching `datetime.weekday()`.
+DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+SCHEDULE_SCHEMA = vol.Schema(
+    {
+        # Empty means every day, and empty times mean all day, so a role with
+        # no schedule at all validates to one that is always in force.
+        vol.Optional("days", default=list): [vol.In(DAYS)],
+        vol.Optional("start", default=""): str,
+        vol.Optional("end", default=""): str,
+    }
+)
+
 APPS_SCHEMA = vol.Schema(
     {
         vol.Optional("allow", default=list): [str],
@@ -152,8 +167,59 @@ ROLE_SCHEMA = vol.Schema(
         vol.Optional("tiers", default=dict): TIERS_SCHEMA,
         vol.Optional("apps", default=dict): APPS_SCHEMA,
         vol.Optional("attributes", default=dict): ATTRIBUTES_SCHEMA,
+        vol.Optional("schedule", default=dict): SCHEDULE_SCHEMA,
     }
 )
+
+
+def _minutes(value: Any) -> int | None:
+    """Return "HH:MM" as minutes past midnight, or None if it is not a time."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    parts = value.strip().split(":")
+    try:
+        hour, minute = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return hour * 60 + minute
+
+
+def schedule_active(schedule: dict[str, Any] | None, now: datetime) -> bool:
+    """Return True if a role's schedule puts it in force at `now`.
+
+    A window whose end is before its start runs through midnight, and the day
+    it belongs to is the day it *opened*: "Friday 22:00 to 02:00" is still in
+    force at one on Saturday morning, and is not in force at one on Friday
+    morning. Getting that backwards is the whole difficulty here.
+    """
+    if not schedule:
+        return True
+
+    days = schedule.get("days") or []
+    start = _minutes(schedule.get("start"))
+    end = _minutes(schedule.get("end"))
+    minute_of_day = now.hour * 60 + now.minute
+
+    if start is None and end is None:
+        in_window, opened = True, now
+    else:
+        start = start or 0
+        end = 0 if end is None else end
+        if start == end:
+            in_window, opened = True, now
+        elif start < end:
+            in_window, opened = start <= minute_of_day < end, now
+        else:
+            # Runs past midnight. Before the end is the tail of yesterday's.
+            tail = minute_of_day < end
+            in_window = minute_of_day >= start or tail
+            opened = now - timedelta(days=1) if tail else now
+
+    if not in_window:
+        return False
+    return not days or DAYS[opened.weekday()] in days
 
 
 def default_roles() -> dict[str, dict[str, Any]]:
@@ -378,7 +444,12 @@ class CompiledRole:
     app_allow: list[str]
     app_deny: list[str]
     attribute_rules: "list[CompiledAttributeRule]"
+    schedule: dict[str, Any]
     full_access: bool
+
+    def active_at(self, now: datetime) -> bool:
+        """Return True if this role is in force at `now`."""
+        return schedule_active(self.schedule, now)
 
     def check(self, entity_id: str, key: str) -> bool:
         """Return True if this role permits `key` access to an entity."""
@@ -410,6 +481,7 @@ def compile_role(
         app_allow=list(apps.get("allow") or []),
         app_deny=list(apps.get("deny") or []),
         attribute_rules=attribute_rules,
+        schedule=dict(role.get("schedule") or {}),
         # Full access skips every gate, so it has to mean *nothing* is
         # restricted. Ignoring the tier denials here silently disabled the whole
         # layer for the obvious authoring flow of cloning Administrator and
@@ -529,7 +601,11 @@ class Evaluator:
         self._hass = hass
         self._store = store
         self._compiled: dict[str, CompiledRole] = {}
-        self._cache: dict[str, Permissions] = {}
+        # Keyed on the user and on which of their roles are currently in force,
+        # so a schedule opening or closing produces a different key rather than
+        # a stale hit. Keying on the user alone would have frozen the first
+        # answer of the day for the rest of it.
+        self._cache: dict[tuple[str, tuple[str, ...]], Permissions] = {}
         self._perm_lookup = PermissionLookup(er.async_get(hass), dr.async_get(hass))
 
     @callback
@@ -565,20 +641,26 @@ class Evaluator:
         if user.is_owner or user.system_generated:
             return Permissions(pass_through=True)
 
-        if (cached := self._cache.get(user.id)) is not None:
-            return cached
-
         role_ids = self._store.bindings.get(user.id)
         if not role_ids:
             # Unbound users fall back to their existing HA group, so installing
             # the integration changes no behaviour until roles are assigned.
             role_ids = [ROLE_ADMIN if user.is_admin else ROLE_USER]
 
+        now = dt_util.now()
         roles = [
             compiled
             for role_id in role_ids
             if (compiled := self._compiled_role(role_id)) is not None
+            and compiled.active_at(now)
         ]
+        # A role that is out of hours is simply not held. If that leaves none,
+        # the user has no permissions rather than falling back to the Home
+        # Assistant group they would have had unbound: outside its hours a role
+        # has to grant less, never more.
+        key = (user.id, tuple(role.role_id for role in roles))
+        if (cached := self._cache.get(key)) is not None:
+            return cached
 
         global_deny_fn = None
         if raw_deny := self._store.global_deny.get(user.id):
@@ -588,5 +670,5 @@ class Evaluator:
             )
 
         permissions = Permissions(roles=roles, global_deny_fn=global_deny_fn)
-        self._cache[user.id] = permissions
+        self._cache[key] = permissions
         return permissions

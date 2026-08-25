@@ -92,6 +92,24 @@ Everything in the sidebar, ticked or unticked:
 Home Assistant treats all of these as the same kind of thing, so this does too:
 one list, read from your instance, whatever you happen to have installed.
 
+### 🕗 Hours: when the role applies at all
+
+Give a role days, or hours, or both, and it only applies then:
+
+| | |
+| --- | --- |
+| **A cleaner** | weekdays, 09:00 to 17:00 |
+| **A babysitter** | Friday and Saturday, 18:00 to 23:00 |
+| **A night guest** | every day, 22:00 to 06:00 |
+
+Outside its hours the role is simply not held, and holding no role means no
+access rather than the access they had before. An end before the start runs
+through midnight, and the window belongs to the day it opened, so Friday 22:00
+to 02:00 is still in force at one on Saturday morning.
+
+It takes effect on connections that are already open, so someone does not keep
+what they had until they close the tab.
+
 ### ⚙️ Commands: what they can change
 
 **Ordinary use**, or **everything including settings**. Which half is which is

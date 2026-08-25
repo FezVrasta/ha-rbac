@@ -10,6 +10,7 @@ import socket
 from collections import OrderedDict
 from datetime import timedelta
 from http import HTTPStatus
+from types import SimpleNamespace
 from typing import Any
 
 import aiohttp
@@ -600,6 +601,11 @@ async def test_full_access_connection_still_records_ingress_sessions(
     session._endpoints = OrderedDict({7: SESSION_ENDPOINT})
     session._highest_id = 7
     session._permissions = Permissions(pass_through=True)
+    # The session re-resolves its permissions per frame so a role's schedule
+    # can end mid-connection; this stands in for the evaluator that does it.
+    session._evaluator = SimpleNamespace(
+        async_permissions=lambda _user: Permissions(pass_through=True)
+    )
     session._ingress = guard
     session._client = _RecordingClient()
     session._user = proxy_env["read_only_user"]

@@ -53,6 +53,16 @@ const TIERS = ["user", "admin"];
 // "notfound", so they are not offered.
 const SYSTEM_PANELS = ["_my_redirect", "notfound", "app"];
 
+const DAYS = [
+  { value: "mon", label: "Mon" },
+  { value: "tue", label: "Tue" },
+  { value: "wed", label: "Wed" },
+  { value: "thu", label: "Thu" },
+  { value: "fri", label: "Fri" },
+  { value: "sat", label: "Sat" },
+  { value: "sun", label: "Sun" },
+];
+
 // mdiClose, mdiPlus: inlined because @mdi/js is a build-time import.
 const ICON_CLOSE =
   "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z";
@@ -129,6 +139,8 @@ const STYLES = `
   .checks { display: grid; gap: 4px 16px; align-items: center;
             grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
   .checks ha-formfield { display: flex; align-items: center; min-height: 40px; }
+  /* Seven three-letter labels do not need the width an app name does. */
+  #days { grid-template-columns: repeat(auto-fit, minmax(84px, 96px)); }
   ha-alert { display: block; margin-bottom: 16px; }
   ha-expansion-panel { margin-top: 24px; }
 `;
@@ -317,6 +329,11 @@ class HaRbacPanel extends HTMLElement {
           ...role,
           ...readRules(role),
           appDenied: [...((role.apps || {}).deny || [])],
+          schedule: {
+            days: [...((role.schedule || {}).days || [])],
+            start: (role.schedule || {}).start || "",
+            end: (role.schedule || {}).end || "",
+          },
           tierAllow: [...((role.tiers || {}).allow || [])],
           tierDeny: [...((role.tiers || {}).deny || [])],
           attrRules: readAttributeRules(role),
@@ -467,6 +484,24 @@ class HaRbacPanel extends HTMLElement {
         nothing hard-coded.</p>
       <div class="field" id="tier-host"></div>
 
+      <h3>When this role applies</h3>
+      <p class="hint">Leave it alone and the role is always in force. Give it
+        days or hours and it applies only then; outside them the person holds
+        no role at all, which means no access rather than their old access. An
+        end before the start runs through midnight, so 22:00 to 06:00 is the
+        night.</p>
+      <div class="checks" id="days">${DAYS.map(
+        (day) => `<ha-formfield label="${esc(day.label)}">
+          <ha-checkbox data-day="${esc(day.value)}"
+            ${draft.schedule.days.includes(day.value) ? "checked" : ""}
+            ${locked ? "disabled" : ""}></ha-checkbox>
+        </ha-formfield>`
+      ).join("")}</div>
+      <div class="grid2">
+        <div id="from-host"></div>
+        <div id="until-host"></div>
+      </div>
+
       <ha-expansion-panel header="Advanced">
         <div class="card-content">
           <p class="hint">Overrides by command name, and the raw policy this role
@@ -485,6 +520,17 @@ class HaRbacPanel extends HTMLElement {
         <span class="spacer"></span>
         <ha-button id="delete" ${locked ? "disabled" : ""}>Delete</ha-button>
       </div>`;
+
+    host.querySelector("#from-host").appendChild(
+      this._time(draft.schedule.start, "From", locked, (value) => {
+        this._draft.schedule.start = value;
+      })
+    );
+    host.querySelector("#until-host").appendChild(
+      this._time(draft.schedule.end, "Until", locked, (value) => {
+        this._draft.schedule.end = value;
+      })
+    );
 
     host.querySelector("#adv-allow").appendChild(
       this._multiline(draft.tierAllow.join("\n"), "Always allow (one pattern per line)", locked, (value) => {
@@ -572,6 +618,24 @@ class HaRbacPanel extends HTMLElement {
       const next = event.detail ? event.detail.value : el.value;
       if (next === undefined || next === null) return;
       onChange(next);
+    });
+    return el;
+  }
+
+  /** A clock time, stored as HH:MM. */
+  _time(value, label, disabled, onChange) {
+    const el = document.createElement("ha-selector");
+    el.hass = this._hass;
+    el.selector = { time: { no_second: true } };
+    el.label = label;
+    el.required = false;
+    el.value = value || undefined;
+    el.disabled = disabled;
+    el.addEventListener("value-changed", (event) => {
+      event.stopPropagation();
+      // The selector hands back HH:MM:SS; the seconds are noise here.
+      const next = event.detail.value;
+      onChange(next ? String(next).split(":").slice(0, 2).join(":") : "");
     });
     return el;
   }
@@ -873,6 +937,13 @@ class HaRbacPanel extends HTMLElement {
             names: rule.names,
           })),
       },
+      schedule: {
+        days: [...root.querySelectorAll("[data-day]")]
+          .filter((box) => box.checked)
+          .map((box) => box.dataset.day),
+        start: this._draft.schedule.start,
+        end: this._draft.schedule.end,
+      },
       apps: {
         allow: [],
         // System panels are not offered, so they have no checkbox. Carry any
@@ -927,6 +998,7 @@ class HaRbacPanel extends HTMLElement {
           tiers: source.tiers,
           apps: source.apps,
           attributes: source.attributes,
+          schedule: source.schedule,
         },
       });
       this._selected = role.id;

@@ -701,8 +701,22 @@ class _WsSession:
         else:
             await self._server.send_str(json.dumps(forward[0]))
 
+    @callback
+    def _refresh_permissions(self) -> None:
+        """Re-resolve this connection's permissions.
+
+        A websocket stays open for hours, which is the same span a role's
+        schedule covers, so permissions read once at authentication would keep
+        a role in force long after its hours ended. The evaluator caches on the
+        set of roles currently in force, so this is a dictionary lookup until
+        that set actually changes.
+        """
+        if self._user is not None:
+            self._permissions = self._evaluator.async_permissions(self._user)
+
     async def _intercept(self, message: dict[str, Any]) -> bool:
         """Return True if a command should reach Home Assistant."""
+        self._refresh_permissions()
         msg_type = message.get("type")
         msg_id = message.get("id")
 
@@ -832,6 +846,9 @@ class _WsSession:
 
     async def _on_server_text(self, raw: str) -> None:
         """Handle one outbound text frame, which may be a coalesced batch."""
+        # Subscriptions push without the client asking, so a connection that
+        # only listens would never re-check its schedule on the inbound side.
+        self._refresh_permissions()
         try:
             parsed = json_loads(raw)
         except ValueError:
