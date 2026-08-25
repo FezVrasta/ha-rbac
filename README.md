@@ -23,12 +23,11 @@
 
 ---
 
-> ### ⚠️ This is an alpha
->
-> It works, it's tested, and it's survived a round of deliberately trying to
-> break it. But it's new, and it hasn't lived in real houses yet.
-> **Don't make it the only thing between someone and your front door yet.**
-> Try it, break it, and
+> [!CAUTION]
+> **This is an alpha.** It works, it's tested, and it survived a round of
+> deliberately trying to break it. But it's new, and it hasn't lived in real
+> houses yet. **Don't make it the only thing between someone and your front
+> door yet.** Try it, break it, and
 > [tell me what happened](https://github.com/FezVrasta/ha-rbac/issues).
 
 ---
@@ -37,14 +36,14 @@
 
 Home Assistant has two kinds of user: **administrator**, and **everyone else**.
 
-That's the whole model. "Everyone else" still sees every device in your home —
+That's the whole model. "Everyone else" still sees every device in your home:
 every camera, every lock, every sensor. There's no way to hand a house guest a
 dashboard with just the living room lights on it, or to give your kid a tablet
 that can't unlock the front door.
 
 ## What you can control
 
-### 🏠 Entities — what they see and touch
+### 🏠 Entities: what they see and touch
 
 **No access**, **read**, or **read and control**, as a baseline plus exceptions.
 Target them however you already think about your house:
@@ -59,9 +58,9 @@ Target them however you already think about your house:
 
 Chosen with the same pickers you use everywhere else in Home Assistant.
 
-### 📍 Details — how much of an entity they see
+### 📍 Details: how much of an entity they see
 
-An entity someone can see, they normally see in full — every attribute it
+An entity someone can see, they normally see in full: every attribute it
 reports. Often that's more than you meant to share:
 
 | | |
@@ -79,7 +78,7 @@ working normally.
 Hidden attributes are gone from the dashboard, the state API, history, live
 updates, and templates.
 
-### 📱 Apps, dashboards and add-ons — where they can go
+### 📱 Apps, dashboards and add-ons: where they can go
 
 Everything in the sidebar, ticked or unticked:
 
@@ -90,10 +89,10 @@ Everything in the sidebar, ticked or unticked:
 | **Built-in screens** | Energy, History, Logbook, Map, Media, To-do |
 | **Custom panels** | anything else that shows up there |
 
-Home Assistant treats all of these as the same kind of thing, so this does too —
+Home Assistant treats all of these as the same kind of thing, so this does too:
 one list, read from your instance, whatever you happen to have installed.
 
-### ⚙️ Commands — what they can change
+### ⚙️ Commands: what they can change
 
 **Ordinary use**, or **everything including settings**. Which half is which is
 read from Home Assistant's own markings rather than a list kept here, so it
@@ -103,7 +102,7 @@ stays right as Home Assistant grows.
 
 And the parts that make it usable:
 
-🙈 **Hidden means hidden.** A restricted entity isn't greyed out — it isn't in
+🙈 **Hidden means hidden.** A restricted entity isn't greyed out. It isn't in
 the dashboard, the search, the history, or the API. As far as that person's Home
 Assistant is concerned, it doesn't exist.
 
@@ -125,7 +124,7 @@ see what and why.
 </td>
 <td width="50%">
 <img src="screenshots/owner-sidebar.jpg" alt="The owner's sidebar, with Access Control and Settings">
-<p align="center"><em>Same house, same address — signed in as yourself.</em></p>
+<p align="center"><em>Same house, same address, signed in as yourself.</em></p>
 </td>
 </tr>
 <tr>
@@ -143,7 +142,7 @@ see what and why.
 ## How it works, in one minute
 
 It sits in front of Home Assistant and reads everything going past. When your
-guest's browser asks for the state of the house, it answers — minus the parts
+guest's browser asks for the state of the house, it answers, minus the parts
 they're not allowed to see. When it asks to unlock a door, it says no.
 
 The useful part is that it ships no list of what's dangerous. Home Assistant
@@ -170,26 +169,29 @@ paste `https://github.com/FezVrasta/ha-rbac`, category **Integration**.
 
 Then add **Access Control** from Settings → Devices & Services.
 
-Nothing changes until you give someone a role, so it's safe to install and look
-around first.
+> [!NOTE]
+> Nothing changes until you give someone a role, so it's safe to install and
+> look around first.
 
 ### 2. Close Home Assistant's own door
 
-**This step is the one that matters.** This works by standing in front of Home
-Assistant, so Home Assistant has to stop answering directly — otherwise anyone
-can walk straight around it with the login they already have. It warns you at
-startup if you skip it.
+> [!IMPORTANT]
+> **This step is the one that matters.** This works by standing in front of
+> Home Assistant, so Home Assistant has to stop answering directly. Otherwise
+> anyone can walk straight around it with the login they already have. It warns
+> you at startup if you skip it.
 
 What you want is Home Assistant listening on `127.0.0.1:8124`, and this
-integration — which defaults to exactly that — answering on `8123`, the address
+integration (which defaults to exactly that) answering on `8123`, the address
 everyone already uses. Nothing else changes: bookmarks, the companion app, your
 Google or Alexa setup all keep working, and **nobody gets signed out**, because
 to a browser it is the same address as before. In Docker, keep publishing `8123`
 and don't publish `8124`.
 
+> [!WARNING]
 > **Don't reach for `configuration.yaml`.** Recent Home Assistant versions moved
 > the `http` settings into their own store, and YAML is ignored from the first
-> start onwards — it changes nothing and raises a repair issue saying so.
+> start onwards. It changes nothing and raises a repair issue saying so.
 
 The awkward part is that Home Assistant is mid-migration here: the setting has
 left YAML, and as of 2026.8 the Settings → System → Network page doesn't offer
@@ -225,7 +227,7 @@ asyncio.run(main())
 Home Assistant restarts and comes back on `127.0.0.1:8124`, with this
 integration answering on `8123`. The change is staged as a **trial** and reverts
 itself if it locks you out, so once you have checked you can still sign in,
-confirm it by sending `{"id": 2, "type": "http/config/promote"}` the same way —
+confirm it by sending `{"id": 2, "type": "http/config/promote"}` the same way,
 through the proxy this time, since that is the only door left.
 
 Send the whole config, not just the host: omitted keys fall back to their
@@ -233,11 +235,12 @@ defaults rather than keeping your current values.
 
 </details>
 
+> [!CAUTION]
 > **If this integration ever fails to load, Home Assistant is reachable only
-> from its own machine.** That's deliberate — it fails closed rather than
-> throwing the doors open — but keep a way in:
-> `ssh -L 8124:127.0.0.1:8124 your-ha-host`, then browse `localhost:8124`. Set
-> that up before you need it.
+> from its own machine.** That's deliberate: it fails closed rather than
+> throwing the doors open. But keep a way in,
+> `ssh -L 8124:127.0.0.1:8124 your-ha-host` and then browse `localhost:8124`,
+> and set that up before you need it.
 
 <details>
 <summary><strong>What this protects against, honestly</strong></summary>
@@ -249,7 +252,7 @@ see or touch what their role forbids, from a browser, the app, or the API.
 
 **It doesn't hold** against someone with a login *on the machine Home Assistant
 runs on*. Anyone with a shell there can read Home Assistant's credential store
-and impersonate you — that beats Home Assistant's own security, not just this.
+and impersonate you, which beats Home Assistant's own security, not just this.
 If that's a person in your house, don't give them a shell account.
 
 **On Home Assistant OS and Supervised**, add-ons talk to Home Assistant through
@@ -279,7 +282,7 @@ Have them reload, and their Home Assistant is now smaller.
 Anyone without a role keeps exactly the access Home Assistant already gave them,
 so you can roll this out one person at a time.
 
-**Locked yourself out?** You can't lock out the owner account — that's built in
+**Locked yourself out?** You can't lock out the owner account: that's built in
 and can't be changed from the panel. Failing that, use the SSH tunnel from the
 install step for plain, unfiltered Home Assistant.
 
@@ -292,11 +295,11 @@ install step for plain, unfiltered Home Assistant.
   leaves the sidebar, its Supervisor endpoints are refused, it's dropped from
   the add-on listings, and its own web page is refused even to someone who
   knows its address. What none of it does is pretend the thing was never
-  installed — someone determined can still tell something is being withheld.
+  installed. Someone determined can still tell something is being withheld.
 
 ## Contributing
 
-Bug reports from real households are the most useful thing right now —
+Bug reports from real households are the most useful thing right now,
 especially "my dashboard broke, and here's what the Denials tab said". Issues
 and pull requests welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for how to run
 the tests.
