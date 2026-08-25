@@ -142,7 +142,17 @@ const STYLES = `
   .checks { display: grid; gap: 4px 16px; align-items: center;
             grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
   .checks ha-formfield { display: flex; align-items: center; min-height: 40px; }
-  .cap p { margin: -6px 0 10px 44px; }
+  /* The checkbox sits beside a single text column holding both the title and
+     the description, so the two line up by construction. Offsetting the
+     description by a guess at the checkbox's width did not: the label's real
+     offset comes from ha-formfield, and the two numbers were never equal. */
+  .cap { display: flex; align-items: flex-start; gap: 4px; }
+  .cap-text { min-width: 0; }
+  /* No invented heights: the box and the first line of text are both about
+     20px, so flex-start lines their centres up on its own. Forcing the title
+     into a 40px line box put its centre 10px below the box's. */
+  .cap-title { cursor: pointer; }
+  .cap .hint { margin: 2px 0 12px; }
   .cap.indent { margin-left: 28px; }
   /* Seven three-letter labels do not need the width an app name does. */
   /* A time picker is hh:mm, a meridiem dropdown and a clear button, which is
@@ -614,38 +624,30 @@ class HaRbacPanel extends HTMLElement {
       </div>
 
       <h3>What this role can do</h3>
-      <p class="hint">Administrative commands are recognised from Home Assistant's
-        own markings, read on this instance,
-        ${this._catalog ? this._catalog.commands.length : 0} commands,
-        nothing hard-coded.</p>
       <p class="hint">Unticked, this role can live in the house but not
         administer it: it reads and controls whatever it is allowed above and
         reaches no settings at all. Tick a part of the settings to hand that
         over, without granting the rest.</p>
       <div class="cap">
-        <ha-formfield label="All settings">
-          <ha-checkbox id="tier-admin"
-            ${(draft.tiers || {}).max === "admin" ? "checked" : ""}
-            ${locked ? "disabled" : ""}></ha-checkbox>
-        </ha-formfield>
-        <p class="hint">Everything below, and anything Home Assistant adds
-          later. A full administrator.</p>
+        <ha-checkbox id="tier-admin"
+          ${(draft.tiers || {}).max === "admin" ? "checked" : ""}
+          ${locked ? "disabled" : ""}></ha-checkbox>
+        <div class="cap-text">
+          <div class="cap-title">All settings</div>
+          <p class="hint">Everything below, and anything Home Assistant adds
+            later. A full administrator.</p>
+        </div>
       </div>
       <div id="caps">${(this._catalog ? this._catalog.capabilities || [] : [])
         .map(
           (cap) => `<div class="cap indent">
-            <ha-formfield label="${esc(cap.title)}">
-              <ha-checkbox data-cap="${esc(cap.id)}"
-                ${(draft.capabilities || []).includes(cap.id) ? "checked" : ""}
-                ${locked ? "disabled" : ""}></ha-checkbox>
-            </ha-formfield>
-            <p class="hint">${esc(cap.description)}${
-              cap.commands.length
-                ? ` ${cap.commands.length} command${
-                    cap.commands.length === 1 ? "" : "s"
-                  } on this instance.`
-                : ""
-            }</p>
+            <ha-checkbox data-cap="${esc(cap.id)}"
+              ${(draft.capabilities || []).includes(cap.id) ? "checked" : ""}
+              ${locked ? "disabled" : ""}></ha-checkbox>
+            <div class="cap-text">
+              <div class="cap-title">${esc(cap.title)}</div>
+              <p class="hint">${esc(cap.description)}</p>
+            </div>
           </div>`
         )
         .join("")}</div>
@@ -715,6 +717,14 @@ class HaRbacPanel extends HTMLElement {
     host.querySelector("#tier-admin").addEventListener("change", () =>
       this._refreshCapabilities()
     );
+    host.querySelectorAll(".cap").forEach((row) => {
+      const box = row.querySelector("ha-checkbox");
+      row.querySelector(".cap-title").addEventListener("click", () => {
+        if (box.disabled) return;
+        box.checked = !box.checked;
+        box.dispatchEvent(new Event("change"));
+      });
+    });
     host.querySelectorAll("[data-cap]").forEach((box) => {
       box.addEventListener("change", () => {
         const chosen = new Set(this._draft.capabilities || []);
