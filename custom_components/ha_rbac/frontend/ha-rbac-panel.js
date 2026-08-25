@@ -477,6 +477,7 @@ class HaRbacPanel extends HTMLElement {
       <p class="hint">Start from a baseline, then add exceptions. Most roles are
         one line of each: see everything, except the locks.</p>
       <div class="field" id="base-host"></div>
+      <div id="sees-nothing"></div>
 
       <h3>Exceptions</h3>
       <div id="rules"></div>
@@ -499,7 +500,9 @@ class HaRbacPanel extends HTMLElement {
 
       <h3>Where this role can go</h3>
       <p class="hint">Every dashboard, add-on and built-in screen in the sidebar.
-        Unticking one hides it and refuses the requests behind it.</p>
+        Unticking one hides it and refuses the requests behind it. This decides
+        which screens they can reach, not what appears on them: a dashboard they
+        can open still shows only the entities they are allowed above.</p>
       <div class="checks" id="apps">${this._visibleApps()
         .map(
           (app) => `<ha-formfield label="${esc(app.label)}${
@@ -572,6 +575,7 @@ class HaRbacPanel extends HTMLElement {
     host.querySelector("#base-host").appendChild(
       this._select(BASE, draft.base, locked, "Baseline", (value) => {
         this._draft.base = value;
+        this._refreshSeesNothing();
         this._syncRaw();
       })
     );
@@ -597,8 +601,30 @@ class HaRbacPanel extends HTMLElement {
     this._mountAttrRules(host.querySelector("#attr-rules"), locked);
   }
 
+  /**
+   * A role with no baseline and no granting exception can open every dashboard
+   * and find all of them empty, because the app list decides which screens
+   * exist and this decides what is on them. That is the first thing people get
+   * caught by, so it says so rather than leaving them to work it out.
+   */
+  _refreshSeesNothing() {
+    const host = this.shadowRoot.getElementById("sees-nothing");
+    if (!host) return;
+    const draft = this._draft;
+    const grants =
+      draft.base !== "none" ||
+      draft.rules.some((rule) => rule.access !== "none" && rule.ids.length);
+    host.innerHTML = grants
+      ? ""
+      : `<ha-alert alert-type="info">This role can see no entities, so its
+         dashboards will open but come up empty. Add an exception below to let
+         it see something. Ticking a dashboard under "Where this role can go"
+         decides whether the screen is reachable, not what is on it.</ha-alert>`;
+  }
+
   _mountRules(host, locked) {
     host.innerHTML = "";
+    this._refreshSeesNothing();
     if (!this._draft.rules.length) {
       host.innerHTML = `<p class="hint">No exceptions. The baseline applies to everything.</p>`;
       return;
@@ -786,6 +812,7 @@ class HaRbacPanel extends HTMLElement {
     const access = this._select(ACCESS, rule.access, locked, "Access", (value) => {
       rule.access = value;
       row.className = `rule${rule.access === "none" ? " deny" : ""}`;
+      this._refreshSeesNothing();
       this._syncRaw();
     });
 
@@ -825,6 +852,7 @@ class HaRbacPanel extends HTMLElement {
       event.stopPropagation();
       const value = event.detail.value;
       rule.ids = Array.isArray(value) ? value : value ? [value] : [];
+      this._refreshSeesNothing();
       this._syncRaw();
     });
     return el;
