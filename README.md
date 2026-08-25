@@ -188,14 +188,9 @@ Google or Alexa setup all keep working, and **nobody gets signed out**, because
 to a browser it is the same address as before. In Docker, keep publishing `8123`
 and don't publish `8124`.
 
-> [!WARNING]
-> **Don't reach for `configuration.yaml`.** Recent Home Assistant versions moved
-> the `http` settings into their own store, and YAML is ignored from the first
-> start onwards. It changes nothing and raises a repair issue saying so.
-
-The awkward part is that Home Assistant is mid-migration here: the setting has
-left YAML, and as of 2026.8 the Settings → System → Network page doesn't offer
-it yet. Until it does, set it over the websocket API:
+Home Assistant is mid-migration on where this setting lives. It has left
+`configuration.yaml`, and as of 2026.8 the Settings → System → Network page
+doesn't offer it yet. Until it does, set it over the websocket API:
 
 <details>
 <summary><strong>Setting it today (copy-paste)</strong></summary>
