@@ -196,8 +196,7 @@ Longer version in [docs/DESIGN.md](docs/DESIGN.md).
 ## Install
 
 Three steps, in this order. Each one leaves you with a Home Assistant you can
-still reach, so there is no point where you are locked out waiting for the next
-step to work.
+still reach.
 
 The end state: **Home Assistant on `127.0.0.1:8124`**, reachable only from its
 own machine, and **this integration on `8123`**, the address everyone already
@@ -210,13 +209,12 @@ before.
 **Settings → System → Network**, under **HTTP**, set **Server port** to `8124`.
 Leave **Server host** alone for now.
 
-Home Assistant restarts, then asks you to confirm you can still reach it, at
-`http://your-ha:8124`. Confirm there. If you can't reach it, it puts the old
-port back by itself.
+Home Assistant restarts, then asks you to confirm it's still reachable. Do
+that at `http://your-ha:8124`. If you can't get there, it puts the old port back
+by itself.
 
-Port `8123` is now free, which is what the next step needs. Until step 2 is
-done, `8123` answers nothing, so do this at a time when a few minutes of that is
-fine.
+Port `8123` is now free, which is what step 2 needs. Nothing answers there until
+then, so pick a moment when a few minutes of that is fine.
 
 ### 2. Install this integration
 
@@ -263,86 +261,22 @@ That's it.
 
 <br>
 
-No, and it is worth being clear about this because it is the first thing
-everyone asks.
-
-`127.0.0.1` is not a firewall rule, it is the only address Home Assistant will
-accept a connection on, and it means "this machine, nothing else". After step 3
-Home Assistant is not listening on your network at all. Port `8124` still
-exists, but only from inside the box. Nothing on your LAN can open it, whatever
-it tries.
+No. `127.0.0.1` isn't a firewall rule, it's the only address Home Assistant
+will accept a connection on, and it means "this machine, nothing else". After
+step 3 Home Assistant isn't listening on your network at all. The port still
+exists, but only from inside the box, and nothing on your LAN can open it.
 
 This integration runs *inside* Home Assistant, so it reaches `8124` over that
-same internal address. It never needs the port to be reachable from anywhere
-else, which is why closing it costs nothing.
+same internal address. It never needs the port reachable from anywhere else,
+which is why closing it costs nothing.
 
-**This works the same on every install type**: Home Assistant OS, Supervised,
-Container and Core. It is a Home Assistant setting, not a Docker or firewall
-one. If you run in Docker you can also simply not publish `8124`, but you do not
-have to for this to hold.
+**It works the same on every install type**: Home Assistant OS, Supervised,
+Container and Core. It's a Home Assistant setting, not a Docker or firewall one.
+In Docker you can also just not publish `8124`, but you don't have to for this
+to hold.
 
-</details>
-
-> [!CAUTION]
-> **After step 3, Home Assistant answers only on its own machine.** If this
-> integration ever fails to load, the proxy is not there to answer for it, and
-> nothing on your network reaches Home Assistant until you fix it from that
-> machine. Failing closed is the right direction, but check now that you can
-> get to the machine some other way: a shell, or its console.
-
-<details>
-<summary><strong>Getting back in if that happens</strong></summary>
-
-<br>
-
-Either works, and both need access to the machine Home Assistant runs on.
-
-**Reach it directly.** From anywhere with SSH to that machine:
-
-```bash
-ssh -L 8124:127.0.0.1:8124 your-ha-host
-```
-
-Then browse `http://localhost:8124` for plain, unfiltered Home Assistant.
-
-**Or put the setting back.** Open `.storage/http` in your Home Assistant config
-directory, delete the `"server_host"` entry from the `"stable"` block, and
-restart Home Assistant. It goes back to answering on the network directly.
-
-> [!WARNING]
-> **On Home Assistant OS and Supervised, the tunnel does not work from the
-> Terminal & SSH add-on.** Add-ons get their own container network, so
-> `127.0.0.1` inside one is the add-on itself, not Home Assistant, and the
-> tunnel connects to nothing. Editing `.storage/http` does work from there, at
-> `/homeassistant/.storage/http`.
->
-> Either way you have to reach the add-on without Home Assistant, so give it a
-> real SSH port in its configuration. Its web terminal is served *through* Home
-> Assistant, which is the thing you can no longer reach. Failing that, use the
-> machine's console.
-
-</details>
-
-<details>
-<summary><strong>What this protects against, honestly</strong></summary>
-
-<br>
-
-**It holds** against anyone on your network. Someone with a guest login cannot
-see or touch what their role forbids, from a browser, the app, or the API.
-
-**It doesn't hold** against someone with a login *on the machine Home Assistant
-runs on*. Anyone with a shell there can read Home Assistant's credential store
-and impersonate you, which beats Home Assistant's own security, not just this.
-If that's a person in your house, don't give them a shell account.
-
-**On Home Assistant OS and Supervised**, add-ons talk to Home Assistant through
-a private channel nothing can sit in front of, so an add-on with API access can
-do as it likes regardless of anyone's role. Step 3 is fine here, though:
-Supervisor reaches Home Assistant over a Unix socket rather than the network
-port, so it keeps working.
-
-Full detail in [docs/DESIGN.md](docs/DESIGN.md).
+On Home Assistant OS and Supervised, Supervisor keeps working throughout: it
+reaches Home Assistant over an internal socket rather than the network port.
 
 </details>
 
@@ -359,18 +293,62 @@ Have them reload, and their Home Assistant is now smaller.
 Anyone without a role keeps exactly the access Home Assistant already gave them,
 so you can roll this out one person at a time.
 
-**Locked yourself out?** You can't lock out the owner account, which is built in
-and can't be changed from the panel, so log in as the owner and fix the role.
-Failing that, see *Getting back in* in the install section above.
+## If you get locked out
 
-## What it can't do yet
+**A role gone wrong** is the easy case: you can't lock out the owner account.
+That's built into the code and can't be changed from the panel, so sign in as
+the owner and fix the role.
 
-- **Automations aren't affected.** They run as the system, not as a person, so
-  an automation can still touch anything. Same as stock Home Assistant.
-- **Webhooks aren't either.** The companion app and anything else using
-  `/api/webhook/...` is authenticated by an unguessable id rather than by a
-  person, and its body can be encrypted, so there is nothing for a role to
-  apply to. Anyone holding one of those ids can act through it.
+**The harder case** is this integration failing to load. After step 3 Home
+Assistant answers only on its own machine, and without the proxy nothing is
+answering in its place, so it's off your network entirely. That's the right
+direction to fail in, but check now that you can reach the machine itself, by a
+shell or its console.
+
+From there, two ways back. Tunnel to Home Assistant:
+
+```bash
+ssh -L 8124:127.0.0.1:8124 your-ha-host
+```
+
+and browse `http://localhost:8124` for plain, unfiltered Home Assistant. Or put
+the setting back: open `.storage/http` in your config directory, delete the
+`"server_host"` entry from the `"stable"` block, and restart. Home Assistant
+answers on the network again.
+
+> [!WARNING]
+> **On Home Assistant OS and Supervised, the Terminal & SSH add-on is not a way
+> in by default.** Its web terminal is served *through* the Home Assistant you
+> can no longer reach, so it needs a real SSH port set in its configuration
+> while things still work. The tunnel won't run from inside it either, because
+> add-ons get their own container network and `127.0.0.1` there is the add-on
+> rather than Home Assistant. Editing the file does work, at
+> `/homeassistant/.storage/http`.
+
+## What it doesn't cover
+
+It holds against anyone on your network: someone with a guest login cannot see
+or touch what their role forbids, from a browser, the app, or the API. Four
+things sit outside that.
+
+**Anyone with a shell on the machine Home Assistant runs on.** Home Assistant's
+credential store is a file on disk, and whoever can read it can sign in as you.
+That defeats Home Assistant's own login, not just this layer, so don't give a
+shell account to someone you're restricting.
+
+**Add-ons, on Home Assistant OS and Supervised.** They reach Home Assistant
+through a private channel nothing can sit in front of, so an add-on with API
+access ignores roles entirely.
+
+**Automations.** They run as the system rather than as a person, so an
+automation can still touch anything. Same as stock Home Assistant.
+
+**Webhooks.** `/api/webhook/...` is authenticated by an unguessable id rather
+than by a person, and the body may be encrypted, so there's nothing for a role
+to apply to. That's how the companion app talks to Home Assistant, and anyone
+holding one of those ids can act through it.
+
+Full detail in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Contributing
 
