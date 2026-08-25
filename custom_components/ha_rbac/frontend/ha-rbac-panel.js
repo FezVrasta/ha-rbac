@@ -370,6 +370,7 @@ class HaRbacPanel extends HTMLElement {
           ...role,
           ...readRules(role),
           appDenied: [...((role.apps || {}).deny || [])],
+          dashboardLevels: { ...((role.apps || {}).dashboards || {}) },
           schedule: readSchedule(role),
           tierAllow: [...((role.tiers || {}).allow || [])],
           tierDeny: [...((role.tiers || {}).deny || [])],
@@ -506,6 +507,7 @@ class HaRbacPanel extends HTMLElement {
         which screens they can reach, not what appears on them: a dashboard they
         can open still shows only the entities they are allowed above.</p>
       <div class="checks" id="apps">${this._visibleApps()
+        .filter((app) => app.kind !== "lovelace")
         .map(
           (app) => `<ha-formfield label="${esc(app.label)}${
             app.addon ? " (add-on)" : ""
@@ -517,9 +519,35 @@ class HaRbacPanel extends HTMLElement {
         )
         .join("")}</div>
 
+      <h3>Dashboards</h3>
+      <p class="hint">A dashboard can be opened empty, which shows only what the
+        role is allowed elsewhere, or it can carry its own contents with it.
+        Those are read from the dashboard whenever a request is judged, so
+        editing a dashboard changes what its holders see without anyone
+        reopening the role. A denial elsewhere still wins.</p>
+      <table id="dashboards">
+        <thead><tr>
+          <th>Dashboard</th><th>Can open</th><th>Sees what is on it</th><th>Can control it</th>
+        </tr></thead>
+        <tbody>${this._visibleApps()
+          .filter((app) => app.kind === "lovelace")
+          .map((app) => {
+            const denied = draft.appDenied.includes(app.url_path);
+            const level = draft.dashboardLevels[app.url_path] || "empty";
+            const box = (which, on) =>
+              `<ha-checkbox data-dash="${esc(app.url_path)}" data-level="${which}"
+                 ${on ? "checked" : ""} ${locked ? "disabled" : ""}></ha-checkbox>`;
+            return `<tr>
+              <td>${esc(app.label)}</td>
+              <td>${box("open", !denied)}</td>
+              <td>${box("content", !denied && level !== "empty")}</td>
+              <td>${box("control", !denied && level === "control")}</td>
+            </tr>`;
+          })
+          .join("")}</tbody>
+      </table>
       <div class="actions">
-        <ha-button id="from-dashboards">Allow what their dashboards show</ha-button>
-        <ha-button id="from-dashboards-control">...and let them control it</ha-button>
+        <ha-button id="refresh-dashboards">Re-read the dashboards</ha-button>
       </div>
 
       <h3>What this role can do</h3>
@@ -603,6 +631,7 @@ class HaRbacPanel extends HTMLElement {
       )
     );
 
+    this._wireDashboards(locked);
     this._mountSchedule(host.querySelector("#schedule"), locked);
     this._mountRules(host.querySelector("#rules"), locked);
     this._mountAttrRules(host.querySelector("#attr-rules"), locked);
@@ -620,7 +649,8 @@ class HaRbacPanel extends HTMLElement {
     const draft = this._draft;
     const grants =
       draft.base !== "none" ||
-      draft.rules.some((rule) => rule.access !== "none" && rule.ids.length);
+      draft.rules.some((rule) => rule.access !== "none" && rule.ids.length) ||
+      Object.keys(draft.dashboardLevels).length > 0;
     host.innerHTML = grants
       ? ""
       : `<ha-alert alert-type="info">This role can see no entities, so its
@@ -1004,8 +1034,7 @@ class HaRbacPanel extends HTMLElement {
     on("delete", () => this._deleteRole());
     on("save-bindings", () => this._saveBindings());
     on("load-denials", () => this._loadDenials());
-    on("from-dashboards", () => this._fromDashboards("read"));
-    on("from-dashboards-control", () => this._fromDashboards("control"));
+    on("refresh-dashboards", () => this._refreshDashboards());
     on("add-window", () => {
       this._draft.schedule.push({ days: [], start: "", end: "" });
       this._mountSchedule(root.getElementById("schedule"), false);
@@ -1023,50 +1052,57 @@ class HaRbacPanel extends HTMLElement {
   }
 
   /**
-   * Read the ticked dashboards and grant whatever they put on screen.
-   *
-   * "Which entities does this dashboard use" is the question a role author
-   * actually has, and answering it by hand means opening each one and copying
-   * ids out of it. The two controls stay separate -- this only fills in the
-   * exceptions, it does not tie access to the app list.
+   * The three boxes describe one level, not three independent ones, so ticking
+   * a deeper one implies the shallower and unticking a shallower one drops
+   * what it carried.
    */
-  async _fromDashboards(access) {
-    const ticked = this._visibleApps()
-      .filter((app) => app.kind === "lovelace")
-      .filter((app) => {
-        const box = this.shadowRoot.querySelector(`[data-app="${app.url_path}"]`);
-        return box && box.checked;
-      })
-      .map((app) => app.url_path);
+  _wireDashboards(locked) {
+    if (locked) return;
+    const root = this.shadowRoot;
+    for (const box of root.querySelectorAll("[data-dash]")) {
+      box.addEventListener("change", () => {
+        const path = box.dataset.dash;
+        const row = [...root.querySelectorAll(`[data-dash="${path}"]`)];
+        const at = (which) => row.find((b) => b.dataset.level === which);
+        const on = box.checked;
+        const which = box.dataset.level;
 
-    if (!ticked.length) {
-      this._notice = { kind: "error", text: "No dashboards are ticked above." };
-      this._render();
-      return;
-    }
+        if (which === "open" && !on) {
+          at("content").checked = false;
+          at("control").checked = false;
+        } else if (which === "content") {
+          if (on) at("open").checked = true;
+          else at("control").checked = false;
+        } else if (which === "control" && on) {
+          at("open").checked = true;
+          at("content").checked = true;
+        }
 
-    await this._guard(async () => {
-      const result = await this._call("dashboard_entities", { url_paths: ticked });
-      const found = result.entity_ids || [];
-      if (!found.length) {
-        throw new Error(
-          `Nothing found on ${ticked.join(", ")}. A dashboard generated automatically names no entities, so there is nothing to read out of it.`
-        );
-      }
-      this._draft.rules.push({
-        target: "entity_ids",
-        ids: found,
-        access: access === "control" ? "control" : "read",
+        const denied = !at("open").checked;
+        const level = at("control").checked
+          ? "control"
+          : at("content").checked
+            ? "content"
+            : "empty";
+        this._draft.appDenied = this._draft.appDenied.filter((p) => p !== path);
+        if (denied) this._draft.appDenied.push(path);
+        if (level === "empty") delete this._draft.dashboardLevels[path];
+        else this._draft.dashboardLevels[path] = level;
+        this._refreshSeesNothing();
       });
-      // Count what was actually read, not what was asked for.
-      const unreadable = result.unreadable || [];
-      const read = ticked.length - unreadable.length;
-      const missed = unreadable.length
-        ? ` Nothing could be read from ${unreadable.join(", ")}, which is what a dashboard generated automatically looks like from here.`
-        : "";
-      this._pending = `Added ${found.length} entities from ${read} dashboard${
-        read === 1 ? "" : "s"
-      }. Save to apply.${missed}`;
+    }
+  }
+
+  async _refreshDashboards() {
+    await this._guard(async () => {
+      const result = await this._call("dashboards/refresh");
+      const counts = result.dashboards || {};
+      const names = Object.keys(counts);
+      this._pending = names.length
+        ? `Re-read ${names.length} dashboard${names.length === 1 ? "" : "s"}: ${names
+            .map((n) => `${n} (${counts[n]})`)
+            .join(", ")}.`
+        : "No dashboards with a stored config to read.";
     });
   }
 
@@ -1103,6 +1139,7 @@ class HaRbacPanel extends HTMLElement {
         end: "",
       },
       apps: {
+        dashboards: { ...this._draft.dashboardLevels },
         allow: [],
         // System panels are not offered, so they have no checkbox. Carry any
         // denial they already had rather than silently granting it back.

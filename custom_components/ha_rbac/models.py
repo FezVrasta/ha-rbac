@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .catalog import Catalog
+    from .dashboards import DashboardEntities
     from .decide import Decider
     from .denylog import DenyLog
     from .policy import Evaluator
@@ -21,5 +22,6 @@ class RbacData:
     evaluator: "Evaluator"
     decider: "Decider"
     denylog: "DenyLog"
+    dashboard_entities: "DashboardEntities | None" = None
     proxy: "RbacProxy | None" = None
     unsubscribes: list[Any] = field(default_factory=list)

@@ -42,6 +42,7 @@ from .const import (
     PANEL_URL_PATH,
     STATIC_URL_PATH,
 )
+from .dashboards import DashboardEntities
 from .decide import Decider
 from .denylog import DenyLog
 from .filters import REGISTRY
@@ -76,7 +77,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     catalog = Catalog(hass)
     catalog.rebuild()
 
-    evaluator = Evaluator(hass, store)
+    dashboard_entities = DashboardEntities(hass)
+    evaluator = Evaluator(hass, store, dashboard_entities.entities_for)
     denylog = DenyLog(hass)
     decider = Decider(hass, catalog, REGISTRY)
 
@@ -96,6 +98,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     # Integrations register websocket commands lazily as they are set up.
     data.unsubscribes.append(hass.bus.async_listen("component_loaded", catalog.rebuild))
+    data.dashboard_entities = dashboard_entities
     websocket_api.async_register(hass)
     # The panel is how roles are administered, but it is not how they are
     # enforced. If the frontend is unavailable, keep enforcing and say so.
@@ -137,6 +140,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         await proxy.async_start()
         data.proxy = proxy
+        # Dashboards can only be read once Home Assistant has loaded them.
+        await dashboard_entities.async_start()
 
     if hass.is_running:
         await _start_proxy()
@@ -201,6 +206,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         unsubscribe()
     if data.proxy is not None:
         await data.proxy.async_stop()
+    if data.dashboard_entities is not None:
+        data.dashboard_entities.async_stop()
 
     # The handlers close over hass.data[DATA_RBAC], which has just been removed.
     websocket_api.async_unregister(hass)

@@ -161,10 +161,18 @@ SCHEDULE_SCHEMA = vol.Schema(
     }
 )
 
+# How much of a dashboard a role gets. Absent means "empty": it can open the
+# dashboard, and sees on it only what it is allowed elsewhere.
+DASHBOARD_EMPTY = "empty"
+DASHBOARD_CONTENT = "content"
+DASHBOARD_CONTROL = "control"
+DASHBOARD_LEVELS = (DASHBOARD_EMPTY, DASHBOARD_CONTENT, DASHBOARD_CONTROL)
+
 APPS_SCHEMA = vol.Schema(
     {
         vol.Optional("allow", default=list): [str],
         vol.Optional("deny", default=list): [str],
+        vol.Optional("dashboards", default=dict): {str: vol.In(DASHBOARD_LEVELS)},
     }
 )
 
@@ -483,6 +491,11 @@ class CompiledRole:
     app_deny: list[str]
     attribute_rules: "list[CompiledAttributeRule]"
     schedule: dict[str, Any]
+    # url_path -> level, for dashboards this role gets the contents of.
+    dashboard_levels: dict[str, str]
+    # Resolved when asked rather than when the role was saved, so editing a
+    # dashboard changes who can see what without anyone reopening the role.
+    dashboard_entities: "Callable[[str], set[str]] | None"
     full_access: bool
 
     def active_at(self, now: datetime) -> bool:
@@ -491,11 +504,36 @@ class CompiledRole:
 
     def check(self, entity_id: str, key: str) -> bool:
         """Return True if this role permits `key` access to an entity."""
-        return self.allow_fn(entity_id, key) and not self.deny_fn(entity_id, key)
+        if self.deny_fn(entity_id, key):
+            return False
+        if self.allow_fn(entity_id, key):
+            return True
+        return self._granted_by_a_dashboard(entity_id, key)
+
+    def _granted_by_a_dashboard(self, entity_id: str, key: str) -> bool:
+        """Return True if a dashboard this role gets the contents of shows it.
+
+        A denial still wins, which is checked before this: naming an entity a
+        role must not see should not be undone by someone putting it on a
+        dashboard the role happens to hold.
+        """
+        if self.dashboard_entities is None:
+            return False
+        for url_path, level in self.dashboard_levels.items():
+            if level == DASHBOARD_EMPTY:
+                continue
+            if key == POLICY_CONTROL and level != DASHBOARD_CONTROL:
+                continue
+            if entity_id in self.dashboard_entities(url_path):
+                return True
+        return False
 
 
 def compile_role(
-    hass: HomeAssistant, role: dict[str, Any], perm_lookup: PermissionLookup
+    hass: HomeAssistant,
+    role: dict[str, Any],
+    perm_lookup: PermissionLookup,
+    dashboard_entities: "Callable[[str], set[str]] | None" = None,
 ) -> CompiledRole:
     """Compile one role into a pair of policy functions."""
     allow_policy = desugar(hass, role.get("allow") or {})
@@ -520,6 +558,12 @@ def compile_role(
         app_deny=list(apps.get("deny") or []),
         attribute_rules=attribute_rules,
         schedule=dict(role.get("schedule") or {}),
+        dashboard_levels={
+            url_path: level
+            for url_path, level in (apps.get("dashboards") or {}).items()
+            if level != DASHBOARD_EMPTY
+        },
+        dashboard_entities=dashboard_entities,
         # Full access skips every gate, so it has to mean *nothing* is
         # restricted. Ignoring the tier denials here silently disabled the whole
         # layer for the obvious authoring flow of cloning Administrator and
@@ -534,6 +578,7 @@ def compile_role(
             and not tiers.get("deny")
             and not apps.get("deny")
             and not apps.get("allow")
+            and not (apps.get("dashboards") or {})
             and not attribute_rules
         ),
     )
@@ -634,10 +679,16 @@ class Permissions:
 class Evaluator:
     """Resolves users to permissions, with caching keyed on user id."""
 
-    def __init__(self, hass: HomeAssistant, store: Any) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        store: Any,
+        dashboard_entities: "Callable[[str], set[str]] | None" = None,
+    ) -> None:
         """Initialise the evaluator."""
         self._hass = hass
         self._store = store
+        self._dashboard_entities = dashboard_entities
         self._compiled: dict[str, CompiledRole] = {}
         # Keyed on the user and on which of their roles are currently in force,
         # so a schedule opening or closing produces a different key rather than
@@ -662,7 +713,9 @@ class Evaluator:
             return compiled
         if (role := self._store.roles.get(role_id)) is None:
             return None
-        compiled = compile_role(self._hass, role, self._perm_lookup)
+        compiled = compile_role(
+            self._hass, role, self._perm_lookup, self._dashboard_entities
+        )
         self._compiled[role_id] = compiled
         return compiled
 

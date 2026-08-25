@@ -8,7 +8,6 @@ from homeassistant.components.websocket_api import const as ws_const
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DATA_RBAC, DOMAIN
-from .extract import entity_ids_in
 
 COMMANDS = (
     "roles/list",
@@ -18,7 +17,7 @@ COMMANDS = (
     "bindings/list",
     "bindings/set",
     "catalog",
-    "dashboard_entities",
+    "dashboards/refresh",
     "denials/recent",
     "simulate",
 )
@@ -49,7 +48,7 @@ def async_register(hass: HomeAssistant) -> None:
         handle_bindings_list,
         handle_bindings_set,
         handle_catalog,
-        handle_dashboard_entities,
+        handle_dashboards_refresh,
         handle_denials_recent,
         handle_simulate,
     ):
@@ -193,54 +192,31 @@ async def handle_bindings_set(
 
 
 @websocket_api.require_admin
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): f"{DOMAIN}/dashboard_entities",
-        vol.Required("url_paths"): [vol.Any(str, None)],
-    }
-)
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/dashboards/refresh"})
 @websocket_api.async_response
-async def handle_dashboard_entities(
+async def handle_dashboards_refresh(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Return every entity the named dashboards mention.
+    """Re-read every dashboard now.
 
-    Answers the question a role author actually has: "let them see what is on
-    these screens". Working that out by hand means opening each dashboard and
-    copying entity ids out of it, which is where people give up.
+    The list is kept current by Home Assistant's own "a dashboard changed"
+    event, so this should never be necessary. It is here for when it is: a
+    dashboard edited outside the usual path, or a suspicion that the two have
+    drifted, should not need a restart to settle.
     """
-    try:
-        from homeassistant.components.lovelace.const import (  # noqa: PLC0415
-            LOVELACE_DATA,
-        )
-    except ImportError:
-        connection.send_result(msg["id"], {"entity_ids": [], "unreadable": []})
+    lookup = _data(hass).dashboard_entities
+    if lookup is None:
+        connection.send_result(msg["id"], {"dashboards": {}})
         return
-
-    data = hass.data.get(LOVELACE_DATA)
-    dashboards = getattr(data, "dashboards", {}) if data else {}
-
-    known = set(hass.states.async_entity_ids())
-    found: set[str] = set()
-    unreadable: list[str] = []
-    for url_path in msg["url_paths"]:
-        # The default dashboard is stored under None rather than its url path.
-        key = None if url_path in (None, "lovelace") else url_path
-        config_holder = dashboards.get(key)
-        if config_holder is None:
-            unreadable.append(url_path or "lovelace")
-            continue
-        try:
-            config = await config_holder.async_load(False)
-        except Exception:  # noqa: BLE001
-            # A dashboard with no stored config yet, or one in a mode this
-            # cannot read. Reported rather than silently counted as empty.
-            unreadable.append(url_path or "lovelace")
-            continue
-        found |= entity_ids_in(config, known.__contains__)
-
+    await lookup.async_refresh()
     connection.send_result(
-        msg["id"], {"entity_ids": sorted(found), "unreadable": unreadable}
+        msg["id"],
+        {
+            "dashboards": {
+                url_path: len(lookup.entities_for(url_path))
+                for url_path in sorted(lookup.known())
+            }
+        },
     )
 
 

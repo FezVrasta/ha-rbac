@@ -109,7 +109,15 @@ not a correctness boundary, so it fails closed.
   removal list is enough for the client's picture to stay consistent. Removals
   matter as much as values: `{"-": {"a": ["latitude"]}}` names an attribute
   without its value, which still discloses that it exists.
-- **Apps**: which sidebar entries the role may open.
+- **Apps**: which sidebar entries the role may open. Dashboards carry a level as
+  well: a role can open one empty, read what is on it, or control it. That is
+  resolved against the dashboard when a request is judged rather than recorded
+  when the role is saved, so a dashboard being edited changes who can see what
+  without anyone reopening the role. The entity list per dashboard is cached and
+  refreshed on Home Assistant's own `lovelace_updated` event, because it is
+  consulted on the hottest path there is. A denial is checked first, so putting
+  a forbidden entity on a granted dashboard does not unlock it, which would
+  otherwise hand a grant to anyone who can edit a dashboard.
 - **Commands**: ordinary use, or everything including settings.
 - **Schedule**: a list of windows, each with its own days and times. The role is
   in force if any window is open. A window whose end precedes its start runs

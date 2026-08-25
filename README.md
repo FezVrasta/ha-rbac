@@ -58,11 +58,21 @@ Target them however you already think about your house:
 
 Chosen with the same pickers you use everywhere else in Home Assistant.
 
-There is also a shortcut for the common case. Tick the dashboards a role should
-have under **Where this role can go**, then press **Allow what their dashboards
-show** and every entity on those dashboards becomes an exception, to read or to
-control. It reads the dashboards themselves, so a card type nobody has heard of
-is picked up the same as a built-in one.
+Or let a dashboard say it for you. Each dashboard gets three levels, and a role
+holding one at **sees what is on it** or **can control it** gets whatever that
+dashboard shows, without naming a single entity:
+
+| | |
+| --- | --- |
+| **Can open** | the screen loads, showing only what the role is allowed elsewhere |
+| **Sees what is on it** | plus reading every entity on that dashboard |
+| **Can control it** | plus operating them |
+
+This is worked out when a request is judged, not when the role is saved, so
+adding a card to a dashboard extends its holders straight away and removing one
+takes it back. It reads the dashboards themselves, so a card type nobody has
+heard of counts the same as a built-in one. A denial elsewhere still wins, so
+putting a forbidden entity on a dashboard does not unlock it.
 
 ### 📍 Details: how much of an entity they see
 
