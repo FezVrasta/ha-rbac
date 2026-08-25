@@ -76,7 +76,7 @@ const STYLES = `
   .hint { color: var(--secondary-text-color); font-size: var(--ha-font-size-s, .85rem);
           margin: 0 0 12px; line-height: 1.45; }
   .field { display: block; margin: 12px 0; }
-  ha-input, ha-textarea, ha-select { width: 100%; }
+  ha-input, ha-select, ha-selector { display: block; width: 100%; }
   .tabs { display: flex; gap: 4px; padding: 0 8px; overflow-x: auto; }
   .tabs button {
     background: none; border: 0; cursor: pointer; font: inherit;
@@ -317,6 +317,8 @@ class HaRbacPanel extends HTMLElement {
           ...role,
           ...readRules(role),
           appDenied: [...((role.apps || {}).deny || [])],
+          tierAllow: [...((role.tiers || {}).allow || [])],
+          tierDeny: [...((role.tiers || {}).deny || [])],
           attrRules: readAttributeRules(role),
         }
       : null;
@@ -328,20 +330,7 @@ class HaRbacPanel extends HTMLElement {
     const bar = this.shadowRoot.querySelector("ha-top-app-bar-fixed");
     if (bar) bar.narrow = this._narrow;
     if (this._tab === "roles") this._mountEditor();
-    this._applyValues(this.shadowRoot);
     this._wire();
-  }
-
-  /** A textarea's text is a property, not the content a `<textarea>` would slot. */
-  _applyValues(root) {
-    root.querySelectorAll("ha-textarea[data-text]").forEach((area) => {
-      const value = area.dataset.text;
-      const apply = () => {
-        area.value = value;
-      };
-      apply();
-      customElements.whenDefined("ha-textarea").then(apply).catch(() => {});
-    });
   }
 
   _chrome() {
@@ -483,16 +472,10 @@ class HaRbacPanel extends HTMLElement {
           <p class="hint">Overrides by command name, and the raw policy this role
             stores. Anything the exception list above cannot express lives here.</p>
           <div class="grid2">
-            <ha-textarea id="tier-allow" label="Always allow (one pattern per line)"
-              data-text="${esc(((draft.tiers || {}).allow || []).join("\n"))}"
-              ${locked ? "disabled" : ""}></ha-textarea>
-            <ha-textarea id="tier-deny" label="Always deny (one pattern per line)"
-              data-text="${esc(((draft.tiers || {}).deny || []).join("\n"))}"
-              ${locked ? "disabled" : ""}></ha-textarea>
+            <div id="adv-allow"></div>
+            <div id="adv-deny"></div>
           </div>
-          <ha-textarea id="raw" label="Stored policy" readonly
-            data-text="${esc(JSON.stringify(writeRules(draft.base, draft.rules), null, 2))}"
-          ></ha-textarea>
+          <div class="field" id="adv-raw"></div>
         </div>
       </ha-expansion-panel>
 
@@ -503,7 +486,24 @@ class HaRbacPanel extends HTMLElement {
         <ha-button id="delete" ${locked ? "disabled" : ""}>Delete</ha-button>
       </div>`;
 
-    this._applyValues(host);
+    host.querySelector("#adv-allow").appendChild(
+      this._multiline(draft.tierAllow.join("\n"), "Always allow (one pattern per line)", locked, (value) => {
+        this._draft.tierAllow = value.split("\n").map((l) => l.trim()).filter(Boolean);
+      })
+    );
+    host.querySelector("#adv-deny").appendChild(
+      this._multiline(draft.tierDeny.join("\n"), "Always deny (one pattern per line)", locked, (value) => {
+        this._draft.tierDeny = value.split("\n").map((l) => l.trim()).filter(Boolean);
+      })
+    );
+    const raw = this._multiline(
+      JSON.stringify(writeRules(draft.base, draft.rules), null, 2),
+      "Stored policy",
+      true,
+      () => {}
+    );
+    raw.id = "raw";
+    host.querySelector("#adv-raw").appendChild(raw);
 
     host.querySelector("#base-host").appendChild(
       this._select(BASE, draft.base, locked, "Baseline", (value) => {
@@ -572,6 +572,24 @@ class HaRbacPanel extends HTMLElement {
       const next = event.detail ? event.detail.value : el.value;
       if (next === undefined || next === null) return;
       onChange(next);
+    });
+    return el;
+  }
+
+  /** A multi-line field, rendered through the selector Home Assistant uses. */
+  _multiline(value, label, disabled, onChange) {
+    const el = document.createElement("ha-selector");
+    el.hass = this._hass;
+    el.selector = { text: { multiline: true } };
+    el.label = label;
+    // The selector marks its field required by default, which puts a "*" on a
+    // label for something that is perfectly fine left empty.
+    el.required = false;
+    el.value = value;
+    el.disabled = disabled;
+    el.addEventListener("value-changed", (event) => {
+      event.stopPropagation();
+      onChange(event.detail.value == null ? "" : String(event.detail.value));
     });
     return el;
   }
@@ -835,12 +853,6 @@ class HaRbacPanel extends HTMLElement {
 
   _payload() {
     const root = this.shadowRoot;
-    const lines = (id) =>
-      root
-        .getElementById(id)
-        .value.split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean);
     const { allow, deny } = writeRules(this._draft.base, this._draft.rules);
     return {
       name: root.getElementById("name").value.trim(),
@@ -848,8 +860,8 @@ class HaRbacPanel extends HTMLElement {
       deny,
       tiers: {
         max: root.getElementById("tier").value,
-        allow: lines("tier-allow"),
-        deny: lines("tier-deny"),
+        allow: [...this._draft.tierAllow],
+        deny: [...this._draft.tierDeny],
       },
       attributes: {
         deny: [],
