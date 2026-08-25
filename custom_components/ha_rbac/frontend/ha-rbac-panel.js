@@ -53,6 +53,10 @@ const TIERS = ["user", "admin"];
 // "notfound", so they are not offered.
 const SYSTEM_PANELS = ["_my_redirect", "notfound", "app"];
 
+// The panel is mounted here, and everything after it is ours to route on.
+const PANEL_PATH = "/rbac";
+const TABS = ["roles", "users", "denials"];
+
 const DAYS = [
   { value: "mon", label: "Mon" },
   { value: "tue", label: "Tue" },
@@ -164,6 +168,19 @@ const STYLES = `
   ha-alert { display: block; margin-bottom: 16px; }
   ha-expansion-panel { margin-top: 24px; }
 `;
+
+/** Read the open tab and role back out of the address bar. */
+function readUrl() {
+  const parts = window.location.pathname
+    .slice(PANEL_PATH.length)
+    .split("/")
+    .filter(Boolean);
+  const tab = TABS.includes(parts[0]) ? parts[0] : "roles";
+  return {
+    tab,
+    role: tab === "roles" && parts[1] ? decodeURIComponent(parts[1]) : null,
+  };
+}
 
 const esc = (v) =>
   String(v ?? "").replace(/[&<>"']/g, (c) =>
@@ -295,7 +312,9 @@ class HaRbacPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
-    this._tab = "roles";
+    const opened = readUrl();
+    this._tab = opened.tab;
+    this._urlRole = opened.role;
     this._roles = [];
     this._bindings = [];
     this._denials = [];
@@ -341,6 +360,42 @@ class HaRbacPanel extends HTMLElement {
     await this._refresh();
   }
 
+  connectedCallback() {
+    this._onPopState = () => {
+      const opened = readUrl();
+      this._tab = opened.tab;
+      if (opened.role && opened.role !== this._selected) {
+        this._selected = opened.role;
+        this._loadDraft();
+      }
+      this._render();
+    };
+    window.addEventListener("popstate", this._onPopState);
+  }
+
+  disconnectedCallback() {
+    if (this._onPopState) window.removeEventListener("popstate", this._onPopState);
+  }
+
+  /**
+   * Put the open tab and role in the address bar.
+   *
+   * `location-changed` is how a custom panel tells Home Assistant's router that
+   * the address moved under it; pushing state without it leaves the two
+   * disagreeing about where you are.
+   */
+  _syncUrl(replace = false) {
+    const path =
+      this._tab === "roles" && this._selected
+        ? `${PANEL_PATH}/roles/${encodeURIComponent(this._selected)}`
+        : `${PANEL_PATH}/${this._tab}`;
+    if (window.location.pathname === path) return;
+    window.history[replace ? "replaceState" : "pushState"](null, "", path);
+    this.dispatchEvent(
+      new CustomEvent("location-changed", { bubbles: true, composed: true })
+    );
+  }
+
   _call(type, extra = {}) {
     return this._hass.callWS({ type: `ha_rbac/${type}`, ...extra });
   }
@@ -355,7 +410,13 @@ class HaRbacPanel extends HTMLElement {
       this._roles = roles;
       this._bindings = bindings;
       this._catalog = catalog;
+      if (this._urlRole && roles.some((role) => role.id === this._urlRole)) {
+        // A link or a reload asked for this one.
+        this._selected = this._urlRole;
+      }
+      this._urlRole = null;
       if (!this._selected && roles.length) this._selected = roles[0].id;
+      this._syncUrl(true);
       if (!keepDraft) this._loadDraft();
     } catch (err) {
       this._notice = { kind: "error", text: err.message || String(err) };
@@ -1012,6 +1073,7 @@ class HaRbacPanel extends HTMLElement {
       b.onclick = () => {
         this._tab = b.dataset.tab;
         this._notice = null;
+        this._syncUrl();
         if (this._tab === "denials") this._loadDenials();
         else this._render();
       };
@@ -1019,6 +1081,7 @@ class HaRbacPanel extends HTMLElement {
     root.querySelectorAll("[data-role]").forEach((item) => {
       item.onclick = () => {
         this._selected = item.dataset.role;
+        this._syncUrl();
         this._loadDraft();
         this._render();
       };
