@@ -48,6 +48,11 @@ const TARGETS = [
 
 const TIERS = ["user", "admin"];
 
+// Home Assistant's own list of panels that are internal and are kept out of
+// user-facing navigation. Nobody is choosing whether a role may open
+// "notfound", so they are not offered.
+const SYSTEM_PANELS = ["_my_redirect", "notfound", "app"];
+
 // mdiClose, mdiPlus: inlined because @mdi/js is a build-time import.
 const ICON_CLOSE =
   "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z";
@@ -56,7 +61,10 @@ const ICON_CLOSE =
 // own business, and restating it here is how a panel drifts out of step with
 // the rest of Home Assistant.
 const STYLES = `
-  .wrap { padding: max(16px, var(--safe-area-inset-left)) 16px 64px; }
+  /* Home Assistant constrains its own settings pages rather than letting
+     fields stretch across a wide monitor. */
+  .wrap { max-width: 1040px; margin: 0 auto;
+          padding: max(16px, var(--safe-area-inset-left)) 16px 64px; }
   .layout { display: grid; grid-template-columns: minmax(200px, 280px) 1fr; gap: 16px; align-items: start; }
   @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
   ha-card { margin-bottom: 16px; }
@@ -76,13 +84,27 @@ const STYLES = `
     padding: 12px 16px; border-bottom: 2px solid transparent; white-space: nowrap;
   }
   .tabs button[aria-selected="true"] { opacity: 1; border-bottom-color: currentColor; }
-  .rule { display: grid; grid-template-columns: minmax(150px, 200px) minmax(0, 1fr) minmax(150px, 220px) 48px;
-          gap: 12px; align-items: end; margin-bottom: 20px; }
-  @media (max-width: 900px) { .rule { grid-template-columns: 1fr; align-items: stretch; } }
-  .rule .picker { min-width: 0; }
-  .rule ha-icon-button { margin-bottom: 4px; justify-self: start; }
-  .rule.deny { border-inline-start: 2px solid var(--error-color);
-               padding-inline-start: 12px; margin-inline-start: -14px; }
+  /* The picker is a control in its own right, wide enough to hold a list of
+     entities, so it gets its own line rather than fighting the dropdowns for
+     room. The dropdowns keep the top line, where their labels line up. */
+  .rule {
+    display: grid; gap: 12px; align-items: start;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 48px;
+    grid-template-areas: "target detail remove" "picker picker picker";
+    padding: 12px 0 12px 12px;
+    border-inline-start: 2px solid transparent;
+    border-bottom: 1px solid var(--divider-color);
+  }
+  .rule:last-child { border-bottom: 0; }
+  .rule .f-target { grid-area: target; }
+  .rule .f-detail { grid-area: detail; }
+  .rule .f-remove { grid-area: remove; justify-self: end; }
+  .rule .picker { grid-area: picker; min-width: 0; }
+  @media (max-width: 700px) {
+    .rule { grid-template-columns: minmax(0, 1fr) 48px;
+            grid-template-areas: "target remove" "detail detail" "picker picker"; }
+  }
+  .rule.deny { border-inline-start-color: var(--error-color); }
   .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
   .actions .spacer { flex: 1; }
   ul.roles { list-style: none; margin: 0; padding: 0; }
@@ -104,8 +126,9 @@ const STYLES = `
   code { font-family: var(--ha-font-family-code, monospace); font-size: .82rem; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
-  .checks { display: grid; gap: 0 16px;
+  .checks { display: grid; gap: 4px 16px; align-items: center;
             grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+  .checks ha-formfield { display: flex; align-items: center; min-height: 40px; }
   ha-alert { display: block; margin-bottom: 16px; }
   ha-expansion-panel { margin-top: 24px; }
 `;
@@ -217,22 +240,6 @@ function writeRules(base, rules) {
   return { allow, deny };
 }
 
-/** Markup for one `ha-select`, whose value is applied as a property later. */
-function selectMarkup(id, options, value, disabled, label) {
-  const items = options
-    .map(
-      (o) =>
-        `<ha-list-item value="${esc(o.value)}" ${o.value === value ? "selected activated" : ""}>${esc(
-          o.label
-        )}</ha-list-item>`
-    )
-    .join("");
-  return `<ha-select id="${esc(id)}" label="${esc(label || "")}" fixedMenuPosition
-            naturalMenuWidth data-value="${esc(value)}" ${disabled ? "disabled" : ""}>
-            ${items}
-          </ha-select>`;
-}
-
 class HaRbacPanel extends HTMLElement {
   constructor() {
     super();
@@ -325,20 +332,8 @@ class HaRbacPanel extends HTMLElement {
     this._wire();
   }
 
-  /**
-   * These are mwc elements: the selected item and the text are properties, not
-   * the attributes a plain `<option>` or `<textarea>` would carry.
-   */
+  /** A textarea's text is a property, not the content a `<textarea>` would slot. */
   _applyValues(root) {
-    root.querySelectorAll("ha-select[data-value]").forEach((select) => {
-      const value = select.dataset.value;
-      const apply = () => {
-        if (select.value !== value) select.value = value;
-      };
-      apply();
-      customElements.whenDefined("ha-select").then(apply).catch(() => {});
-    });
-    // Same reason, one element along: a textarea's text is a property too.
     root.querySelectorAll("ha-textarea[data-text]").forEach((area) => {
       const value = area.dataset.text;
       const apply = () => {
@@ -440,7 +435,7 @@ class HaRbacPanel extends HTMLElement {
       <h3>What this role can see</h3>
       <p class="hint">Start from a baseline, then add exceptions. Most roles are
         one line of each: see everything, except the locks.</p>
-      <div class="field">${selectMarkup("base", BASE, draft.base, locked, "Baseline")}</div>
+      <div class="field" id="base-host"></div>
 
       <h3>Exceptions</h3>
       <div id="rules"></div>
@@ -464,9 +459,9 @@ class HaRbacPanel extends HTMLElement {
       <h3>Where this role can go</h3>
       <p class="hint">Every dashboard, add-on and built-in screen in the sidebar.
         Unticking one hides it and refuses the requests behind it.</p>
-      <div class="checks" id="apps">${(this._catalog ? this._catalog.apps : [])
+      <div class="checks" id="apps">${this._visibleApps()
         .map(
-          (app) => `<ha-formfield label="${esc(app.title)}${
+          (app) => `<ha-formfield label="${esc(app.label)}${
             app.addon ? " (add-on)" : ""
           }">
             <ha-checkbox data-app="${esc(app.url_path)}"
@@ -481,19 +476,7 @@ class HaRbacPanel extends HTMLElement {
         own markings, read on this instance,
         ${this._catalog ? this._catalog.commands.length : 0} commands,
         nothing hard-coded.</p>
-      <div class="field">${selectMarkup(
-        "tier",
-        TIERS.map((t) => ({
-          value: t,
-          label:
-            t === "admin"
-              ? "Everything, including settings and configuration"
-              : "Ordinary use only",
-        })),
-        (draft.tiers || {}).max,
-        locked,
-        "Command level"
-      )}</div>
+      <div class="field" id="tier-host"></div>
 
       <ha-expansion-panel header="Advanced">
         <div class="card-content">
@@ -521,6 +504,30 @@ class HaRbacPanel extends HTMLElement {
       </div>`;
 
     this._applyValues(host);
+
+    host.querySelector("#base-host").appendChild(
+      this._select(BASE, draft.base, locked, "Baseline", (value) => {
+        this._draft.base = value;
+        this._syncRaw();
+      })
+    );
+    host.querySelector("#tier-host").appendChild(
+      this._select(
+        TIERS.map((t) => ({
+          value: t,
+          label:
+            t === "admin"
+              ? "Everything, including settings and configuration"
+              : "Ordinary use only",
+        })),
+        (draft.tiers || {}).max,
+        locked,
+        "Command level",
+        () => {},
+        "tier"
+      )
+    );
+
     this._mountRules(host.querySelector("#rules"), locked);
     this._mountAttrRules(host.querySelector("#attr-rules"), locked);
   }
@@ -548,26 +555,23 @@ class HaRbacPanel extends HTMLElement {
     });
   }
 
-  /** A dropdown built as a node, with its value applied as a property. */
-  _select(options, value, locked, label, onChange) {
+  /**
+   * `ha-select` renders its own items from an `options` property. Slotted
+   * children are ignored unless they are `ha-dropdown-item`s, which is why a
+   * list of `ha-list-item`s showed the raw value and selected nothing.
+   */
+  _select(options, value, locked, label, onChange, id) {
     const el = document.createElement("ha-select");
+    if (id) el.id = id;
     el.label = label;
-    el.fixedMenuPosition = true;
-    el.naturalMenuWidth = true;
-    el.disabled = locked;
-    el.innerHTML = options
-      .map((o) => `<ha-list-item value="${esc(o.value)}">${esc(o.label)}</ha-list-item>`)
-      .join("");
-    customElements
-      .whenDefined("ha-select")
-      .then(() => {
-        el.value = value;
-      })
-      .catch(() => {});
+    el.options = options.map((o) => ({ value: o.value, label: o.label }));
     el.value = value;
+    el.disabled = locked;
     el.addEventListener("selected", (event) => {
       event.stopPropagation();
-      if (el.value) onChange(el.value);
+      const next = event.detail ? event.detail.value : el.value;
+      if (next === undefined || next === null) return;
+      onChange(next);
     });
     return el;
   }
@@ -609,6 +613,9 @@ class HaRbacPanel extends HTMLElement {
       this._mountAttrRules(this.shadowRoot.getElementById("attr-rules"), locked);
     });
 
+    target.classList.add("f-target");
+    names.classList.add("f-detail");
+    remove.classList.add("f-remove");
     row.append(target, picker, names, remove);
     return row;
   }
@@ -640,6 +647,9 @@ class HaRbacPanel extends HTMLElement {
       this._syncRaw();
     });
 
+    target.classList.add("f-target");
+    access.classList.add("f-detail");
+    remove.classList.add("f-remove");
     row.append(target, picker, access, remove);
     return row;
   }
@@ -750,6 +760,27 @@ class HaRbacPanel extends HTMLElement {
     </ha-card>`;
   }
 
+  /**
+   * Built-in panels carry a translation key in `title` rather than a name, so
+   * the sidebar reads it through `localize`. Two of them key off `url_path`
+   * instead. Dashboards and add-ons have a real title and fall through.
+   */
+  _appTitle(app) {
+    const key =
+      app.url_path === "profile" || app.url_path === "notfound"
+        ? `panel.${app.url_path}`
+        : `panel.${app.title}`;
+    const localize = this._hass && this._hass.localize;
+    return (localize && localize(key)) || app.title || app.url_path;
+  }
+
+  _visibleApps() {
+    return (this._catalog ? this._catalog.apps : [])
+      .filter((app) => !SYSTEM_PANELS.includes(app.url_path))
+      .map((app) => ({ ...app, label: this._appTitle(app) }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+
   _reason(reason) {
     return (
       {
@@ -800,15 +831,6 @@ class HaRbacPanel extends HTMLElement {
       this._syncRaw();
     });
 
-    const base = root.getElementById("base");
-    if (base) {
-      base.addEventListener("selected", (event) => {
-        event.stopPropagation();
-        if (!base.value) return;
-        this._draft.base = base.value;
-        this._syncRaw();
-      });
-    }
   }
 
   _payload() {
@@ -841,11 +863,16 @@ class HaRbacPanel extends HTMLElement {
       },
       apps: {
         allow: [],
-        deny: [...root.querySelectorAll("[data-app]")]
-          .filter((box) => !box.checked)
-          // A checkbox with no value attribute reports "on", so read the
-          // dataset rather than falling back to it.
-          .map((box) => box.dataset.app),
+        // System panels are not offered, so they have no checkbox. Carry any
+        // denial they already had rather than silently granting it back.
+        deny: [
+          ...this._draft.appDenied.filter((path) => SYSTEM_PANELS.includes(path)),
+          ...[...root.querySelectorAll("[data-app]")]
+            .filter((box) => !box.checked)
+            // A checkbox with no value attribute reports "on", so read the
+            // dataset rather than falling back to it.
+            .map((box) => box.dataset.app),
+        ],
       },
     };
   }
