@@ -284,11 +284,44 @@ have to for this to hold.
 </details>
 
 > [!CAUTION]
-> **If this integration ever fails to load, Home Assistant is reachable only
-> from its own machine.** That is deliberate: it fails closed rather than
-> throwing the doors open. But keep a way in,
-> `ssh -L 8124:127.0.0.1:8124 your-ha-host` and then browse `localhost:8124`,
-> and set that up before you need it.
+> **After step 3, Home Assistant answers only on its own machine.** If this
+> integration ever fails to load, the proxy is not there to answer for it, and
+> nothing on your network reaches Home Assistant until you fix it from that
+> machine. Failing closed is the right direction, but check now that you can
+> get to the machine some other way: a shell, or its console.
+
+<details>
+<summary><strong>Getting back in if that happens</strong></summary>
+
+<br>
+
+Either works, and both need access to the machine Home Assistant runs on.
+
+**Reach it directly.** From anywhere with SSH to that machine:
+
+```bash
+ssh -L 8124:127.0.0.1:8124 your-ha-host
+```
+
+Then browse `http://localhost:8124` for plain, unfiltered Home Assistant.
+
+**Or put the setting back.** Open `.storage/http` in your Home Assistant config
+directory, delete the `"server_host"` entry from the `"stable"` block, and
+restart Home Assistant. It goes back to answering on the network directly.
+
+> [!WARNING]
+> **On Home Assistant OS and Supervised, the tunnel does not work from the
+> Terminal & SSH add-on.** Add-ons get their own container network, so
+> `127.0.0.1` inside one is the add-on itself, not Home Assistant, and the
+> tunnel connects to nothing. Editing `.storage/http` does work from there, at
+> `/homeassistant/.storage/http`.
+>
+> Either way you have to reach the add-on without Home Assistant, so give it a
+> real SSH port in its configuration. Its web terminal is served *through* Home
+> Assistant, which is the thing you can no longer reach. Failing that, use the
+> machine's console.
+
+</details>
 
 <details>
 <summary><strong>What this protects against, honestly</strong></summary>
@@ -326,9 +359,9 @@ Have them reload, and their Home Assistant is now smaller.
 Anyone without a role keeps exactly the access Home Assistant already gave them,
 so you can roll this out one person at a time.
 
-**Locked yourself out?** You can't lock out the owner account: that's built in
-and can't be changed from the panel. Failing that, use the SSH tunnel from the
-install step for plain, unfiltered Home Assistant.
+**Locked yourself out?** You can't lock out the owner account, which is built in
+and can't be changed from the panel, so log in as the owner and fix the role.
+Failing that, see *Getting back in* in the install section above.
 
 ## What it can't do yet
 

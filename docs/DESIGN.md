@@ -230,8 +230,17 @@ ssh -L 8124:127.0.0.1:8124 <your-ha-host>
 ```
 
 Or delete `.storage/ha_rbac.roles` and restart to return to derived defaults.
-All recovery paths require host access, so if you administer Home Assistant only
-through a browser, set up the tunnel before you enable enforcement.
+If the integration itself fails to load, nothing answers on either port, and the
+setting has to be undone instead: remove `server_host` from the `stable` block
+of `.storage/http` and restart.
+
+Every one of those needs access to the machine, so confirm you have some before
+enabling enforcement rather than after. On Home Assistant OS and Supervised that
+is not the Terminal & SSH add-on by default: add-ons are bridge-networked, so
+`127.0.0.1` inside one is the add-on and the tunnel reaches nothing, and the web
+terminal is served through the Home Assistant that is down. The add-on can still
+edit `.storage/http`, which it mounts read-write, if it has a real SSH port
+rather than ingress alone.
 
 ## Known limitations
 
