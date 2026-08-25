@@ -188,47 +188,16 @@ Google or Alexa setup all keep working, and **nobody gets signed out**, because
 to a browser it is the same address as before. In Docker, keep publishing `8123`
 and don't publish `8124`.
 
-Home Assistant is mid-migration on where this setting lives. It has left
-`configuration.yaml`, and as of 2026.8 the Settings → System → Network page
-doesn't offer it yet. Until it does, set it over the websocket API:
+Set it in **Settings → System → Network**, in the **HTTP** section:
 
-<details>
-<summary><strong>Setting it today (copy-paste)</strong></summary>
+| | |
+| --- | --- |
+| **Server port** | `8124` |
+| **Server host** (under *Advanced*) | `127.0.0.1` |
 
-<br>
-
-Make a long-lived access token from your profile page, then:
-
-```python
-# pip install aiohttp
-import asyncio, aiohttp
-
-URL   = "http://homeassistant.local:8123"   # where Home Assistant is now
-TOKEN = "paste-your-long-lived-token"
-
-async def main():
-    async with aiohttp.ClientSession() as s:
-        ws = await s.ws_connect(f"{URL}/api/websocket")
-        await ws.receive_json()
-        await ws.send_json({"type": "auth", "access_token": TOKEN})
-        await ws.receive_json()
-        await ws.send_json({"id": 1, "type": "http/config/configure", "config": {
-            "server_host": ["127.0.0.1"], "server_port": 8124}})
-        print(await ws.receive_json())
-
-asyncio.run(main())
-```
-
-Home Assistant restarts and comes back on `127.0.0.1:8124`, with this
-integration answering on `8123`. The change is staged as a **trial** and reverts
-itself if it locks you out, so once you have checked you can still sign in,
-confirm it by sending `{"id": 2, "type": "http/config/promote"}` the same way,
-through the proxy this time, since that is the only door left.
-
-Send the whole config, not just the host: omitted keys fall back to their
-defaults rather than keeping your current values.
-
-</details>
+Home Assistant restarts to apply it, then asks you to confirm once you can
+still reach it. If you can't, it puts the old settings back by itself, so a
+mistake here locks you out for a few minutes rather than for good.
 
 > [!CAUTION]
 > **If this integration ever fails to load, Home Assistant is reachable only
