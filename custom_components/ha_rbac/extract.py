@@ -6,6 +6,7 @@ uses by convention, so that new commands and new integrations are covered
 without anyone maintaining a table.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -133,6 +134,38 @@ def extract(payload: Any) -> Extracted:
                         stack.append((value, depth + 1))
                     continue
                 stack.append((value, depth + 1))
+        elif isinstance(node, list):
+            stack.extend((item, depth + 1) for item in node)
+
+    return found
+
+
+def entity_ids_in(payload: Any, exists: "Callable[[str], bool]") -> set[str]:
+    """Return every entity a structure mentions, wherever it mentions it.
+
+    Written for Lovelace, which names entities under `entity`, `entities`,
+    `camera_image`, `badges` and a dozen card-specific keys that custom cards
+    extend at will. Enumerating those keys would be the sort of table this
+    project exists to avoid, so instead every string is tested for the shape of
+    an entity id and then against the machine: something that both looks like
+    one and is one is one. A card key nobody has heard of costs nothing.
+    """
+    found: set[str] = set()
+    nodes = 0
+    stack: list[tuple[Any, int]] = [(payload, 0)]
+
+    while stack:
+        node, depth = stack.pop()
+
+        nodes += 1
+        if nodes > MAX_WALK_NODES or depth > MAX_WALK_DEPTH:
+            break
+
+        if isinstance(node, str):
+            if node.count(".") == 1 and " " not in node and exists(node):
+                found.add(node.lower())
+        elif isinstance(node, dict):
+            stack.extend((value, depth + 1) for value in node.values())
         elif isinstance(node, list):
             stack.extend((item, depth + 1) for item in node)
 

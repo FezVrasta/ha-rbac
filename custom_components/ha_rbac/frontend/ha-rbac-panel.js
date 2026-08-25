@@ -303,6 +303,8 @@ class HaRbacPanel extends HTMLElement {
     this._selected = null;
     this._draft = null;
     this._notice = null;
+    // Set by an action that edited the draft rather than the stored role.
+    this._pending = null;
     this._loaded = false;
     this._narrow = false;
   }
@@ -514,6 +516,11 @@ class HaRbacPanel extends HTMLElement {
           </ha-formfield>`
         )
         .join("")}</div>
+
+      <div class="actions">
+        <ha-button id="from-dashboards">Allow what their dashboards show</ha-button>
+        <ha-button id="from-dashboards-control">...and let them control it</ha-button>
+      </div>
 
       <h3>What this role can do</h3>
       <p class="hint">Administrative commands are recognised from Home Assistant's
@@ -997,6 +1004,8 @@ class HaRbacPanel extends HTMLElement {
     on("delete", () => this._deleteRole());
     on("save-bindings", () => this._saveBindings());
     on("load-denials", () => this._loadDenials());
+    on("from-dashboards", () => this._fromDashboards("read"));
+    on("from-dashboards-control", () => this._fromDashboards("control"));
     on("add-window", () => {
       this._draft.schedule.push({ days: [], start: "", end: "" });
       this._mountSchedule(root.getElementById("schedule"), false);
@@ -1011,6 +1020,54 @@ class HaRbacPanel extends HTMLElement {
       this._syncRaw();
     });
 
+  }
+
+  /**
+   * Read the ticked dashboards and grant whatever they put on screen.
+   *
+   * "Which entities does this dashboard use" is the question a role author
+   * actually has, and answering it by hand means opening each one and copying
+   * ids out of it. The two controls stay separate -- this only fills in the
+   * exceptions, it does not tie access to the app list.
+   */
+  async _fromDashboards(access) {
+    const ticked = this._visibleApps()
+      .filter((app) => app.kind === "lovelace")
+      .filter((app) => {
+        const box = this.shadowRoot.querySelector(`[data-app="${app.url_path}"]`);
+        return box && box.checked;
+      })
+      .map((app) => app.url_path);
+
+    if (!ticked.length) {
+      this._notice = { kind: "error", text: "No dashboards are ticked above." };
+      this._render();
+      return;
+    }
+
+    await this._guard(async () => {
+      const result = await this._call("dashboard_entities", { url_paths: ticked });
+      const found = result.entity_ids || [];
+      if (!found.length) {
+        throw new Error(
+          `Nothing found on ${ticked.join(", ")}. A dashboard generated automatically names no entities, so there is nothing to read out of it.`
+        );
+      }
+      this._draft.rules.push({
+        target: "entity_ids",
+        ids: found,
+        access: access === "control" ? "control" : "read",
+      });
+      // Count what was actually read, not what was asked for.
+      const unreadable = result.unreadable || [];
+      const read = ticked.length - unreadable.length;
+      const missed = unreadable.length
+        ? ` Nothing could be read from ${unreadable.join(", ")}, which is what a dashboard generated automatically looks like from here.`
+        : "";
+      this._pending = `Added ${found.length} entities from ${read} dashboard${
+        read === 1 ? "" : "s"
+      }. Save to apply.${missed}`;
+    });
   }
 
   _payload() {
@@ -1062,14 +1119,25 @@ class HaRbacPanel extends HTMLElement {
   }
 
   async _guard(action, done) {
+    let keepDraft = false;
     try {
       this._notice = null;
+      this._pending = null;
       await action();
-      if (done) this._notice = { kind: "ok", text: done };
+      if (this._pending) {
+        // The action edited the draft rather than the stored role, so the
+        // refresh below must not read it back over the top.
+        this._notice = { kind: "ok", text: this._pending };
+        keepDraft = true;
+      } else if (done) {
+        this._notice = { kind: "ok", text: done };
+      }
     } catch (err) {
       this._notice = { kind: "error", text: err.message || String(err) };
+      keepDraft = this._pending !== null;
     }
-    await this._refresh();
+    this._pending = null;
+    await this._refresh(keepDraft);
   }
 
   _createRole() {

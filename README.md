@@ -58,6 +58,12 @@ Target them however you already think about your house:
 
 Chosen with the same pickers you use everywhere else in Home Assistant.
 
+There is also a shortcut for the common case. Tick the dashboards a role should
+have under **Where this role can go**, then press **Allow what their dashboards
+show** and every entity on those dashboards becomes an exception, to read or to
+control. It reads the dashboards themselves, so a card type nobody has heard of
+is picked up the same as a built-in one.
+
 ### 📍 Details: how much of an entity they see
 
 An entity someone can see, they normally see in full: every attribute it

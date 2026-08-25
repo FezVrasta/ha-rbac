@@ -7,6 +7,7 @@ import voluptuous as vol
 
 from custom_components.ha_rbac.extract import (
     Extracted,
+    entity_ids_in,
     extract,
     is_bounded,
     schema_resource_markers,
@@ -219,3 +220,51 @@ def test_call_service_with_optional_target_still_bounds() -> None:
 def test_naming_nothing_is_not_bounded() -> None:
     """A payload that names no resource cannot bound its command."""
     assert is_bounded(Extracted()) is False
+
+
+def test_entity_ids_in_finds_them_wherever_a_card_puts_them() -> None:
+    """Lovelace names entities under a dozen keys, and custom cards add more.
+
+    So the walk tests every string for the shape of an entity id and then
+    against the machine, rather than carrying a list of card schemas.
+    """
+    known = {
+        "light.kitchen",
+        "lock.front",
+        "camera.porch",
+        "sensor.power",
+        "binary_sensor.door",
+    }
+    config = {
+        "views": [
+            {
+                "badges": [{"type": "entity", "entity": "binary_sensor.door"}],
+                "cards": [
+                    {"type": "light", "entity": "light.kitchen"},
+                    {
+                        "type": "entities",
+                        "entities": ["lock.front", {"entity": "sensor.power"}],
+                    },
+                    {"type": "picture-glance", "camera_image": "camera.porch"},
+                    # A card nobody has heard of, naming one under its own key.
+                    {"type": "custom:whatever", "some_new_key": "sensor.power"},
+                ],
+            }
+        ]
+    }
+    assert entity_ids_in(config, known.__contains__) == known
+
+
+def test_entity_ids_in_ignores_strings_that_only_look_like_one() -> None:
+    """A title with a dot in it is not an entity, and neither is a dead id."""
+    known = {"light.kitchen"}
+    config = {
+        "title": "Ground floor",
+        "theme": "custom.theme",
+        "cards": [
+            {"entity": "light.kitchen"},
+            {"entity": "light.removed_last_year"},
+            {"url": "https://example.com/x.png"},
+        ],
+    }
+    assert entity_ids_in(config, known.__contains__) == {"light.kitchen"}

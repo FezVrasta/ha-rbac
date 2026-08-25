@@ -8,6 +8,7 @@ from homeassistant.components.websocket_api import const as ws_const
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DATA_RBAC, DOMAIN
+from .extract import entity_ids_in
 
 COMMANDS = (
     "roles/list",
@@ -17,6 +18,7 @@ COMMANDS = (
     "bindings/list",
     "bindings/set",
     "catalog",
+    "dashboard_entities",
     "denials/recent",
     "simulate",
 )
@@ -47,6 +49,7 @@ def async_register(hass: HomeAssistant) -> None:
         handle_bindings_list,
         handle_bindings_set,
         handle_catalog,
+        handle_dashboard_entities,
         handle_denials_recent,
         handle_simulate,
     ):
@@ -187,6 +190,58 @@ async def handle_bindings_set(
         connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, str(err))
         return
     connection.send_result(msg["id"])
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/dashboard_entities",
+        vol.Required("url_paths"): [vol.Any(str, None)],
+    }
+)
+@websocket_api.async_response
+async def handle_dashboard_entities(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return every entity the named dashboards mention.
+
+    Answers the question a role author actually has: "let them see what is on
+    these screens". Working that out by hand means opening each dashboard and
+    copying entity ids out of it, which is where people give up.
+    """
+    try:
+        from homeassistant.components.lovelace.const import (  # noqa: PLC0415
+            LOVELACE_DATA,
+        )
+    except ImportError:
+        connection.send_result(msg["id"], {"entity_ids": [], "unreadable": []})
+        return
+
+    data = hass.data.get(LOVELACE_DATA)
+    dashboards = getattr(data, "dashboards", {}) if data else {}
+
+    known = set(hass.states.async_entity_ids())
+    found: set[str] = set()
+    unreadable: list[str] = []
+    for url_path in msg["url_paths"]:
+        # The default dashboard is stored under None rather than its url path.
+        key = None if url_path in (None, "lovelace") else url_path
+        config_holder = dashboards.get(key)
+        if config_holder is None:
+            unreadable.append(url_path or "lovelace")
+            continue
+        try:
+            config = await config_holder.async_load(False)
+        except Exception:  # noqa: BLE001
+            # A dashboard with no stored config yet, or one in a mode this
+            # cannot read. Reported rather than silently counted as empty.
+            unreadable.append(url_path or "lovelace")
+            continue
+        found |= entity_ids_in(config, known.__contains__)
+
+    connection.send_result(
+        msg["id"], {"entity_ids": sorted(found), "unreadable": unreadable}
+    )
 
 
 @websocket_api.require_admin
