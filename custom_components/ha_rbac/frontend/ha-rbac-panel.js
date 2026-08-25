@@ -5,6 +5,14 @@
  * from a custom panel without bundling, and this is small enough not to need it.
  * Home Assistant sets `hass`, `narrow` and `panel` as properties.
  *
+ * The chrome and the controls are Home Assistant's own components rather than
+ * hand-styled markup. `ha-top-app-bar-fixed` supplies the header, and because
+ * its `navigationIcon` slot falls back to `ha-menu-button`, leaving that slot
+ * empty is what gives a narrow screen its way back to the sidebar. Those
+ * components live in chunks the frontend loads on demand, which is fine: an
+ * element already in the DOM upgrades itself the moment its definition lands,
+ * and `loadCardHelpers` is awaited first to pull the common ones in.
+ *
  * The role editor presents a policy as a base level plus a list of exceptions,
  * because that is how people describe access out loud -- "they can see
  * everything except the locks". The stored shape is still a Home Assistant
@@ -40,84 +48,64 @@ const TARGETS = [
 
 const TIERS = ["user", "admin"];
 
+// mdiClose, mdiPlus: inlined because @mdi/js is a build-time import.
+const ICON_CLOSE =
+  "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z";
+
+// Layout only. Anything that decides how a control looks is the component's
+// own business, and restating it here is how a panel drifts out of step with
+// the rest of Home Assistant.
 const STYLES = `
-  :host { display: block; padding: 16px 16px 48px; }
-  .layout { display: grid; grid-template-columns: minmax(200px, 260px) 1fr; gap: 16px; align-items: start; }
+  .wrap { padding: max(16px, var(--safe-area-inset-left)) 16px 64px; }
+  .layout { display: grid; grid-template-columns: minmax(200px, 280px) 1fr; gap: 16px; align-items: start; }
   @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
-  .card {
-    background: var(--card-background-color, #fff);
-    border-radius: var(--ha-card-border-radius, 12px);
-    box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,.08));
-    padding: 16px; margin-bottom: 16px;
+  ha-card { margin-bottom: 16px; }
+  .card-content { padding: 16px; }
+  h2 { margin: 0 0 4px; font-size: var(--ha-font-size-l, 1.15rem);
+       font-weight: var(--ha-font-weight-medium, 500); }
+  h3 { margin: 28px 0 4px; font-size: var(--ha-font-size-m, .95rem);
+       font-weight: var(--ha-font-weight-medium, 500); }
+  .hint { color: var(--secondary-text-color); font-size: var(--ha-font-size-s, .85rem);
+          margin: 0 0 12px; line-height: 1.45; }
+  .field { display: block; margin: 12px 0; }
+  ha-textfield, ha-textarea, ha-select { width: 100%; }
+  .tabs { display: flex; gap: 4px; padding: 0 8px; overflow-x: auto; }
+  .tabs button {
+    background: none; border: 0; cursor: pointer; font: inherit;
+    color: var(--app-header-text-color, #fff); opacity: .72;
+    padding: 12px 16px; border-bottom: 2px solid transparent; white-space: nowrap;
   }
-  h2 { margin: 0 0 4px; font-size: 1.15rem; font-weight: 500; }
-  h3 { margin: 24px 0 4px; font-size: .95rem; font-weight: 500; }
-  .hint { color: var(--secondary-text-color); font-size: .85rem; margin: 0 0 12px; line-height: 1.45; }
+  .tabs button[aria-selected="true"] { opacity: 1; border-bottom-color: currentColor; }
+  .rule { display: grid; grid-template-columns: 170px 1fr 180px 48px;
+          gap: 8px; align-items: center; margin-bottom: 8px; }
+  @media (max-width: 700px) { .rule { grid-template-columns: 1fr; } }
+  .rule .picker { min-width: 0; }
+  .rule.deny { border-inline-start: 2px solid var(--error-color);
+               padding-inline-start: 10px; margin-inline-start: -12px; }
+  .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
+  .actions .spacer { flex: 1; }
   ul.roles { list-style: none; margin: 0; padding: 0; }
   ul.roles li {
-    padding: 10px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 2px;
+    padding: 12px; border-radius: var(--ha-border-radius-md, 8px); cursor: pointer;
     display: flex; justify-content: space-between; align-items: center; gap: 8px;
   }
-  ul.roles li:hover { background: var(--secondary-background-color, #f0f0f0); }
+  ul.roles li:hover { background: var(--secondary-background-color); }
   ul.roles li[aria-selected="true"] {
     background: var(--primary-color); color: var(--text-primary-color, #fff);
   }
-  .badge { font-size: .68rem; opacity: .8; border: 1px solid currentColor;
-           border-radius: 10px; padding: 1px 6px; white-space: nowrap; }
-  label.field { display: block; margin: 12px 0 4px; font-size: .85rem;
-                color: var(--secondary-text-color); }
-  input[type=text], textarea, select {
-    width: 100%; box-sizing: border-box; padding: 9px;
-    border: 1px solid var(--divider-color, #ccc); border-radius: 6px;
-    background: var(--primary-background-color, #fff);
-    color: var(--primary-text-color, #000); font: inherit;
-  }
-  textarea { min-height: 84px; font-family: var(--code-font-family, monospace); font-size: .8rem; }
-  .rule {
-    display: grid; grid-template-columns: 150px 1fr 170px 40px;
-    gap: 8px; align-items: center; margin-bottom: 8px;
-  }
-  @media (max-width: 700px) { .rule { grid-template-columns: 1fr; } }
-  .rule .picker { min-width: 0; }
-  .rule.deny { border-left: 3px solid var(--error-color, #db4437); padding-left: 8px; margin-left: -11px; }
-  .icon-btn {
-    background: none; border: none; cursor: pointer; border-radius: 50%;
-    color: var(--secondary-text-color); width: 36px; height: 36px; font-size: 1.1rem;
-  }
-  .icon-btn:hover { background: var(--secondary-background-color, #eee); color: var(--error-color, #db4437); }
-  button {
-    background: var(--primary-color); color: var(--text-primary-color, #fff);
-    border: none; border-radius: 6px; padding: 9px 16px; font: inherit; cursor: pointer;
-  }
-  button.secondary { background: transparent; color: var(--primary-color);
-                     border: 1px solid var(--primary-color); }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
-  .actions .spacer { flex: 1; }
-  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-  th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--divider-color, #eee);
-           vertical-align: top; }
-  th { color: var(--secondary-text-color); font-weight: 500; }
-  .tabs { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
-  .tabs button { background: transparent; color: var(--primary-text-color);
-                 border-bottom: 2px solid transparent; border-radius: 0; padding: 9px 14px; }
-  .tabs button[aria-selected="true"] { color: var(--primary-color);
-                                       border-bottom-color: var(--primary-color); }
-  .banner { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; line-height: 1.45; }
-  .banner.warn { background: var(--warning-color, #ffa726); color: #000; }
-  .banner.error { background: var(--error-color, #db4437); color: #fff; }
-  .banner.ok { background: var(--success-color, #43a047); color: #fff; }
-  code { font-family: var(--code-font-family, monospace); font-size: .82rem; }
-  details { margin-top: 20px; }
-  summary { cursor: pointer; color: var(--secondary-text-color); font-size: .9rem; }
+  .badge { font-size: var(--ha-font-size-xs, .68rem); opacity: .8;
+           border: 1px solid currentColor; border-radius: 10px;
+           padding: 1px 6px; white-space: nowrap; }
+  table { width: 100%; border-collapse: collapse; font-size: var(--ha-font-size-m, .9rem); }
+  th, td { text-align: start; padding: 12px 8px; vertical-align: top;
+           border-bottom: 1px solid var(--divider-color); }
+  th { color: var(--secondary-text-color); font-weight: var(--ha-font-weight-medium, 500); }
+  code { font-family: var(--ha-font-family-code, monospace); font-size: .82rem; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
-  .checks { display: flex; flex-wrap: wrap; gap: 6px 18px; }
-  label.check { display: flex; align-items: center; gap: 6px; font-size: .9rem;
-                cursor: pointer; }
-  label.check input { accent-color: var(--primary-color); }
-  .pill { display: inline-block; font-size: .75rem; padding: 2px 8px; border-radius: 10px;
-          background: var(--secondary-background-color, #eee); color: var(--secondary-text-color); }
+  .checks { display: flex; flex-wrap: wrap; gap: 0 16px; }
+  ha-alert { display: block; margin-bottom: 16px; }
+  ha-expansion-panel { margin-top: 24px; }
 `;
 
 const esc = (v) =>
@@ -227,6 +215,22 @@ function writeRules(base, rules) {
   return { allow, deny };
 }
 
+/** Markup for one `ha-select`, whose value is applied as a property later. */
+function selectMarkup(id, options, value, disabled, label) {
+  const items = options
+    .map(
+      (o) =>
+        `<ha-list-item value="${esc(o.value)}" ${o.value === value ? "selected activated" : ""}>${esc(
+          o.label
+        )}</ha-list-item>`
+    )
+    .join("");
+  return `<ha-select id="${esc(id)}" label="${esc(label || "")}" fixedMenuPosition
+            naturalMenuWidth data-value="${esc(value)}" ${disabled ? "disabled" : ""}>
+            ${items}
+          </ha-select>`;
+}
+
 class HaRbacPanel extends HTMLElement {
   constructor() {
     super();
@@ -240,14 +244,39 @@ class HaRbacPanel extends HTMLElement {
     this._draft = null;
     this._notice = null;
     this._loaded = false;
+    this._narrow = false;
+  }
+
+  set narrow(value) {
+    this._narrow = value;
+    const bar = this.shadowRoot && this.shadowRoot.querySelector("ha-top-app-bar-fixed");
+    if (bar) bar.narrow = value;
+  }
+
+  get narrow() {
+    return this._narrow;
   }
 
   set hass(hass) {
     this._hass = hass;
     if (!this._loaded) {
       this._loaded = true;
-      this._refresh();
+      this._boot();
     }
+  }
+
+  /**
+   * Home Assistant loads its components in chunks, and a panel reached by its
+   * URL rather than from a dashboard may be the first thing on screen. This
+   * pulls the common ones in; anything already rendered upgrades itself.
+   */
+  async _boot() {
+    try {
+      if (window.loadCardHelpers) await window.loadCardHelpers();
+    } catch (err) {
+      // Not fatal: the elements arrive with any other panel the user opens.
+    }
+    await this._refresh();
   }
 
   _call(type, extra = {}) {
@@ -287,21 +316,50 @@ class HaRbacPanel extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
     this.shadowRoot.innerHTML = `<style>${STYLES}</style>${this._chrome()}`;
+    const bar = this.shadowRoot.querySelector("ha-top-app-bar-fixed");
+    if (bar) bar.narrow = this._narrow;
     if (this._tab === "roles") this._mountEditor();
+    this._applyValues(this.shadowRoot);
     this._wire();
   }
 
+  /**
+   * These are mwc elements: the selected item and the text are properties, not
+   * the attributes a plain `<option>` or `<textarea>` would carry.
+   */
+  _applyValues(root) {
+    root.querySelectorAll("ha-select[data-value]").forEach((select) => {
+      const value = select.dataset.value;
+      const apply = () => {
+        if (select.value !== value) select.value = value;
+      };
+      apply();
+      customElements.whenDefined("ha-select").then(apply).catch(() => {});
+    });
+    // Same reason, one element along: a textarea's text is a property too.
+    root.querySelectorAll("ha-textarea[data-text]").forEach((area) => {
+      const value = area.dataset.text;
+      const apply = () => {
+        area.value = value;
+      };
+      apply();
+      customElements.whenDefined("ha-textarea").then(apply).catch(() => {});
+    });
+  }
+
   _chrome() {
-    let banner = "";
+    let banners = "";
     if (this._catalog && this._catalog.degraded) {
-      banner += `<div class="banner warn">Permission derivation is not working on
-        this Home Assistant version, so every request is being denied rather than
-        quietly allowed. This usually means an upstream change to how
-        <code>require_admin</code> works.</div>`;
+      banners += `<ha-alert alert-type="warning">Permission derivation is not
+        working on this Home Assistant version, so every request is being denied
+        rather than quietly allowed. This usually means an upstream change to how
+        <code>require_admin</code> works.</ha-alert>`;
     }
     if (this._notice) {
-      banner += `<div class="banner ${this._notice.kind}">${esc(this._notice.text)}</div>`;
+      const type = this._notice.kind === "ok" ? "success" : this._notice.kind;
+      banners += `<ha-alert alert-type="${esc(type)}">${esc(this._notice.text)}</ha-alert>`;
     }
+
     const tabs = [
       ["roles", "Roles"],
       ["users", "Users"],
@@ -318,7 +376,15 @@ class HaRbacPanel extends HTMLElement {
     else if (this._tab === "users") body = this._usersView();
     else body = this._denialsView();
 
-    return `${banner}<div class="tabs">${tabs}</div>${body}`;
+    // The navigationIcon slot is deliberately left empty: ha-top-app-bar-fixed
+    // falls back to ha-menu-button, which is the sidebar toggle a narrow
+    // screen needs and which this panel had no way of offering before.
+    return `
+      <ha-top-app-bar-fixed>
+        <div slot="title">Access Control</div>
+        <div slot="subRow" class="tabs">${tabs}</div>
+        <div class="wrap">${banners}${body}</div>
+      </ha-top-app-bar-fixed>`;
   }
 
   _rolesView() {
@@ -334,12 +400,14 @@ class HaRbacPanel extends HTMLElement {
 
     return `
       <div class="layout">
-        <div class="card">
-          <h2>Roles</h2>
-          <ul class="roles">${list}</ul>
-          <div class="actions"><button id="new-role">New role</button></div>
-        </div>
-        <div class="card" id="editor"></div>
+        <ha-card>
+          <div class="card-content">
+            <h2>Roles</h2>
+            <ul class="roles">${list}</ul>
+            <div class="actions"><ha-button id="new-role">New role</ha-button></div>
+          </div>
+        </ha-card>
+        <ha-card><div class="card-content" id="editor"></div></ha-card>
       </div>`;
   }
 
@@ -362,23 +430,20 @@ class HaRbacPanel extends HTMLElement {
           : "Changes apply as soon as you save. No restart, no reload for the people affected."
       }</p>
 
-      <label class="field" for="name">Name</label>
-      <input id="name" type="text" value="${esc(draft.name)}" ${locked ? "disabled" : ""}>
+      <div class="field">
+        <ha-textfield id="name" label="Name" value="${esc(draft.name)}"
+          ${locked ? "disabled" : ""}></ha-textfield>
+      </div>
 
       <h3>What this role can see</h3>
       <p class="hint">Start from a baseline, then add exceptions. Most roles are
         one line of each: see everything, except the locks.</p>
-      <label class="field" for="base">Baseline</label>
-      <select id="base" ${locked ? "disabled" : ""}>
-        ${BASE.map(
-          (b) => `<option value="${b.value}" ${draft.base === b.value ? "selected" : ""}>${b.label}</option>`
-        ).join("")}
-      </select>
+      <div class="field">${selectMarkup("base", BASE, draft.base, locked, "Baseline")}</div>
 
       <h3>Exceptions</h3>
       <div id="rules"></div>
       <div class="actions">
-        <button id="add-rule" class="secondary" ${locked ? "disabled" : ""}>Add exception</button>
+        <ha-button id="add-rule" ${locked ? "disabled" : ""}>Add exception</ha-button>
       </div>
 
       <h3>Details to withhold</h3>
@@ -391,7 +456,7 @@ class HaRbacPanel extends HTMLElement {
         entity.</p>
       <div id="attr-rules"></div>
       <div class="actions">
-        <button id="add-attr" class="secondary" ${locked ? "disabled" : ""}>Hide an attribute</button>
+        <ha-button id="add-attr" ${locked ? "disabled" : ""}>Hide an attribute</ha-button>
       </div>
 
       <h3>Where this role can go</h3>
@@ -399,62 +464,61 @@ class HaRbacPanel extends HTMLElement {
         Unticking one hides it and refuses the requests behind it.</p>
       <div class="checks" id="apps">${(this._catalog ? this._catalog.apps : [])
         .map(
-          (app) => `<label class="check">
-            <input type="checkbox" data-app="${esc(app.url_path)}"
-                   ${draft.appDenied.includes(app.url_path) ? "" : "checked"}
-                   ${locked ? "disabled" : ""}>
-            <span>${esc(app.title)}${
-              app.addon ? ' <span class="badge">add-on</span>' : ""
-            }</span></label>`
+          (app) => `<ha-formfield label="${esc(app.title)}${
+            app.addon ? " (add-on)" : ""
+          }">
+            <ha-checkbox data-app="${esc(app.url_path)}"
+              ${draft.appDenied.includes(app.url_path) ? "" : "checked"}
+              ${locked ? "disabled" : ""}></ha-checkbox>
+          </ha-formfield>`
         )
         .join("")}</div>
 
       <h3>What this role can do</h3>
       <p class="hint">Administrative commands are recognised from Home Assistant's
         own markings, read on this instance,
-        <span class="pill">${this._catalog ? this._catalog.commands.length : 0} commands</span>
+        ${this._catalog ? this._catalog.commands.length : 0} commands,
         nothing hard-coded.</p>
-      <label class="field" for="tier">Command level</label>
-      <select id="tier" ${locked ? "disabled" : ""}>
-        ${TIERS.map(
-          (t) =>
-            `<option value="${t}" ${(draft.tiers || {}).max === t ? "selected" : ""}>${
-              t === "admin" ? "Everything, including settings and configuration" : "Ordinary use only"
-            }</option>`
-        ).join("")}
-      </select>
+      <div class="field">${selectMarkup(
+        "tier",
+        TIERS.map((t) => ({
+          value: t,
+          label:
+            t === "admin"
+              ? "Everything, including settings and configuration"
+              : "Ordinary use only",
+        })),
+        (draft.tiers || {}).max,
+        locked,
+        "Command level"
+      )}</div>
 
-      <details>
-        <summary>Advanced</summary>
-        <p class="hint">Overrides by command name, and the raw policy this role
-          stores. Anything the exception list above cannot express lives here.</p>
-        <div class="grid2">
-          <div>
-            <label class="field" for="tier-allow">Always allow (one pattern per line)</label>
-            <textarea id="tier-allow" ${locked ? "disabled" : ""}>${esc(
-              ((draft.tiers || {}).allow || []).join("\n")
-            )}</textarea>
+      <ha-expansion-panel header="Advanced">
+        <div class="card-content">
+          <p class="hint">Overrides by command name, and the raw policy this role
+            stores. Anything the exception list above cannot express lives here.</p>
+          <div class="grid2">
+            <ha-textarea id="tier-allow" label="Always allow (one pattern per line)"
+              data-text="${esc(((draft.tiers || {}).allow || []).join("\n"))}"
+              ${locked ? "disabled" : ""}></ha-textarea>
+            <ha-textarea id="tier-deny" label="Always deny (one pattern per line)"
+              data-text="${esc(((draft.tiers || {}).deny || []).join("\n"))}"
+              ${locked ? "disabled" : ""}></ha-textarea>
           </div>
-          <div>
-            <label class="field" for="tier-deny">Always deny (one pattern per line)</label>
-            <textarea id="tier-deny" ${locked ? "disabled" : ""}>${esc(
-              ((draft.tiers || {}).deny || []).join("\n")
-            )}</textarea>
-          </div>
+          <ha-textarea id="raw" label="Stored policy" readonly
+            data-text="${esc(JSON.stringify(writeRules(draft.base, draft.rules), null, 2))}"
+          ></ha-textarea>
         </div>
-        <label class="field">Stored policy</label>
-        <textarea id="raw" readonly>${esc(
-          JSON.stringify(writeRules(draft.base, draft.rules), null, 2)
-        )}</textarea>
-      </details>
+      </ha-expansion-panel>
 
       <div class="actions">
-        <button id="save" ${locked ? "disabled" : ""}>Save</button>
-        <button id="clone" class="secondary">Clone</button>
+        <ha-button id="save" ${locked ? "disabled" : ""}>Save</ha-button>
+        <ha-button id="clone">Clone</ha-button>
         <span class="spacer"></span>
-        <button id="delete" class="secondary" ${locked ? "disabled" : ""}>Delete</button>
+        <ha-button id="delete" ${locked ? "disabled" : ""}>Delete</ha-button>
       </div>`;
 
+    this._applyValues(host);
     this._mountRules(host.querySelector("#rules"), locked);
     this._mountAttrRules(host.querySelector("#attr-rules"), locked);
   }
@@ -482,43 +546,66 @@ class HaRbacPanel extends HTMLElement {
     });
   }
 
+  /** A dropdown built as a node, with its value applied as a property. */
+  _select(options, value, locked, label, onChange) {
+    const el = document.createElement("ha-select");
+    el.label = label;
+    el.fixedMenuPosition = true;
+    el.naturalMenuWidth = true;
+    el.disabled = locked;
+    el.innerHTML = options
+      .map((o) => `<ha-list-item value="${esc(o.value)}">${esc(o.label)}</ha-list-item>`)
+      .join("");
+    customElements
+      .whenDefined("ha-select")
+      .then(() => {
+        el.value = value;
+      })
+      .catch(() => {});
+    el.value = value;
+    el.addEventListener("selected", (event) => {
+      event.stopPropagation();
+      if (el.value) onChange(el.value);
+    });
+    return el;
+  }
+
+  _removeButton(locked, onClick) {
+    const button = document.createElement("ha-icon-button");
+    button.label = "Remove";
+    button.path = ICON_CLOSE;
+    button.disabled = locked;
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
   _attrRow(rule, index, locked) {
     const row = document.createElement("div");
     row.className = "rule deny";
 
-    const target = document.createElement("select");
-    target.innerHTML = TARGETS.map(
-      (t) => `<option value="${t.value}" ${rule.target === t.value ? "selected" : ""}>${t.label}</option>`
-    ).join("");
-    target.disabled = locked;
-    target.onchange = () => {
-      rule.target = target.value;
+    const target = this._select(TARGETS, rule.target, locked, "Applies to", (value) => {
+      rule.target = value;
       rule.ids = [];
       this._mountAttrRules(this.shadowRoot.getElementById("attr-rules"), locked);
-    };
+    });
 
     const picker = document.createElement("div");
     picker.className = "picker";
     picker.appendChild(this._pickerFor(rule, locked));
 
-    const names = document.createElement("input");
-    names.type = "text";
+    const names = document.createElement("ha-textfield");
+    names.label = "Attributes";
     names.value = rule.names.join(", ");
     names.placeholder = "latitude, longitude, gps_*";
     names.disabled = locked;
-    names.onchange = () => {
+    names.addEventListener("change", () => {
       rule.names = names.value.split(",").map((n) => n.trim()).filter(Boolean);
-    };
+    });
 
-    const remove = document.createElement("button");
-    remove.className = "icon-btn";
-    remove.title = "Remove";
-    remove.textContent = "✕";
-    remove.disabled = locked;
-    remove.onclick = () => {
+    const remove = this._removeButton(locked, () => {
       this._draft.attrRules.splice(index, 1);
       this._mountAttrRules(this.shadowRoot.getElementById("attr-rules"), locked);
-    };
+    });
 
     row.append(target, picker, names, remove);
     return row;
@@ -528,43 +615,28 @@ class HaRbacPanel extends HTMLElement {
     const row = document.createElement("div");
     row.className = `rule${rule.access === "none" ? " deny" : ""}`;
 
-    const target = document.createElement("select");
-    target.innerHTML = TARGETS.map(
-      (t) => `<option value="${t.value}" ${rule.target === t.value ? "selected" : ""}>${t.label}</option>`
-    ).join("");
-    target.disabled = locked;
-    target.onchange = () => {
-      rule.target = target.value;
+    const target = this._select(TARGETS, rule.target, locked, "Applies to", (value) => {
+      rule.target = value;
       rule.ids = [];
       this._mountRules(this.shadowRoot.getElementById("rules"), locked);
       this._syncRaw();
-    };
+    });
 
     const picker = document.createElement("div");
     picker.className = "picker";
     picker.appendChild(this._pickerFor(rule, locked));
 
-    const access = document.createElement("select");
-    access.innerHTML = ACCESS.map(
-      (a) => `<option value="${a.value}" ${rule.access === a.value ? "selected" : ""}>${a.label}</option>`
-    ).join("");
-    access.disabled = locked;
-    access.onchange = () => {
-      rule.access = access.value;
+    const access = this._select(ACCESS, rule.access, locked, "Access", (value) => {
+      rule.access = value;
       row.className = `rule${rule.access === "none" ? " deny" : ""}`;
       this._syncRaw();
-    };
+    });
 
-    const remove = document.createElement("button");
-    remove.className = "icon-btn";
-    remove.title = "Remove";
-    remove.textContent = "✕";
-    remove.disabled = locked;
-    remove.onclick = () => {
+    const remove = this._removeButton(locked, () => {
       this._draft.rules.splice(index, 1);
       this._mountRules(this.shadowRoot.getElementById("rules"), locked);
       this._syncRaw();
-    };
+    });
 
     row.append(target, picker, access, remove);
     return row;
@@ -578,40 +650,24 @@ class HaRbacPanel extends HTMLElement {
     const selector = target.selector || {
       select: {
         multiple: true,
-        mode: "dropdown",
-        options: (this._catalog ? this._catalog.domains : []).map((d) => ({
-          value: d,
-          label: d,
-        })),
+        options: [...new Set(Object.keys(this._hass.states).map((e) => e.split(".")[0]))]
+          .sort()
+          .map((d) => ({ value: d, label: d })),
       },
     };
 
-    if (customElements.get("ha-selector")) {
-      const el = document.createElement("ha-selector");
-      el.hass = this._hass;
-      el.selector = selector;
-      el.value = rule.ids.slice();
-      el.disabled = locked;
-      el.addEventListener("value-changed", (event) => {
-        event.stopPropagation();
-        const value = event.detail.value;
-        rule.ids = Array.isArray(value) ? value : value ? [value] : [];
-        this._syncRaw();
-      });
-      return el;
-    }
-
-    // Degrade to a plain field rather than losing the row entirely.
-    const input = document.createElement("input");
-    input.type = "text";
-    input.value = rule.ids.join(", ");
-    input.placeholder = "comma separated";
-    input.disabled = locked;
-    input.onchange = () => {
-      rule.ids = input.value.split(",").map((v) => v.trim()).filter(Boolean);
+    const el = document.createElement("ha-selector");
+    el.hass = this._hass;
+    el.selector = selector;
+    el.value = rule.ids.slice();
+    el.disabled = locked;
+    el.addEventListener("value-changed", (event) => {
+      event.stopPropagation();
+      const value = event.detail.value;
+      rule.ids = Array.isArray(value) ? value : value ? [value] : [];
       this._syncRaw();
-    };
-    return input;
+    });
+    return el;
   }
 
   _syncRaw() {
@@ -628,21 +684,21 @@ class HaRbacPanel extends HTMLElement {
         // one role, and a single select would quietly drop the others on save.
         const boxes = this._roles
           .map(
-            (role) => `<label class="check">
-              <input type="checkbox" data-user="${esc(user.user_id)}"
-                     value="${esc(role.id)}"
-                     ${user.role_ids.includes(role.id) ? "checked" : ""}
-                     ${user.is_owner ? "disabled" : ""}>
-              <span>${esc(role.name)}</span></label>`
+            (role) => `<ha-formfield label="${esc(role.name)}">
+              <ha-checkbox data-user="${esc(user.user_id)}"
+                value="${esc(role.id)}"
+                ${user.role_ids.includes(role.id) ? "checked" : ""}
+                ${user.is_owner ? "disabled" : ""}></ha-checkbox>
+            </ha-formfield>`
           )
           .join("");
         const note = user.is_owner
-          ? '<span class="badge">owner &mdash; always unrestricted</span>'
+          ? '<span class="badge">owner, always unrestricted</span>'
           : "";
         const fallback = user.role_ids.length
           ? ""
-          : `<div class="hint" style="margin:6px 0 0">Unassigned &mdash; keeps the access
-             Home Assistant already gives them (${user.is_admin ? "Administrator" : "User"}).</div>`;
+          : `<div class="hint" style="margin:6px 0 0">Unassigned, so they keep the
+             access Home Assistant already gives them (${user.is_admin ? "Administrator" : "User"}).</div>`;
         return `<tr>
           <td>${esc(user.name || user.user_id)} ${note}</td>
           <td><div class="checks">${boxes}</div>${fallback}</td>
@@ -650,15 +706,17 @@ class HaRbacPanel extends HTMLElement {
       })
       .join("");
 
-    return `<div class="card">
-      <h2>Users</h2>
-      <p class="hint">Anyone unassigned keeps exactly the
-        access Home Assistant already gives them, so you can roll this out one
-        person at a time. The owner is always unrestricted &mdash; that is the way
-        back in if a role locks you out.</p>
-      <table><thead><tr><th>Person</th><th>Role</th></tr></thead><tbody>${rows}</tbody></table>
-      <div class="actions"><button id="save-bindings">Save</button></div>
-    </div>`;
+    return `<ha-card>
+      <div class="card-content">
+        <h2>Users</h2>
+        <p class="hint">Anyone unassigned keeps exactly the
+          access Home Assistant already gives them, so you can roll this out one
+          person at a time. The owner is always unrestricted, and that is the way
+          back in if a role locks you out.</p>
+        <table><thead><tr><th>Person</th><th>Role</th></tr></thead><tbody>${rows}</tbody></table>
+        <div class="actions"><ha-button id="save-bindings">Save</ha-button></div>
+      </div>
+    </ha-card>`;
   }
 
   _denialsView() {
@@ -673,17 +731,21 @@ class HaRbacPanel extends HTMLElement {
       )
       .join("");
 
-    return `<div class="card">
-      <h2>Recent denials</h2>
-      <p class="hint">A refused request reaches the person as a screen that quietly
-        does less, with no explanation. This is where to look when someone says
-        something stopped working.</p>
-      <div class="actions" style="margin-top:0"><button id="load-denials">Refresh</button></div>
-      <table>
-        <thead><tr><th>Person</th><th>Request</th><th>Why</th><th>Entities</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="4" class="hint">Nothing refused yet.</td></tr>'}</tbody>
-      </table>
-    </div>`;
+    return `<ha-card>
+      <div class="card-content">
+        <h2>Recent denials</h2>
+        <p class="hint">A refused request reaches the person as a screen that quietly
+          does less, with no explanation. This is where to look when someone says
+          something stopped working.</p>
+        <div class="actions" style="margin-top:0">
+          <ha-button id="load-denials">Refresh</ha-button>
+        </div>
+        <table>
+          <thead><tr><th>Person</th><th>Request</th><th>Why</th><th>Entities</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="4" class="hint">Nothing refused yet.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </ha-card>`;
   }
 
   _reason(reason) {
@@ -693,6 +755,7 @@ class HaRbacPanel extends HTMLElement {
         resource: "No access to that entity",
         unbounded: "Request did not say what it would touch",
         degraded: "Permission derivation unavailable",
+        app: "No access to that dashboard, add-on or screen",
       }[reason] || reason
     );
   }
@@ -717,7 +780,7 @@ class HaRbacPanel extends HTMLElement {
 
     const on = (id, handler) => {
       const el = root.getElementById(id);
-      if (el) el.onclick = handler;
+      if (el) el.addEventListener("click", handler);
     };
     on("new-role", () => this._createRole());
     on("save", () => this._saveRole());
@@ -737,10 +800,12 @@ class HaRbacPanel extends HTMLElement {
 
     const base = root.getElementById("base");
     if (base) {
-      base.onchange = () => {
+      base.addEventListener("selected", (event) => {
+        event.stopPropagation();
+        if (!base.value) return;
         this._draft.base = base.value;
         this._syncRaw();
-      };
+      });
     }
   }
 
@@ -839,7 +904,7 @@ class HaRbacPanel extends HTMLElement {
       const byUser = {};
       for (const box of this.shadowRoot.querySelectorAll("[data-user]")) {
         (byUser[box.dataset.user] ||= []);
-        if (box.checked) byUser[box.dataset.user].push(box.value);
+        if (box.checked) byUser[box.dataset.user].push(box.getAttribute("value"));
       }
       for (const [userId, roleIds] of Object.entries(byUser)) {
         await this._call("bindings/set", { user_id: userId, role_ids: roleIds });
