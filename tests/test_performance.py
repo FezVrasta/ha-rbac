@@ -69,8 +69,14 @@ async def test_a_global_deny_removes_the_fast_path(hass: HomeAssistant) -> None:
     assert perms.check_entity("camera.bedroom", POLICY_READ) is False
 
 
-async def test_permission_checks_are_cached_per_user(hass: HomeAssistant) -> None:
-    """Compiled policies are reused; recompiling per request would be the cost."""
+async def test_permissions_are_reused_between_requests(hass: HomeAssistant) -> None:
+    """Compiled policies are reused; recompiling per request would be the cost.
+
+    The cache is keyed on the user and on which of their roles are in force, so
+    that a schedule opening or closing produces a different key. Two requests a
+    moment apart still hit, which is what keeps the websocket's per-frame
+    re-resolve to a dictionary lookup.
+    """
     store = RbacStore(hass)
     await store.async_load()
     evaluator = Evaluator(hass, store)
