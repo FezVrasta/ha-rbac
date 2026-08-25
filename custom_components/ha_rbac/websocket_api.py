@@ -86,6 +86,9 @@ async def handle_roles_create(
     except vol.Invalid as err:
         connection.send_error(msg["id"], websocket_api.ERR_INVALID_FORMAT, str(err))
         return
+    except ValueError as err:
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_ALLOWED, str(err))
+        return
     connection.send_result(msg["id"], role)
 
 

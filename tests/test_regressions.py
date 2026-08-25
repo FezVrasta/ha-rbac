@@ -5,6 +5,7 @@ together because they document how this layer can fail *open*, which is the
 only failure mode that matters.
 """
 
+import json
 from collections import OrderedDict
 from fnmatch import fnmatch
 from typing import Any
@@ -37,6 +38,7 @@ from custom_components.ha_rbac.decide import (
     REASON_APP,
     REASON_TIER,
     Decider,
+    Decision,
     _invokes_a_service,
 )
 from custom_components.ha_rbac.extract import extract
@@ -50,12 +52,31 @@ from custom_components.ha_rbac.policy import (
 )
 from custom_components.ha_rbac.proxy import (
     INIT_HEADERS_FILTER,
+    MAX_ENDPOINTS,
     MAX_PENDING_IDS,
     _carries_entity_data,
     _is_ungoverned_api_path,
     _WsSession,
 )
 from custom_components.ha_rbac.store import RbacStore
+
+
+class _AllowAll:
+    """A decider that permits everything, to isolate the framing logic."""
+
+    @staticmethod
+    def decide(*args: Any, **kwargs: Any) -> Decision:
+        return Decision(allowed=True)
+
+
+class _SentinelClient:
+    """Collects the frames a session writes back to its client."""
+
+    def __init__(self, sent: list[str]) -> None:
+        self._sent = sent
+
+    async def send_str(self, raw: str) -> None:
+        self._sent.append(raw)
 
 
 def _lookup(hass: HomeAssistant) -> PermissionLookup:
@@ -464,19 +485,25 @@ async def test_reusing_an_id_after_eviction_is_still_refused() -> None:
     and the id could then be reused to re-label which response filter applied.
     Home Assistant requires ids to increase, so the highest one seen is enough.
     """
+    sent: list[str] = []
     session = _WsSession.__new__(_WsSession)
     session._pending = OrderedDict()
     session._streaming = {}
+    session._endpoints = OrderedDict()
     session._highest_id = 0
+    session._user = None
+    session._permissions = Permissions(pass_through=True)
+    session._client = _SentinelClient(sent)
 
-    session._highest_id = 5
-    session._remember(5, "get_states")
+    assert await session._intercept({"id": 5, "type": "get_states"}) is True
     for filler in range(6, 6 + MAX_PENDING_IDS + 10):
-        session._remember(filler, "get_config")
+        assert await session._intercept({"id": filler, "type": "get_config"}) is True
 
     assert 5 not in session._pending, "precondition: the entry was evicted"
     # The reuse check no longer depends on the evicted entry.
-    assert session._highest_id >= 5
+    assert await session._intercept({"id": 5, "type": "get_config"}) is False
+    assert session._correlate(5) is None
+    assert "Message id reused" in sent[-1]
 
 
 async def test_a_streaming_id_survives_eviction() -> None:
@@ -1006,3 +1033,136 @@ async def test_every_transport_gets_the_same_filter_context(
         hass, Permissions(roles=[compile_role(hass, _role(), _lookup(hass))])
     )
     assert plain.hides_attributes is False
+
+
+def _admin_clone(hass: HomeAssistant, **extra: Any) -> Any:
+    """Compile a role cloned from Administrator, plus one restriction."""
+    return compile_role(
+        hass,
+        {
+            "id": "clone",
+            "name": "Clone",
+            "allow": {"entities": True},
+            "tiers": {"max": TIER_ADMIN, "allow": ["*"], "deny": []},
+            **extra,
+        },
+        _lookup(hass),
+    )
+
+
+async def test_an_unrestricted_admin_clone_is_full_access(hass: HomeAssistant) -> None:
+    """The precondition for the three tests below: without a restriction it is."""
+    assert _admin_clone(hass).full_access is True
+
+
+@pytest.mark.parametrize(
+    "restriction",
+    [
+        {"attributes": {"rules": [{"names": ["latitude"]}]}},
+        {"attributes": {"deny": ["latitude"]}},
+        {"apps": {"allow": ["lovelace"]}},
+        {"apps": {"deny": ["core_ssh"]}},
+    ],
+    ids=["targeted-rules", "legacy-deny", "app-allowlist", "app-denylist"],
+)
+async def test_a_restricted_admin_clone_is_not_full_access(
+    hass: HomeAssistant, restriction: dict[str, Any]
+) -> None:
+    """Full access skips every gate, so it has to mean nothing is restricted.
+
+    Cloning Administrator and withholding one thing is the obvious authoring
+    flow. Compiling that to full access made the proxy serve exactly what the
+    role was written to withhold -- and an app *allow* list restricts every app
+    not on it, which is a stronger statement than any deny list.
+    """
+    assert _admin_clone(hass, **restriction).full_access is False
+
+
+async def test_attribute_rule_domains_are_lowercased(hass: HomeAssistant) -> None:
+    """Entity ids are lowercase, so a domain typed `Light` has to match too."""
+    role = compile_role(
+        hass,
+        {
+            "id": "shouty",
+            "name": "Shouty",
+            "allow": {"entities": {"all": {"read": True}}},
+            "attributes": {
+                "rules": [{"target": "domains", "ids": ["Light"], "names": ["rgb"]}]
+            },
+        },
+        _lookup(hass),
+    )
+    permissions = Permissions(roles=[role])
+    assert permissions.attribute_hidden("light.kitchen", "rgb") is True
+
+
+async def test_creating_a_role_cannot_replace_a_predefined_one(
+    hass: HomeAssistant,
+) -> None:
+    """It would apply in memory and vanish on restart, which reads as a bug."""
+    store = RbacStore(hass)
+    await store.async_load()
+    with pytest.raises(ValueError, match="predefined"):
+        await store.async_create_role({"id": ROLE_READ_ONLY, "name": "Impostor"})
+    assert store.roles[ROLE_READ_ONLY]["system_generated"] is True
+
+
+async def test_a_non_state_change_event_is_pruned(hass: HomeAssistant) -> None:
+    """Registering a filter for `subscribe_events` bypasses the generic walk.
+
+    A `call_service` event names its targets under `service_data`, so matching
+    only a top-level `entity_id` forwarded it whole to a restricted subscriber.
+    """
+    ctx = FilterContext(hass, lambda entity_id, key: entity_id != "lock.front")
+    event = REGISTRY.filter_event(
+        "subscribe_events",
+        ctx,
+        {
+            "event_type": "call_service",
+            "data": {
+                "domain": "lock",
+                "service": "unlock",
+                "service_data": {"entity_id": "lock.front"},
+            },
+        },
+    )
+    leaked = json.dumps(event) if event is not None else ""
+    assert "lock.front" not in leaked
+
+
+async def test_supervisor_calls_in_flight_are_refused_not_forgotten() -> None:
+    """Evicting a correlation would leave its reply unjudged.
+
+    `strip_denied_addons` only fires while the reply is still tied to the
+    endpoint that asked for it, so forgetting an older call let a Supervisor
+    listing come back with every denied add-on in it.
+    """
+    sent: list[str] = []
+    session = _WsSession.__new__(_WsSession)
+    session._pending = OrderedDict()
+    session._streaming = {}
+    session._endpoints = OrderedDict()
+    session._highest_id = 0
+    session._user = None
+    session._permissions = Permissions()
+    session._client = _SentinelClient(sent)
+    session._record = lambda *args: None
+    session._decider = _AllowAll()
+
+    for msg_id in range(1, MAX_ENDPOINTS + 1):
+        assert (
+            await session._intercept(
+                {"id": msg_id, "type": "supervisor/api", "endpoint": "/addons"}
+            )
+            is True
+        )
+
+    overflow = MAX_ENDPOINTS + 1
+    assert (
+        await session._intercept(
+            {"id": overflow, "type": "supervisor/api", "endpoint": "/addons"}
+        )
+        is False
+    )
+    assert len(session._endpoints) == MAX_ENDPOINTS
+    assert 1 in session._endpoints, "the oldest call kept its correlation"

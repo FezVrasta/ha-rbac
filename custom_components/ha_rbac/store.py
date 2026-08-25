@@ -95,6 +95,13 @@ class RbacStore:
         role.setdefault("id", uuid.uuid4().hex)
         role["system_generated"] = False
         validated = ROLE_SCHEMA(role)
+        existing = self.roles.get(validated["id"])
+        if existing is not None and existing.get("system_generated"):
+            # It would replace the predefined role in memory but is never
+            # persisted, so a restart would silently undo it.
+            raise ValueError(
+                f"{validated['id']} is a predefined role and cannot be replaced"
+            )
         self.roles[validated["id"]] = validated
         await self._async_save()
         return validated

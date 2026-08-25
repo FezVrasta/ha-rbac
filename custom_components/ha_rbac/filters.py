@@ -356,7 +356,12 @@ def _filter_subscribed_event(ctx: FilterContext, event: Any) -> Any:
     if not isinstance(data, dict):
         return event
     entity_id = data.get("entity_id")
-    if _looks_like_entity_id(entity_id) and not ctx.readable(entity_id):
+    if not _looks_like_entity_id(entity_id):
+        # Not a state change. `call_service` names its targets under
+        # `service_data.entity_id`, and other events bury them deeper still, so
+        # the generic walk judges them rather than letting them through whole.
+        return prune(ctx, event)
+    if not ctx.readable(entity_id):
         return None
     if not ctx.hides_attributes:
         return event

@@ -343,7 +343,11 @@ def _compile_attribute_rules(
 
         target = rule.get("target") or ENTITY_DOMAINS
         if target == ENTITY_DOMAINS:
-            compiled.append(CompiledAttributeRule(names, None, set(ids)))
+            # Entity ids are lowercased everywhere else, so a domain written
+            # `Light` in the panel has to match `light.kitchen` too.
+            compiled.append(
+                CompiledAttributeRule(names, None, {i.lower() for i in ids})
+            )
             continue
         if target == ENTITY_ENTITY_IDS:
             compiled.append(
@@ -393,6 +397,7 @@ def compile_role(
     attributes = role.get("attributes") or {}
     tier_max = _tier_ceiling(tiers.get("max"))
     tier_allow = list(tiers.get("allow") or [])
+    attribute_rules = _compile_attribute_rules(hass, attributes)
 
     return CompiledRole(
         role_id=role["id"],
@@ -404,11 +409,13 @@ def compile_role(
         tier_deny=[*BASELINE_DENY, *(tiers.get("deny") or [])],
         app_allow=list(apps.get("allow") or []),
         app_deny=list(apps.get("deny") or []),
-        attribute_rules=_compile_attribute_rules(hass, attributes),
+        attribute_rules=attribute_rules,
         # Full access skips every gate, so it has to mean *nothing* is
         # restricted. Ignoring the tier denials here silently disabled the whole
         # layer for the obvious authoring flow of cloning Administrator and
-        # denying one namespace.
+        # denying one namespace. The compiled rules are consulted rather than
+        # the raw `deny` list, so the targeted `rules` form counts too, and an
+        # app *allow* list restricts just as much as a deny list does.
         full_access=(
             allow_policy.get(CAT_ENTITIES) is True
             and not (role.get("deny") or {})
@@ -416,7 +423,8 @@ def compile_role(
             and "*" in tier_allow
             and not tiers.get("deny")
             and not apps.get("deny")
-            and not attributes.get("deny")
+            and not apps.get("allow")
+            and not attribute_rules
         ),
     )
 

@@ -247,19 +247,28 @@ class RbacProxy:
             token = auth.removeprefix("Bearer ")
             if refresh_token := self._hass.auth.async_validate_access_token(token):
                 return refresh_token.user
+        # A signed path authenticates on its own, with no Authorization header.
+        # Treating one as anonymous forwarded it ungoverned and unfiltered.
+        if (signature := request.query.get(SIGN_QUERY_PARAM)) and (
+            token_id := _unverified_issuer(signature)
+        ):
+            if refresh_token := self._hass.auth.async_get_refresh_token(token_id):
+                return refresh_token.user
         return None
 
     async def _handle(self, request: web.Request) -> web.StreamResponse:
         """Route a request to the websocket relay or the HTTP passthrough."""
+        # Add-ons speak websocket over their own ingress path, so the gate has
+        # to run before the upgrade is dispatched: checking it only on the HTTP
+        # side left a denied add-on's terminal and editor reachable.
+        if (refusal := await self._refuse_ingress(request)) is not None:
+            return refusal
         if _is_websocket(request):
             return await self._handle_websocket(request)
         return await self._handle_http(request)
 
     async def _handle_http(self, request: web.Request) -> web.StreamResponse:
         """Proxy one HTTP request, filtering the response where needed."""
-        if (refusal := await self._refuse_ingress(request)) is not None:
-            return refusal
-
         user = await self._resolve_user(request)
         permissions = self._evaluator.async_permissions(user)
 
@@ -590,6 +599,7 @@ class _WsSession:
     def _remember(self, msg_id: int, msg_type: str) -> None:
         """Record an id correlation, discarding the oldest when full."""
         self._pending[msg_id] = msg_type
+        self._highest_id = max(self._highest_id, msg_id)
         while len(self._pending) > MAX_PENDING_IDS:
             self._pending.popitem(last=False)
 
@@ -601,6 +611,17 @@ class _WsSession:
         if (session := session_from(message.get("result"))) is None:
             return
         self._ingress.remember_session(session, self._user.id)
+
+    @callback
+    def _note_endpoint(self, message: dict[str, Any]) -> str | None:
+        """Return the Supervisor endpoint a reply answers, recording sessions."""
+        msg_id = message.get("id")
+        if not isinstance(msg_id, int):
+            return None
+        endpoint = self._endpoints.pop(msg_id, None)
+        if endpoint == SESSION_ENDPOINT:
+            self._remember_ingress(message)
+        return endpoint
 
     @callback
     def _correlate(self, msg_id: int) -> str | None:
@@ -696,7 +717,10 @@ class _WsSession:
         # get_states result would then be matched to get_config's pass-through
         # filter and forwarded in full.
         if isinstance(msg_id, int) and isinstance(msg_type, str):
-            if msg_id in self._pending:
+            # The highest id seen, not membership of the bounded map: an
+            # attacker who first pushes the entry out with filler commands
+            # could otherwise reuse the id and re-label which filter applies.
+            if msg_id <= self._highest_id:
                 await self._deny(
                     msg_id,
                     Decision(
@@ -714,6 +738,19 @@ class _WsSession:
         # it is handled here rather than on the way back.
         endpoint = message.get("endpoint")
         if isinstance(endpoint, str) and isinstance(msg_id, int):
+            # Evicting a live correlation would leave its reply unjudged, and a
+            # Supervisor listing would then arrive with every denied add-on in
+            # it. Refuse the new call instead of forgetting an older one.
+            if not self._full_access and len(self._endpoints) >= MAX_ENDPOINTS:
+                decision = Decision(
+                    allowed=False,
+                    reason=REASON_APP,
+                    detail="too many Supervisor calls in flight to judge this one",
+                )
+                self._record(self._user, KIND_WS, str(msg_type), decision)
+                self._pending.pop(msg_id, None)
+                await self._deny(msg_id, decision)
+                return False
             self._endpoints[msg_id] = endpoint
             while len(self._endpoints) > MAX_ENDPOINTS:
                 self._endpoints.popitem(last=False)
@@ -795,10 +832,6 @@ class _WsSession:
 
     async def _on_server_text(self, raw: str) -> None:
         """Handle one outbound text frame, which may be a coalesced batch."""
-        if self._full_access:
-            await self._client.send_str(raw)
-            return
-
         try:
             parsed = json_loads(raw)
         except ValueError:
@@ -806,6 +839,18 @@ class _WsSession:
             return
 
         messages = parsed if isinstance(parsed, list) else [parsed]
+
+        if self._full_access:
+            # Nothing is filtered here, but the ingress session still has to be
+            # tied to its user: this connection is the only place the command
+            # that mints one is visible, and an unrecorded session is refused
+            # when the add-on's own route is opened.
+            for message in messages:
+                if isinstance(message, dict):
+                    self._note_endpoint(message)
+            await self._client.send_str(raw)
+            return
+
         kept: list[dict[str, Any]] = []
         for message in messages:
             if not isinstance(message, dict):
@@ -832,9 +877,7 @@ class _WsSession:
         if not isinstance(msg_id, int):
             return message
 
-        endpoint = self._endpoints.pop(msg_id, None)
-        if endpoint == SESSION_ENDPOINT:
-            self._remember_ingress(message)
+        endpoint = self._note_endpoint(message)
 
         command = self._correlate(msg_id)
         if command is None:

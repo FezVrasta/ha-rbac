@@ -30,10 +30,13 @@ VALIDATE_ENDPOINT = "/ingress/validate_session"
 SESSION_TTL = 8 * 3600
 MAX_SESSIONS = 512
 
-# How long the token map is trusted before a miss rebuilds it. A newly
-# installed add-on has a token the map has never seen, and treating that as
-# "not an add-on" would let it through unguarded.
-MAP_TTL = 60
+# The shortest gap between two rebuilds of the token map. A newly installed
+# add-on has a token the map has never seen, and answering "not an add-on"
+# forwards it unguarded -- so a miss rebuilds instead of trusting what it has.
+# The limit is on rebuild *attempts*, not on the map's age: rebuilding costs a
+# Supervisor call per installed add-on and the token in a miss is attacker
+# controlled, but two rebuilds a moment apart would see the same thing anyway.
+MISS_RELOAD_INTERVAL = 1
 
 
 class IngressUnavailable(Exception):
@@ -120,7 +123,12 @@ class IngressGuard:
         """Return the add-on an ingress token belongs to, or None if it is none."""
         if token in self._slugs:
             return self._slugs[token]
-        if self._loaded_at is None or time.monotonic() - self._loaded_at > MAP_TTL:
+        # A miss is either a token that belongs to nothing or an add-on
+        # installed since the map was built, and only a rebuild tells them
+        # apart. Guessing "not an add-on" would forward it unguarded.
+        now = time.monotonic()
+        if self._loaded_at is None or now - self._loaded_at > MISS_RELOAD_INTERVAL:
+            self._loaded_at = now
             await self._async_load()
         return self._slugs.get(token)
 

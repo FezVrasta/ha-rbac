@@ -7,23 +7,35 @@ a plain aiohttp client exercises the same path a frontend would.
 import asyncio
 import json
 import socket
+from collections import OrderedDict
+from datetime import timedelta
+from http import HTTPStatus
 from typing import Any
 
 import aiohttp
 import pytest
 from aiohttp import web
+from homeassistant.components.http.auth import async_sign_path
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockUser
 
 from custom_components.ha_rbac.catalog import Catalog
-from custom_components.ha_rbac.const import ROLE_READ_ONLY
+from custom_components.ha_rbac.const import ROLE_READ_ONLY, TIER_ADMIN
 from custom_components.ha_rbac.decide import Decider
 from custom_components.ha_rbac.denylog import DenyLog
 from custom_components.ha_rbac.filters import REGISTRY
-from custom_components.ha_rbac.policy import Evaluator
-from custom_components.ha_rbac.proxy import RbacProxy
+from custom_components.ha_rbac.ingress import SESSION_ENDPOINT
+from custom_components.ha_rbac.policy import Evaluator, Permissions
+from custom_components.ha_rbac.proxy import RbacProxy, _WsSession
 from custom_components.ha_rbac.store import RbacStore
+
+
+class _RecordingClient:
+    """Stands in for the browser side of a relayed connection."""
+
+    async def send_str(self, raw: str) -> None:
+        """Swallow the frame; these tests assert on side effects."""
 
 
 def _free_port() -> int:
@@ -554,3 +566,96 @@ async def test_ingress_allows_permitted_addon(proxy_env: dict[str, Any]) -> None
         # Upstream has no Supervisor, so 404 is the expected answer. What
         # matters is that the gate did not refuse it.
         assert response.status != 401
+
+
+async def test_ingress_websocket_is_gated_too(proxy_env: dict[str, Any]) -> None:
+    """Add-ons speak websocket over their own ingress path.
+
+    The gate ran only on the HTTP side while `_handle` dispatched upgrades
+    first, so a denied add-on's terminal was reachable over `ws://` even though
+    the same path was refused over `http://`.
+    """
+    await _bind(proxy_env["store"], proxy_env["read_only_user"], ROLE_READ_ONLY)
+    await _seed_ingress(proxy_env, "tok", "core_ssh")
+
+    async with aiohttp.ClientSession(cookies={"ingress_session": "forged"}) as session:
+        with pytest.raises(aiohttp.WSServerHandshakeError) as err:
+            await session.ws_connect(f"{proxy_env['base']}/api/hassio_ingress/tok/ws")
+    assert err.value.status == 401
+
+
+async def test_full_access_connection_still_records_ingress_sessions(
+    proxy_env: dict[str, Any],
+) -> None:
+    """An unrecorded session is refused, so skipping this locked the owner out.
+
+    The outbound pump short-circuited on full access before reaching the point
+    where a minted session is tied to its user, so an administrator could not
+    open any add-on's own page -- the gate denied a session it had never seen.
+    """
+    guard = proxy_env["proxy"]._ingress
+    session = _WsSession.__new__(_WsSession)
+    session._pending = OrderedDict()
+    session._streaming = {}
+    session._endpoints = OrderedDict({7: SESSION_ENDPOINT})
+    session._highest_id = 7
+    session._permissions = Permissions(pass_through=True)
+    session._ingress = guard
+    session._client = _RecordingClient()
+    session._user = proxy_env["read_only_user"]
+
+    await session._on_server_text(
+        json.dumps(
+            {
+                "id": 7,
+                "type": "result",
+                "success": True,
+                "result": {"session": "minted"},
+            }
+        )
+    )
+
+    assert guard.user_id_for("minted") == proxy_env["read_only_user"].id
+
+
+async def test_a_signed_path_is_filtered_for_its_owner(
+    proxy_env: dict[str, Any],
+) -> None:
+    """A signed path carries no Authorization header, so it looked anonymous.
+
+    An anonymous request is forwarded ungoverned and unfiltered, which handed
+    whoever held the URL the full response -- the opposite of what signing it
+    for a restricted user is supposed to mean.
+    """
+    hass = proxy_env["hass"]
+    hass.states.async_set("lock.front", "locked")
+    hass.states.async_set("light.kitchen", "on")
+
+    store = proxy_env["store"]
+    user = proxy_env["read_only_user"]
+    await store.async_create_role(
+        {
+            "id": "no_locks",
+            "name": "No locks",
+            "allow": {"entities": {"domains": {"light": {"read": True}}}},
+            "tiers": {"max": TIER_ADMIN, "allow": ["*"], "deny": []},
+        }
+    )
+    await _bind(store, user, "no_locks")
+
+    signed = async_sign_path(
+        hass,
+        "/api/states",
+        timedelta(minutes=5),
+        refresh_token_id=list(user.refresh_tokens)[0],
+    )
+
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(proxy_env["base"] + signed) as response,
+    ):
+        assert response.status == HTTPStatus.OK
+        body = await response.text()
+
+    assert "light.kitchen" in body
+    assert "lock.front" not in body

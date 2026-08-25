@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.ha_rbac.filters import FilterContext, strip_denied_addons
 from custom_components.ha_rbac.ingress import (
+    MISS_RELOAD_INTERVAL,
     SESSION_TTL,
     IngressGuard,
     session_from,
@@ -136,3 +137,68 @@ async def test_unrelated_endpoint_is_untouched(hass: HomeAssistant) -> None:
         strip_denied_addons(_ctx(hass, {"core_ssh"}), "/supervisor/info", payload)
         is payload
     )
+
+
+async def test_a_miss_rebuilds_the_token_map(hass: HomeAssistant) -> None:
+    """An add-on installed since the map was built must not slip through.
+
+    Its token is absent from a map that is otherwise still current, and
+    answering "not an add-on" forwards the request unguarded -- so a miss has
+    to rebuild rather than trust what it has.
+    """
+    guard = IngressGuard(hass)
+    loads = 0
+
+    async def _fake_load() -> None:
+        nonlocal loads
+        loads += 1
+        guard._slugs = {"fresh": "core_ssh"}
+        guard._loaded_at = time.monotonic()
+
+    guard._async_load = _fake_load
+    guard._slugs = {"known": "core_configurator"}
+    guard._loaded_at = time.monotonic() - MISS_RELOAD_INTERVAL - 1
+
+    # A hit is answered from the map without troubling Supervisor.
+    assert await guard.async_slug_for("known") == "core_configurator"
+    assert loads == 0
+
+    # A miss rebuilds, and finds the add-on installed since.
+    assert await guard.async_slug_for("fresh") == "core_ssh"
+    assert loads == 1
+
+
+async def test_repeated_misses_are_rate_limited(hass: HomeAssistant) -> None:
+    """Rebuilding costs a Supervisor call per add-on, and misses are forgeable.
+
+    The cost of the limit is a window, no longer than the interval, in which an
+    add-on installed moments ago is not yet in the map. That is the tradeoff
+    being made here, not an oversight.
+    """
+    guard = IngressGuard(hass)
+    loads = 0
+
+    async def _fake_load() -> None:
+        nonlocal loads
+        loads += 1
+
+    guard._async_load = _fake_load
+    guard._loaded_at = time.monotonic()
+
+    for attempt in range(20):
+        assert await guard.async_slug_for(f"invented-{attempt}") is None
+    assert loads == 0, "a burst of forged tokens must not become a burst of calls"
+
+
+async def test_the_first_lookup_always_builds_the_map(hass: HomeAssistant) -> None:
+    """Nothing is known before the first load, so it cannot be rate limited."""
+    guard = IngressGuard(hass)
+    loads = 0
+
+    async def _fake_load() -> None:
+        nonlocal loads
+        loads += 1
+
+    guard._async_load = _fake_load
+    assert await guard.async_slug_for("anything") is None
+    assert loads == 1

@@ -327,8 +327,6 @@ class Decider:
 
         return Decision(allowed=True, resources=sorted(entities), filter_response=True)
 
-        return Decision(allowed=True, resources=sorted(entities), filter_response=True)
-
     @callback
     def _decide_app(
         self,
@@ -407,7 +405,10 @@ class Decider:
         service = payload.get("service")
         if not isinstance(domain, str) or not isinstance(service, str):
             return None
-        if payload.get("target") or payload.get("service_data", {}).get("entity_id"):
+        service_data = payload.get("service_data")
+        if payload.get("target") or (
+            isinstance(service_data, dict) and service_data.get("entity_id")
+        ):
             return None
 
         if self._catalog.service_is_admin_only(domain, service):
