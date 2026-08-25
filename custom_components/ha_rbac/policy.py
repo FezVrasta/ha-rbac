@@ -139,10 +139,22 @@ ATTRIBUTES_SCHEMA = vol.Schema(
 # Monday first, matching `datetime.weekday()`.
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
+# One window: days, a time range, or both. Empty days means every day and empty
+# times mean all day, so a window with nothing set is simply "always".
+SCHEDULE_RULE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("days", default=list): [vol.In(DAYS)],
+        vol.Optional("start", default=""): str,
+        vol.Optional("end", default=""): str,
+    }
+)
+
 SCHEDULE_SCHEMA = vol.Schema(
     {
-        # Empty means every day, and empty times mean all day, so a role with
-        # no schedule at all validates to one that is always in force.
+        vol.Optional("rules", default=list): [SCHEDULE_RULE_SCHEMA],
+        # The original shape, a single window written inline. Kept so roles
+        # saved before there could be more than one keep working, and read as
+        # one entry in the list.
         vol.Optional("days", default=list): [vol.In(DAYS)],
         vol.Optional("start", default=""): str,
         vol.Optional("end", default=""): str,
@@ -186,20 +198,46 @@ def _minutes(value: Any) -> int | None:
     return hour * 60 + minute
 
 
+def schedule_windows(schedule: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return a schedule's windows, including one written in the older shape."""
+    if not schedule:
+        return []
+    windows = [dict(rule) for rule in schedule.get("rules") or []]
+    if schedule.get("days") or schedule.get("start") or schedule.get("end"):
+        windows.append(
+            {
+                "days": list(schedule.get("days") or []),
+                "start": schedule.get("start") or "",
+                "end": schedule.get("end") or "",
+            }
+        )
+    return windows
+
+
 def schedule_active(schedule: dict[str, Any] | None, now: datetime) -> bool:
-    """Return True if a role's schedule puts it in force at `now`.
+    """Return True if any of a role's windows puts it in force at `now`.
+
+    Several windows describe a shape one cannot: "Monday and Tuesday, ten until
+    twelve and three until seven" is two entries, and a role is in force if it
+    is inside any of them. No windows at all means always.
+    """
+    windows = schedule_windows(schedule)
+    if not windows:
+        return True
+    return any(_window_active(window, now) for window in windows)
+
+
+def _window_active(window: dict[str, Any], now: datetime) -> bool:
+    """Return True if one window is open at `now`.
 
     A window whose end is before its start runs through midnight, and the day
     it belongs to is the day it *opened*: "Friday 22:00 to 02:00" is still in
     force at one on Saturday morning, and is not in force at one on Friday
     morning. Getting that backwards is the whole difficulty here.
     """
-    if not schedule:
-        return True
-
-    days = schedule.get("days") or []
-    start = _minutes(schedule.get("start"))
-    end = _minutes(schedule.get("end"))
+    days = window.get("days") or []
+    start = _minutes(window.get("start"))
+    end = _minutes(window.get("end"))
     minute_of_day = now.hour * 60 + now.minute
 
     if start is None and end is None:

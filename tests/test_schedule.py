@@ -22,6 +22,7 @@ from custom_components.ha_rbac.policy import (
     Permissions,
     compile_role,
     schedule_active,
+    schedule_windows,
 )
 
 # A Wednesday, so the weekday cases are not accidentally symmetric.
@@ -114,16 +115,18 @@ def test_an_unreadable_time_is_ignored_rather_than_obeyed(value: str) -> None:
 def test_the_schema_accepts_a_schedule_and_defaults_it_away() -> None:
     """Roles written before schedules existed still validate."""
     role = ROLE_SCHEMA({"id": "r", "name": "R"})
-    assert role["schedule"] == {"days": [], "start": "", "end": ""}
+    assert schedule_windows(role["schedule"]) == []
 
     scheduled = ROLE_SCHEMA(
         {
             "id": "r",
             "name": "R",
-            "schedule": {"days": ["sat", "sun"], "start": "08:00", "end": "20:00"},
+            "schedule": {
+                "rules": [{"days": ["sat", "sun"], "start": "08:00", "end": "20:00"}]
+            },
         }
     )
-    assert scheduled["schedule"]["days"] == ["sat", "sun"]
+    assert scheduled["schedule"]["rules"][0]["days"] == ["sat", "sun"]
 
 
 def test_the_schema_refuses_a_day_that_is_not_one() -> None:
@@ -243,3 +246,76 @@ async def test_an_expired_role_does_not_fall_back_to_the_home_assistant_group(
     permissions = evaluator.async_permissions(user)
     assert permissions.full_access is False
     assert permissions.check_entity("light.a", POLICY_READ) is False
+
+
+def test_two_windows_on_the_same_days() -> None:
+    """The shape a single window cannot describe: Mon and Tue, 10-12 and 15-19."""
+    schedule = {
+        "rules": [
+            {"days": ["mon", "tue"], "start": "10:00", "end": "12:00"},
+            {"days": ["mon", "tue"], "start": "15:00", "end": "19:00"},
+        ]
+    }
+    assert schedule_active(schedule, _at(MON, 11)) is True
+    assert schedule_active(schedule, _at(MON, 16)) is True
+    assert schedule_active(schedule, _at(TUE, 11)) is True
+    # The gap between them, and the hours either side.
+    assert schedule_active(schedule, _at(MON, 13)) is False
+    assert schedule_active(schedule, _at(MON, 9)) is False
+    assert schedule_active(schedule, _at(MON, 20)) is False
+    # A day that is in neither.
+    assert schedule_active(schedule, _at(WED_D, 11)) is False
+
+
+def test_windows_may_differ_by_day() -> None:
+    """Which is why each window carries its own days rather than sharing one set."""
+    schedule = {
+        "rules": [
+            {
+                "days": ["mon", "tue", "wed", "thu", "fri"],
+                "start": "09:00",
+                "end": "17:00",
+            },
+            {"days": ["sat", "sun"], "start": "10:00", "end": "22:00"},
+        ]
+    }
+    assert schedule_active(schedule, _at(WED_D, 16)) is True
+    assert schedule_active(schedule, _at(WED_D, 20)) is False
+    assert schedule_active(schedule, _at(SAT, 20)) is True
+    assert schedule_active(schedule, _at(SAT, 9)) is False
+
+
+def test_one_window_running_past_midnight_among_several() -> None:
+    """The wrap still belongs to the day it opened when it is not the only rule."""
+    schedule = {
+        "rules": [
+            {"days": ["mon"], "start": "09:00", "end": "12:00"},
+            {"days": ["fri"], "start": "22:00", "end": "02:00"},
+        ]
+    }
+    assert schedule_active(schedule, _at(MON, 10)) is True
+    assert schedule_active(schedule, _at(SAT, 1)) is True, "Friday night's tail"
+    assert schedule_active(schedule, _at(MON, 1)) is False, "not Sunday night's"
+
+
+def test_a_schedule_written_in_the_older_single_window_shape_still_works() -> None:
+    """Roles saved before a schedule could hold more than one window."""
+    legacy = {"days": ["sat"], "start": "10:00", "end": "18:00"}
+    assert schedule_windows(legacy) == [
+        {"days": ["sat"], "start": "10:00", "end": "18:00"}
+    ]
+    assert schedule_active(legacy, _at(SAT, 12)) is True
+    assert schedule_active(legacy, _at(SAT, 19)) is False
+
+
+def test_an_old_window_and_new_ones_are_both_honoured() -> None:
+    """A role edited after an upgrade must not silently lose its original hours."""
+    schedule = {
+        "days": ["sat"],
+        "start": "10:00",
+        "end": "12:00",
+        "rules": [{"days": ["sun"], "start": "14:00", "end": "16:00"}],
+    }
+    assert schedule_active(schedule, _at(SAT, 11)) is True
+    assert schedule_active(schedule, _at(SUN, 15)) is True
+    assert schedule_active(schedule, _at(SAT, 15)) is False

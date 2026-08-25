@@ -140,7 +140,27 @@ const STYLES = `
             grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
   .checks ha-formfield { display: flex; align-items: center; min-height: 40px; }
   /* Seven three-letter labels do not need the width an app name does. */
-  #days { grid-template-columns: repeat(auto-fit, minmax(84px, 96px)); }
+  /* A time picker is hh:mm, a meridiem dropdown and a clear button, which is
+     wider than it looks; four controls abreast clipped it. Days take the first
+     line with the remove button, the two times share the second. */
+  .srule {
+    display: grid; gap: 12px 16px; align-items: start;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 48px;
+    grid-template-areas: "days days remove" "from until .";
+    padding: 12px 0 12px 12px;
+    border-inline-start: 2px solid var(--divider-color);
+    border-bottom: 1px solid var(--divider-color);
+    margin-bottom: 16px;
+  }
+  .srule:last-of-type { border-bottom: 0; }
+  @media (max-width: 700px) {
+    .srule { grid-template-columns: minmax(0, 1fr) 48px;
+             grid-template-areas: "days remove" "from from" "until until"; }
+  }
+  .srule .f-days { grid-area: days; }
+  .srule .f-from { grid-area: from; }
+  .srule .f-until { grid-area: until; }
+  .srule .f-remove { grid-area: remove; justify-self: end; }
   ha-alert { display: block; margin-bottom: 16px; }
   ha-expansion-panel { margin-top: 24px; }
 `;
@@ -164,6 +184,25 @@ function valueOf(access) {
   if (access === "control") return { read: true, control: true };
   if (access === "read") return { read: true };
   return {};
+}
+
+/** Read a role's schedule into editable rows, whichever shape it is stored in. */
+function readSchedule(role) {
+  const schedule = role.schedule || {};
+  const rules = (schedule.rules || []).map((rule) => ({
+    days: [...(rule.days || [])],
+    start: rule.start || "",
+    end: rule.end || "",
+  }));
+  // The original shape held one window inline. Show it as the first row.
+  if ((schedule.days || []).length || schedule.start || schedule.end) {
+    rules.unshift({
+      days: [...(schedule.days || [])],
+      start: schedule.start || "",
+      end: schedule.end || "",
+    });
+  }
+  return rules;
 }
 
 /** Read a role's attribute section into editable rows. */
@@ -329,11 +368,7 @@ class HaRbacPanel extends HTMLElement {
           ...role,
           ...readRules(role),
           appDenied: [...((role.apps || {}).deny || [])],
-          schedule: {
-            days: [...((role.schedule || {}).days || [])],
-            start: (role.schedule || {}).start || "",
-            end: (role.schedule || {}).end || "",
-          },
+          schedule: readSchedule(role),
           tierAllow: [...((role.tiers || {}).allow || [])],
           tierDeny: [...((role.tiers || {}).deny || [])],
           attrRules: readAttributeRules(role),
@@ -485,21 +520,15 @@ class HaRbacPanel extends HTMLElement {
       <div class="field" id="tier-host"></div>
 
       <h3>When this role applies</h3>
-      <p class="hint">Leave it alone and the role is always in force. Give it
-        days or hours and it applies only then; outside them the person holds
-        no role at all, which means no access rather than their old access. An
-        end before the start runs through midnight, so 22:00 to 06:00 is the
-        night.</p>
-      <div class="checks" id="days">${DAYS.map(
-        (day) => `<ha-formfield label="${esc(day.label)}">
-          <ha-checkbox data-day="${esc(day.value)}"
-            ${draft.schedule.days.includes(day.value) ? "checked" : ""}
-            ${locked ? "disabled" : ""}></ha-checkbox>
-        </ha-formfield>`
-      ).join("")}</div>
-      <div class="grid2">
-        <div id="from-host"></div>
-        <div id="until-host"></div>
+      <p class="hint">Leave this empty and the role is always in force. Add a
+        window and it applies only inside it; add several and any one of them is
+        enough, so "Monday and Tuesday, 10:00 to 12:00 and 15:00 to 19:00" is two
+        rows. Outside them the person holds no role at all, which means no access
+        rather than their old access. An end before the start runs through
+        midnight, so 22:00 to 06:00 is the night.</p>
+      <div id="schedule"></div>
+      <div class="actions">
+        <ha-button id="add-window" ${locked ? "disabled" : ""}>Add a window</ha-button>
       </div>
 
       <ha-expansion-panel header="Advanced">
@@ -520,17 +549,6 @@ class HaRbacPanel extends HTMLElement {
         <span class="spacer"></span>
         <ha-button id="delete" ${locked ? "disabled" : ""}>Delete</ha-button>
       </div>`;
-
-    host.querySelector("#from-host").appendChild(
-      this._time(draft.schedule.start, "From", locked, (value) => {
-        this._draft.schedule.start = value;
-      })
-    );
-    host.querySelector("#until-host").appendChild(
-      this._time(draft.schedule.end, "Until", locked, (value) => {
-        this._draft.schedule.end = value;
-      })
-    );
 
     host.querySelector("#adv-allow").appendChild(
       this._multiline(draft.tierAllow.join("\n"), "Always allow (one pattern per line)", locked, (value) => {
@@ -574,6 +592,7 @@ class HaRbacPanel extends HTMLElement {
       )
     );
 
+    this._mountSchedule(host.querySelector("#schedule"), locked);
     this._mountRules(host.querySelector("#rules"), locked);
     this._mountAttrRules(host.querySelector("#attr-rules"), locked);
   }
@@ -587,6 +606,53 @@ class HaRbacPanel extends HTMLElement {
     this._draft.rules.forEach((rule, index) => {
       host.appendChild(this._ruleRow(rule, index, locked));
     });
+  }
+
+  _mountSchedule(host, locked) {
+    host.innerHTML = "";
+    if (!this._draft.schedule.length) {
+      host.innerHTML = `<p class="hint">Always in force.</p>`;
+      return;
+    }
+    this._draft.schedule.forEach((window, index) => {
+      host.appendChild(this._windowRow(window, index, locked));
+    });
+  }
+
+  _windowRow(window, index, locked) {
+    const row = document.createElement("div");
+    row.className = "srule";
+
+    const days = document.createElement("ha-selector");
+    days.hass = this._hass;
+    days.selector = { select: { multiple: true, options: DAYS } };
+    days.label = "Days (any if empty)";
+    days.required = false;
+    days.value = window.days.slice();
+    days.disabled = locked;
+    days.addEventListener("value-changed", (event) => {
+      event.stopPropagation();
+      const value = event.detail.value;
+      window.days = Array.isArray(value) ? value : value ? [value] : [];
+    });
+
+    const from = this._time(window.start, "From", locked, (value) => {
+      window.start = value;
+    });
+    const until = this._time(window.end, "Until", locked, (value) => {
+      window.end = value;
+    });
+    const remove = this._removeButton(locked, () => {
+      this._draft.schedule.splice(index, 1);
+      this._mountSchedule(this.shadowRoot.getElementById("schedule"), locked);
+    });
+
+    days.classList.add("f-days");
+    from.classList.add("f-from");
+    until.classList.add("f-until");
+    remove.classList.add("f-remove");
+    row.append(days, from, until, remove);
+    return row;
   }
 
   _mountAttrRules(host, locked) {
@@ -903,6 +969,10 @@ class HaRbacPanel extends HTMLElement {
     on("delete", () => this._deleteRole());
     on("save-bindings", () => this._saveBindings());
     on("load-denials", () => this._loadDenials());
+    on("add-window", () => {
+      this._draft.schedule.push({ days: [], start: "", end: "" });
+      this._mountSchedule(root.getElementById("schedule"), false);
+    });
     on("add-attr", () => {
       this._draft.attrRules.push({ target: "domains", ids: [], names: [] });
       this._mountAttrRules(root.getElementById("attr-rules"), false);
@@ -938,11 +1008,14 @@ class HaRbacPanel extends HTMLElement {
           })),
       },
       schedule: {
-        days: [...root.querySelectorAll("[data-day]")]
-          .filter((box) => box.checked)
-          .map((box) => box.dataset.day),
-        start: this._draft.schedule.start,
-        end: this._draft.schedule.end,
+        // Written as a list, and the older inline window is cleared so a role
+        // saved after an upgrade does not carry both shapes at once.
+        rules: this._draft.schedule.filter(
+          (window) => window.days.length || window.start || window.end
+        ),
+        days: [],
+        start: "",
+        end: "",
       },
       apps: {
         allow: [],
