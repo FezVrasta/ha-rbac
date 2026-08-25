@@ -25,10 +25,10 @@
 
 > ### ⚠️ This is an alpha
 >
-> It works, it's tested, and it's been through review and a round of trying to
+> It works, it's tested, and it's survived a round of deliberately trying to
 > break it. But it's new, and it hasn't lived in real houses yet.
-> **Don't make it the only thing standing between someone and your front door
-> yet.** Try it, break it, and
+> **Don't make it the only thing between someone and your front door yet.**
+> Try it, break it, and
 > [tell me what happened](https://github.com/FezVrasta/ha-rbac/issues).
 
 ---
@@ -38,18 +38,16 @@
 Home Assistant has two kinds of user: **administrator**, and **everyone else**.
 
 That's the whole model. "Everyone else" still sees every device in your home —
-every camera, every lock, every sensor. There's no way to hand your house guest a
+every camera, every lock, every sensor. There's no way to hand a house guest a
 dashboard with just the living room lights on it, or to give your kid a tablet
 that can't unlock the front door.
 
 ## What you can control
 
-Three things, set per role:
+### 🏠 Entities — what they see and touch
 
-### 🏠 Entities — what they can see and touch
-
-Pick **no access**, **read**, or **read and control**, as a baseline plus
-exceptions. Target them however you already think about your house:
+**No access**, **read**, or **read and control**, as a baseline plus exceptions.
+Target them however you already think about your house:
 
 | | |
 | --- | --- |
@@ -74,11 +72,11 @@ reports. Often that's more than you meant to share:
 | **Identifiers** | serial numbers, device IDs, account names |
 | **Noise** | diagnostics and internals nobody needs to read |
 
-Name the attributes and the entities they apply to. Rules are targeted the same
-way entity rules are, so hiding `latitude` on people and trackers leaves the
-zones that define where home is working normally.
+Rules name both the attributes and the entities they apply to, so hiding
+`latitude` on people and trackers leaves the zones that define where home is
+working normally.
 
-Hidden attributes are gone from the dashboard, the state API, history, the live
+Hidden attributes are gone from the dashboard, the state API, history, live
 updates, and templates.
 
 ### 📱 Apps, dashboards and add-ons — where they can go
@@ -92,25 +90,24 @@ Everything in the sidebar, ticked or unticked:
 | **Built-in screens** | Energy, History, Logbook, Map, Media, To-do |
 | **Custom panels** | anything else that shows up there |
 
-Home Assistant treats all of these as the same kind of thing, so this integration
-does too — one list, read from your instance, whatever you happen to have
-installed.
+Home Assistant treats all of these as the same kind of thing, so this does too —
+one list, read from your instance, whatever you happen to have installed.
 
 ### ⚙️ Commands — what they can change
 
-**Ordinary use** or **everything, including settings and configuration**. The
-administrative half is recognised from Home Assistant's own markings rather than
-a list here, so it stays right as Home Assistant grows.
+**Ordinary use**, or **everything including settings**. Which half is which is
+read from Home Assistant's own markings rather than a list kept here, so it
+stays right as Home Assistant grows.
 
 ---
 
-### And the parts that make it usable
+And the parts that make it usable:
 
 🙈 **Hidden means hidden.** A restricted entity isn't greyed out — it isn't in
 the dashboard, the search, the history, or the API. As far as that person's Home
 Assistant is concerned, it doesn't exist.
 
-🖱️ **No YAML.** Everything above is done in a normal Home Assistant panel.
+🖱️ **No YAML.** All of the above is done in a normal Home Assistant panel.
 
 🏠 **Your setup is untouched.** No core files patched, no automations rewritten,
 no entities renamed. Uninstall and everything is exactly as it was.
@@ -134,7 +131,7 @@ see what and why.
 <tr>
 <td width="50%">
 <img src="screenshots/panel-roles.jpg" alt="The role editor">
-<p align="center"><em>"Read everything, except the locks. And don't show me where anyone is." Every rule picks what it applies to.</em></p>
+<p align="center"><em>"Read everything, except the locks. And don't show me where anyone is."</em></p>
 </td>
 <td width="50%">
 <img src="screenshots/panel-denials.jpg" alt="The denials log">
@@ -149,68 +146,98 @@ It sits in front of Home Assistant and reads everything going past. When your
 guest's browser asks for the state of the house, it answers — minus the parts
 they're not allowed to see. When it asks to unlock a door, it says no.
 
-The clever part is that it doesn't ship a list of what's dangerous. Home
-Assistant already marks its own administrative features, and this reads those
-markings live, on your instance, with your integrations installed. That's why it
-doesn't need updating every time Home Assistant does.
+The useful part is that it ships no list of what's dangerous. Home Assistant
+already marks its own administrative features, and this reads those markings
+live, on your instance, with your integrations installed. That's why it doesn't
+need updating every time Home Assistant does.
 
-There's a longer explanation in [docs/DESIGN.md](docs/DESIGN.md) if you want it.
+Longer version in [docs/DESIGN.md](docs/DESIGN.md).
 
-## Before you install
+## Install
 
-This works by sitting in front of Home Assistant, so Home Assistant has to stop
-answering the door itself. **One setting, and it matters** — skip it and this
-does nothing at all, because anyone can just knock on the old door. It warns you
-at startup if you forget.
+### 1. Add the integration
 
-> **On recent Home Assistant versions, `http:` in `configuration.yaml` no
-> longer applies** once Home Assistant has migrated that config into its own
-> store, which it does on first start. (Verified on 2026.8; the change
-> landed in mid-2026.) Editing the YAML afterwards changes
-> nothing and raises a repair issue saying so; the setting is due to be removed
-> in 2027.2. Set it through Home Assistant's HTTP settings instead — the
-> `http/config/configure` websocket command takes the same keys, stages the
-> change as a trial, and reverts it automatically if it locks you out. The YAML
-> below is still correct for older versions and for a first start on a fresh
-> install.
+**With HACS:**
 
-### Recommended: keep everyone on `:8123`
+<a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=FezVrasta&repository=ha-rbac&category=integration"><img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Open your Home Assistant instance and open this repository inside the Home Assistant Community Store."></a>
 
-Move Home Assistant to a port only this integration can reach, and let it answer
-on the address everyone already uses:
+That button adds this as a custom repository in your own Home Assistant. Then
+**Download**, and restart. By hand instead: HACS → ⋮ → *Custom repositories* →
+paste `https://github.com/FezVrasta/ha-rbac`, category **Integration**.
 
-```yaml
-# configuration.yaml
-http:
-  server_host: 127.0.0.1
-  server_port: 8124
+**Without HACS:** copy `custom_components/ha_rbac` into your
+`config/custom_components` and restart.
+
+Then add **Access Control** from Settings → Devices & Services.
+
+Nothing changes until you give someone a role, so it's safe to install and look
+around first.
+
+### 2. Close Home Assistant's own door
+
+**This step is the one that matters.** This works by standing in front of Home
+Assistant, so Home Assistant has to stop answering directly — otherwise anyone
+can walk straight around it with the login they already have. It warns you at
+startup if you skip it.
+
+What you want is Home Assistant listening on `127.0.0.1:8124`, and this
+integration — which defaults to exactly that — answering on `8123`, the address
+everyone already uses. Nothing else changes: bookmarks, the companion app, your
+Google or Alexa setup all keep working, and **nobody gets signed out**, because
+to a browser it is the same address as before. In Docker, keep publishing `8123`
+and don't publish `8124`.
+
+> **Don't reach for `configuration.yaml`.** Recent Home Assistant versions moved
+> the `http` settings into their own store, and YAML is ignored from the first
+> start onwards — it changes nothing and raises a repair issue saying so.
+
+The awkward part is that Home Assistant is mid-migration here: the setting has
+left YAML, and as of 2026.8 the Settings → System → Network page doesn't offer
+it yet. Until it does, set it over the websocket API:
+
+<details>
+<summary><strong>Setting it today (copy-paste)</strong></summary>
+
+<br>
+
+Make a long-lived access token from your profile page, then:
+
+```python
+# pip install aiohttp
+import asyncio, aiohttp
+
+URL   = "http://homeassistant.local:8123"   # where Home Assistant is now
+TOKEN = "paste-your-long-lived-token"
+
+async def main():
+    async with aiohttp.ClientSession() as s:
+        ws = await s.ws_connect(f"{URL}/api/websocket")
+        await ws.receive_json()
+        await ws.send_json({"type": "auth", "access_token": TOKEN})
+        await ws.receive_json()
+        await ws.send_json({"id": 1, "type": "http/config/configure", "config": {
+            "server_host": ["127.0.0.1"], "server_port": 8124}})
+        print(await ws.receive_json())
+
+asyncio.run(main())
 ```
 
-Nothing else changes. Bookmarks, the companion app, your Google or Alexa setup,
-anything talking to `:8123` — all of it keeps working, and **nobody gets signed
-out**, because as far as browsers are concerned it is the same address as before.
+Home Assistant restarts and comes back on `127.0.0.1:8124`, with this
+integration answering on `8123`. The change is staged as a **trial** and reverts
+itself if it locks you out, so once you have checked you can still sign in,
+confirm it by sending `{"id": 2, "type": "http/config/promote"}` the same way —
+through the proxy this time, since that is the only door left.
 
-In Docker, keep publishing `8123` and don't publish `8124`.
+Send the whole config, not just the host: omitted keys fall back to their
+defaults rather than keeping your current values.
 
-### Alternative: leave Home Assistant where it is
+</details>
 
-If you would rather not move it, keep Home Assistant on `8123` and have people
-visit `:8124` instead:
-
-```yaml
-# configuration.yaml
-http:
-  server_host: 127.0.0.1
-```
-
-The catch is that `:8124` is a different address to a browser, so everyone signs
-in once more, and anything pointed at `:8123` needs updating.
-
-> **Either way, if this integration stops loading, Home Assistant is only
-> reachable from the machine it runs on.** That is deliberate — it fails closed
-> rather than throwing the doors open — but it means keeping a way in:
-> `ssh -L 8124:127.0.0.1:8124 your-ha-host` and browse `localhost:8124`. Set that
-> up before you need it.
+> **If this integration ever fails to load, Home Assistant is reachable only
+> from its own machine.** That's deliberate — it fails closed rather than
+> throwing the doors open — but keep a way in:
+> `ssh -L 8124:127.0.0.1:8124 your-ha-host`, then browse `localhost:8124`. Set
+> that up before you need it.
 
 <details>
 <summary><strong>What this protects against, honestly</strong></summary>
@@ -221,56 +248,26 @@ in once more, and anything pointed at `:8123` needs updating.
 see or touch what their role forbids, from a browser, the app, or the API.
 
 **It doesn't hold** against someone with a login *on the machine Home Assistant
-runs on*. Anyone with a shell there can read Home Assistant's own credential
-store and impersonate you — that beats Home Assistant's security, not just this.
+runs on*. Anyone with a shell there can read Home Assistant's credential store
+and impersonate you — that beats Home Assistant's own security, not just this.
 If that's a person in your house, don't give them a shell account.
 
-**Home Assistant OS and Supervised users:** add-ons talk to Home Assistant
-through a private channel that nothing can sit in front of, so any add-on you
-install is outside this — an add-on with API access can do what it likes
-regardless of anyone's role. The loopback hardening itself works fine here:
-Supervisor reaches Home Assistant over a Unix socket, not the network port, so
-binding Home Assistant to `127.0.0.1` does not cut Supervisor off.
+**On Home Assistant OS and Supervised**, add-ons talk to Home Assistant through
+a private channel nothing can sit in front of, so an add-on with API access can
+do as it likes regardless of anyone's role. The loopback setting above is fine
+here, though: Supervisor reaches Home Assistant over a Unix socket rather than
+the network port.
 
 Full detail in [docs/DESIGN.md](docs/DESIGN.md).
 
 </details>
 
-## Install
-
-It reads a few Home Assistant internals to work out what is administrative, so
-it checks at startup whether it can still make sense of them — and refuses to
-enforce rather than guessing if it can't. Recent versions only; the CI badge
-above shows what it's currently built against.
-
-### With HACS
-
-<a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=FezVrasta&repository=ha-rbac&category=integration"><img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Open your Home Assistant instance and open this repository inside the Home Assistant Community Store."></a>
-
-That button adds this as a custom repository in your own Home Assistant. Then
-**Download**, and restart.
-
-Doing it by hand instead: HACS → ⋮ → *Custom repositories* → paste
-`https://github.com/FezVrasta/ha-rbac`, category **Integration**.
-
-### Without HACS
-
-Copy `custom_components/ha_rbac` into your `config/custom_components` and
-restart.
-
-Then add **Access Control** from Settings → Devices & Services. The ports it
-offers match the recommended layout above; change them if you chose the
-alternative.
-
-Nothing changes until you assign someone a role, so it's safe to install and
-look around first.
-
 ## Your first role
 
 1. Open **Access Control** in the sidebar.
 2. **Clone** *Read only*, name it something like *Guest*, and add the areas or
-   domains you want to hide as exceptions. Untick any apps, dashboards or
-   add-ons they shouldn't reach.
+   domains to hide as exceptions. Untick any apps, dashboards or add-ons they
+   shouldn't reach.
 3. Go to **Users**, pick the person, choose the role, save.
 
 <p align="center">
@@ -282,27 +279,20 @@ Have them reload, and their Home Assistant is now smaller.
 Anyone without a role keeps exactly the access Home Assistant already gave them,
 so you can roll this out one person at a time.
 
-### Locked yourself out?
-
-You can't lock the owner account out — that's built in and can't be changed from
-the panel. Failing that, tunnel to Home Assistant itself:
-`ssh -L 8124:127.0.0.1:8124 your-ha-host`, then browse `localhost:8124` for plain
-unfiltered Home Assistant. (Swap the port if you chose the alternative layout.)
+**Locked yourself out?** You can't lock out the owner account — that's built in
+and can't be changed from the panel. Failing that, use the SSH tunnel from the
+install step for plain, unfiltered Home Assistant.
 
 ## What it can't do yet
 
-- **Automations aren't affected.** They run as the system, not as a person, so an
-  automation can still touch anything. Same as stock Home Assistant.
-- **Denying an add-on hides it, but doesn't pretend it was never installed.**
-  Add-on control now runs against a real Supervised install with real add-ons:
-  a denied add-on leaves the sidebar, its Supervisor endpoints are refused, it
-  is dropped from the add-on and panel listings, and its own web page is
-  refused even to someone who already knows its address. What it does not do is
-  erase every trace — Supervisor still knows it is installed, and someone
-  determined can tell that something is being withheld.
-- **Hiding an app hides it well, but a determined person knows what exists.**
-  A denied dashboard is gone from the sidebar and its config is refused; it does
-  not pretend the URL was never there.
+- **Automations aren't affected.** They run as the system, not as a person, so
+  an automation can still touch anything. Same as stock Home Assistant.
+- **Hiding something hides it well, but doesn't rewrite history.** A denied
+  dashboard is gone from the sidebar and its config is refused; a denied add-on
+  leaves the sidebar, its Supervisor endpoints are refused, it's dropped from
+  the add-on listings, and its own web page is refused even to someone who
+  knows its address. What none of it does is pretend the thing was never
+  installed — someone determined can still tell something is being withheld.
 
 ## Contributing
 
