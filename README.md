@@ -30,6 +30,11 @@ give your kid a tablet that can't open the front door.
 
 This adds roles. You decide what each one can see and do, then hand them out.
 
+It isn't only for people. Point an **AI assistant or agent** at Home Assistant
+through its own restricted login and it's held to the same role — it reads and
+changes exactly what you allowed, and nothing else. A useful fence to put around
+what an LLM can do in your home.
+
 ## What a role decides
 
 | | |
