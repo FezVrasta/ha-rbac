@@ -183,7 +183,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             proxy_port,
             proxy_port,
         )
-        hass.async_create_task(hass.services.async_call(HA_DOMAIN, SERVICE_RESTART))
+        # Not held open as a task: Home Assistant warns that the call
+        # outlived the shutdown it asked for, and there is nothing to wait
+        # for -- the answer arrives as the process going away.
+        await hass.services.async_call(HA_DOMAIN, SERVICE_RESTART, blocking=False)
         return True
 
     async def _confirm_move() -> None:
@@ -239,6 +242,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _start_proxy_later(event: Event) -> None:
         """Start on the started event, where nothing can catch a raise."""
+        # Home Assistant removes a one-time listener when it fires, so calling
+        # its unsubscribe afterwards asks for something that is already gone.
+        # That is caught and logged upstream rather than raised, so it breaks
+        # nothing -- it just puts an ERROR and a traceback in the log of every
+        # shutdown, which is a bad way to spend a user's attention.
+        if started in data.unsubscribes:
+            data.unsubscribes.remove(started)
         try:
             await _start_proxy(event)
         except OSError:
@@ -250,9 +260,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except OSError as err:
             raise ConfigEntryNotReady(_port_taken()) from err
     else:
-        data.unsubscribes.append(
-            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _start_proxy_later)
+        started = hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STARTED, _start_proxy_later
         )
+        data.unsubscribes.append(started)
 
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True

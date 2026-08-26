@@ -6,6 +6,7 @@ only failure mode that matters.
 """
 
 import json
+import socket
 from collections import OrderedDict
 from fnmatch import fnmatch
 from typing import Any
@@ -19,13 +20,22 @@ from homeassistant.auth.permissions.const import (
     SUBCAT_ALL,
 )
 from homeassistant.auth.permissions.models import PermissionLookup
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.ha_rbac import async_setup_entry, async_unload_entry
 from custom_components.ha_rbac.catalog import Catalog, build_routes
 from custom_components.ha_rbac.const import (
+    CONF_BIND_ADDRESS,
+    CONF_PROXY_PORT,
+    CONF_UPSTREAM_HOST,
+    CONF_UPSTREAM_PORT,
+    DATA_RBAC,
+    DOMAIN,
     ROLE_READ_ONLY,
     ROLE_USER,
     TIER_ADMIN,
@@ -1207,3 +1217,56 @@ async def test_denying_settings_leaves_the_registries_readable(
     )
     assert blocked.allowed is False
     assert blocked.reason == REASON_APP
+
+
+async def test_a_fired_one_time_listener_is_not_unsubscribed_again(
+    hass: HomeAssistant, socket_enabled: None
+) -> None:
+    """Every shutdown logged an ERROR and a traceback that meant nothing.
+
+    The proxy start is deferred to the started event with a *one-time*
+    listener, and Home Assistant removes one of those when it fires. Its
+    unsubscribe was kept alongside the ordinary ones and called again on
+    unload, asking for something already gone. Home Assistant catches that and
+    logs it, so nothing broke -- but an ERROR with a stack trace on a clean
+    shutdown is the kind of thing people quite reasonably open issues about.
+    """
+    for domain in ("http", "websocket_api"):
+        await async_setup_component(hass, domain, {"http": {}})
+    await hass.async_block_till_done()
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_PROXY_PORT: _free_port(),
+            CONF_BIND_ADDRESS: "127.0.0.1",
+            CONF_UPSTREAM_HOST: "127.0.0.1",
+            CONF_UPSTREAM_PORT: _free_port(),
+        },
+    )
+    entry.add_to_hass(hass)
+
+    # `not_running`, not `starting`: `hass.is_running` is true for both
+    # `starting` and `running`, so setting up while starting takes the
+    # immediate path and never registers the listener this is about.
+    hass.set_state(CoreState.not_running)
+    assert await async_setup_entry(hass, entry)
+    deferred = len(hass.data[DATA_RBAC].unsubscribes)
+
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+    hass.set_state(CoreState.running)
+
+    assert hass.data[DATA_RBAC].proxy is not None, "precondition: it started"
+    assert len(hass.data[DATA_RBAC].unsubscribes) == deferred - 1, (
+        "the listener that has already fired must not be unsubscribed again"
+    )
+
+    assert await async_unload_entry(hass, entry)
+
+
+def _free_port() -> int:
+    """Return an unused TCP port."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
