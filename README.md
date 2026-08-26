@@ -248,11 +248,10 @@ Home Assistant restarts once. It comes back on `8123` about fifteen seconds
 later, filtering.
 
 > [!NOTE]
-> If it does not come back, Home Assistant puts the old settings back by itself
-> within five minutes and restarts again on the port it was on before. The move
-> is only made permanent once this integration has answered a real request
-> through the new setup, so a broken install undoes itself rather than locking
-> you out.
+> If it does not come back, Home Assistant undoes the change within five
+> minutes and restarts again on the port it was on before. The move is only
+> made permanent once this integration has answered a real request through the
+> new setup.
 
 > [!NOTE]
 > Nothing changes for anyone until you give someone a role, so it is safe to
