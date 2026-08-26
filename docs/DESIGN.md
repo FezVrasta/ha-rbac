@@ -160,6 +160,35 @@ permissions are cached on the user *and* on which of their roles are currently
 in force, and a websocket re-resolves them per frame. A connection stays open
 for hours, which is the same span a schedule covers.
 
+## Recording what a role needs
+
+Writing a role blind is the hard way round: restrict something, hand it over,
+and find out days later that a dashboard is empty. So a role can be put into
+recording. While it runs, its holders skip every gate and each request is noted
+instead of judged -- the same extraction the resource gate performs, used to
+write down rather than to refuse. Responses are not filtered either, since a
+recording that trimmed them would be recording a smaller Home Assistant than
+the one the person is actually using.
+
+The check sits *above* the gates on purpose. A recording that only saw what the
+role already allows would tell nobody anything; the point is to learn what it
+was missing, and a refused request never says what it wanted.
+
+What comes out is only ever additive. A recording says what was needed, never
+what was not: an entity nobody happened to open while it ran has not been shown
+to be unnecessary, so nothing it produces can take access away.
+
+Two consequences of it being a temporary grant of full access. It is loud --
+the panel carries a warning while it runs and the log says so at the start. And
+it lives in memory only, so a restart or an unload ends every recording and the
+role goes back to its own rules. That loses the notes, which is the cheaper of
+the two failures: persisting the flag would mean a crash mid-recording left a
+role unrestricted with nobody watching.
+
+The app match is shared with the app gate rather than reimplemented, because
+the recording needs the same answer for the opposite purpose. Two copies that
+had to agree would be the defect, not the duplication.
+
 ## Add-on ingress
 
 `HassIOIngress` sets `requires_auth = False`, so an add-on's own web page

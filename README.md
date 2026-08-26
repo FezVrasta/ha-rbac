@@ -117,6 +117,12 @@ Have them reload. Their Home Assistant is now smaller.
 Nothing changes for anyone until you give them a role, so you can do this one
 person at a time.
 
+Not sure what to allow? Hit **Record what this role needs**, let them use Home
+Assistant normally for a few minutes, and stop. Everything they touched is added
+to the role, so you build it from what they actually use instead of guessing and
+then chasing what broke. While it records they have full access, and the panel
+says so.
+
 ## Good to know
 
 **You can't lock yourself out.** The owner account always keeps full access.

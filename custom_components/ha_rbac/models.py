@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from .denylog import DenyLog
     from .policy import Evaluator
     from .proxy import RbacProxy
+    from .record import Recorder
     from .store import RbacStore
 
 
@@ -22,6 +23,7 @@ class RbacData:
     evaluator: "Evaluator"
     decider: "Decider"
     denylog: "DenyLog"
+    recorder: "Recorder"
     dashboard_entities: "DashboardEntities | None" = None
     proxy: "RbacProxy | None" = None
     unsubscribes: list[Any] = field(default_factory=list)

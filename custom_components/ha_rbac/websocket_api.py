@@ -7,6 +7,7 @@ from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import const as ws_const
 from homeassistant.core import HomeAssistant, callback
 
+from . import record
 from .const import DATA_RBAC, DOMAIN
 
 COMMANDS = (
@@ -17,6 +18,9 @@ COMMANDS = (
     "bindings/list",
     "bindings/set",
     "catalog",
+    "record/start",
+    "record/stop",
+    "record/status",
     "dashboards/refresh",
     "denials/recent",
     "simulate",
@@ -48,6 +52,9 @@ def async_register(hass: HomeAssistant) -> None:
         handle_bindings_list,
         handle_bindings_set,
         handle_catalog,
+        handle_record_start,
+        handle_record_stop,
+        handle_record_status,
         handle_dashboards_refresh,
         handle_denials_recent,
         handle_simulate,
@@ -304,5 +311,95 @@ async def handle_simulate(
             "tier": data.catalog.tier_for(msg["command"]),
             "role_ids": [role.role_id for role in permissions.roles],
             "pass_through": permissions.pass_through,
+        },
+    )
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/record/start",
+        vol.Required("role_id"): str,
+    }
+)
+@callback
+def handle_record_start(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Begin recording what a role's holders need.
+
+    Refused for the predefined roles: a recording ends by writing what it saw
+    into the role, and those cannot be edited.
+    """
+    data = _data(hass)
+    role = data.store.roles.get(msg["role_id"])
+    if role is None:
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, "Unknown role")
+        return
+    if role.get("system_generated"):
+        connection.send_error(
+            msg["id"],
+            websocket_api.ERR_NOT_ALLOWED,
+            f"{msg['role_id']} is a predefined role and cannot be edited",
+        )
+        return
+    connection.send_result(msg["id"], data.recorder.start(msg["role_id"]).as_dict())
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/record/stop",
+        vol.Required("role_id"): str,
+        # Stopping without keeping is how a recording is abandoned.
+        vol.Optional("apply", default=True): bool,
+    }
+)
+@websocket_api.async_response
+async def handle_record_stop(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """End a recording and write what it saw into the role."""
+    data = _data(hass)
+    recording = data.recorder.stop(msg["role_id"])
+    if recording is None:
+        connection.send_error(
+            msg["id"], websocket_api.ERR_NOT_FOUND, "That role is not recording"
+        )
+        return
+
+    seen = recording.as_dict()
+    if not msg["apply"]:
+        connection.send_result(msg["id"], {"applied": False, "seen": seen})
+        return
+
+    role = data.store.roles.get(msg["role_id"])
+    if role is None:
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, "Unknown role")
+        return
+    try:
+        updated = await data.store.async_update_role(
+            msg["role_id"], record.apply(role, recording)
+        )
+    except (KeyError, ValueError, vol.Invalid) as err:
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_ALLOWED, str(err))
+        return
+    connection.send_result(msg["id"], {"applied": True, "seen": seen, "role": updated})
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/record/status"})
+@callback
+def handle_record_status(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return which roles are recording, and what they have seen so far."""
+    recorder = _data(hass).recorder
+    connection.send_result(
+        msg["id"],
+        {
+            role_id: recording.as_dict()
+            for role_id in recorder.active
+            if (recording := recorder.get(role_id)) is not None
         },
     )

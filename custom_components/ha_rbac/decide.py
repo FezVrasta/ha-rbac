@@ -12,7 +12,8 @@ has to be judged up front.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from fnmatch import fnmatch
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.auth.permissions.const import POLICY_CONTROL, POLICY_READ
 from homeassistant.core import HomeAssistant, callback
@@ -27,10 +28,13 @@ from homeassistant.helpers import (
 )
 
 from .catalog import Catalog
-from .const import MAX_WALK_DEPTH, RESOURCE_KEYS, TIER_ADMIN
+from .const import CAPABILITY_PATTERNS, MAX_WALK_DEPTH, RESOURCE_KEYS, TIER_ADMIN
 from .extract import Extracted, entity_ids_in, extract, is_bounded
 from .filters import FilterRegistry
 from .policy import Permissions
+
+if TYPE_CHECKING:
+    from .record import Recorder, Recording
 
 KIND_WS = "ws"
 KIND_HTTP = "http"
@@ -189,12 +193,17 @@ class Decider:
     """Applies the gates to inbound requests."""
 
     def __init__(
-        self, hass: HomeAssistant, catalog: Catalog, filter_registry: FilterRegistry
+        self,
+        hass: HomeAssistant,
+        catalog: Catalog,
+        filter_registry: FilterRegistry,
+        recorder: "Recorder | None" = None,
     ) -> None:
         """Initialise the decider."""
         self._hass = hass
         self._catalog = catalog
         self._filters = filter_registry
+        self._recorder = recorder
 
     @callback
     def decide(
@@ -210,6 +219,15 @@ class Decider:
         #    parse, which is what keeps the proxy cheap for administrators.
         if permissions.full_access:
             return Decision(allowed=True)
+
+        # A role being recorded is unrestricted while the recording runs, and
+        # every request is noted instead of judged. It sits above the gates
+        # deliberately: a recording that only saw what the role already allows
+        # would tell nobody anything.
+        if self._recorder is not None and (
+            recording := self._recorder.for_permissions(permissions)
+        ):
+            return self._observe(recording, kind, name, payload, query)
 
         # If tier derivation has stopped working, every command would look
         # unrestricted. Refuse rather than fail open.
@@ -367,50 +385,65 @@ class Decider:
         if not denied:
             return None
 
-        named = payload.get("url_path")
         for app in denied:
-            url_path = app["url_path"]
-
-            if isinstance(named, str) and named == url_path:
-                return Decision(
-                    allowed=False,
-                    reason=REASON_APP,
-                    detail=f"no access to {app['title']}",
-                )
-
-            if slug := app.get("addon"):
-                endpoint = payload.get("endpoint")
-                if isinstance(endpoint, str) and f"/{slug}" in endpoint:
-                    return Decision(
-                        allowed=False,
-                        reason=REASON_APP,
-                        detail=f"no access to the {app['title']} add-on",
-                    )
+            if not self._app_named(app, kind, name, payload):
                 continue
-
-            # Dashboards all share the `lovelace/` commands, so the prefix rule
-            # would take every dashboard down with one of them. They are covered
-            # by the `url_path` check above instead.
-            if app.get("kind") == DASHBOARD_KIND:
-                continue
-
-            prefix = url_path.replace("-", "_")
-            if kind != KIND_HTTP and name.startswith(f"{prefix}/"):
-                # `config/` is not the Settings panel's own namespace, it is
-                # Home Assistant's namespace for every registry, and the area,
-                # device, entity and floor lists behind it are what any
-                # dashboard reads before it can draw anything at all. Denying
-                # Settings emptied the whole interface. So for this one panel
-                # the convention is narrowed to requests that change something;
-                # its reads are filtered like any other, and the tier gate
-                # already refuses the administrative half outright.
-                if url_path != CONFIG_PANEL or self._is_mutation(kind, name, payload):
-                    return Decision(
-                        allowed=False,
-                        reason=REASON_APP,
-                        detail=f"no access to {app['title']}",
-                    )
+            what = f"the {app['title']} add-on" if app.get("addon") else app["title"]
+            return Decision(
+                allowed=False, reason=REASON_APP, detail=f"no access to {what}"
+            )
         return None
+
+    @callback
+    def _app_named(
+        self, app: dict[str, Any], kind: str, name: str, payload: dict[str, Any]
+    ) -> bool:
+        """Return True if a request reaches into one app.
+
+        Kept apart from the decision because a recording needs the same answer
+        for the opposite purpose: to note which app was opened rather than to
+        refuse it. Two copies of this that had to agree would be the defect,
+        not the duplication.
+        """
+        url_path = app["url_path"]
+
+        named = payload.get("url_path")
+        if isinstance(named, str) and named == url_path:
+            return True
+
+        if slug := app.get("addon"):
+            endpoint = payload.get("endpoint")
+            return isinstance(endpoint, str) and f"/{slug}" in endpoint
+
+        # Dashboards all share the `lovelace/` commands, so the prefix rule
+        # would take every dashboard down with one of them. They are covered by
+        # the `url_path` check above instead.
+        if app.get("kind") == DASHBOARD_KIND:
+            return False
+
+        prefix = url_path.replace("-", "_")
+        if kind != KIND_HTTP and name.startswith(f"{prefix}/"):
+            # `config/` is not the Settings panel's own namespace, it is Home
+            # Assistant's namespace for every registry, and the area, device,
+            # entity and floor lists behind it are what any dashboard reads
+            # before it can draw anything at all. Denying Settings emptied the
+            # whole interface. So for this one panel the convention is narrowed
+            # to requests that change something; its reads are filtered like any
+            # other, and the tier gate already refuses the administrative half
+            # outright.
+            return url_path != CONFIG_PANEL or self._is_mutation(kind, name, payload)
+        return False
+
+    @callback
+    def apps_named(
+        self, kind: str, name: str, payload: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Return every app a request reaches into, denied or not."""
+        return [
+            app
+            for app in self._catalog.apps()
+            if self._app_named(app, kind, name, payload)
+        ]
 
     @callback
     def _decide_service(
@@ -450,6 +483,51 @@ class Decider:
                 detail=f"no control access to the {domain} domain",
             )
         return Decision(allowed=True, filter_response=True)
+
+    @callback
+    def _observe(
+        self,
+        recording: "Recording",
+        kind: str,
+        name: str,
+        payload: dict[str, Any],
+        query: "Mapping[str, str] | None",
+    ) -> Decision:
+        """Note what a request needed and allow it.
+
+        The same extraction the resource gate runs, used to write down rather
+        than to refuse. Nothing is filtered on the way back either -- a
+        recording that trimmed the response would be recording a smaller Home
+        Assistant than the one the person is actually using.
+        """
+        found = extract(payload)
+        method, path = self._split_http(name) if kind == KIND_HTTP else ("", "")
+        if kind == KIND_HTTP:
+            for key, value in self._catalog.path_resources(method, path).items():
+                self._merge_named_resource(found, key, value)
+            for key, value in (query or {}).items():
+                self._merge_query_resource(found, key, value)
+
+        entities = expand_to_entities(self._hass, found)
+        entities |= entity_ids_in(payload, self._entity_exists)
+        key = POLICY_CONTROL if self._is_mutation(kind, name, payload) else POLICY_READ
+        for entity_id in entities:
+            recording.note_entity(entity_id, key)
+
+        for app in self.apps_named(kind, name, payload):
+            recording.apps.add(app["url_path"])
+
+        tier = (
+            self._catalog.tier_for_request(method, path)
+            if kind == KIND_HTTP
+            else self._catalog.tier_for(name)
+        )
+        if tier == TIER_ADMIN:
+            for capability, patterns in CAPABILITY_PATTERNS.items():
+                if any(fnmatch(name, pattern) for pattern in patterns):
+                    recording.capabilities.add(capability)
+
+        return Decision(allowed=True, resources=sorted(entities))
 
     @callback
     def _entity_exists(self, entity_id: str) -> bool:

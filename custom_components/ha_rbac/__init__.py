@@ -54,6 +54,7 @@ from .filters import REGISTRY
 from .models import RbacData
 from .policy import Evaluator
 from .proxy import RbacProxy
+from .record import Recorder
 from .store import RbacStore
 from .util import async_upstream_is_loopback_only
 
@@ -91,7 +92,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     dashboard_entities = DashboardEntities(hass)
     evaluator = Evaluator(hass, store, dashboard_entities.entities_for)
     denylog = DenyLog(hass)
-    decider = Decider(hass, catalog, REGISTRY)
+    recorder = Recorder()
+    decider = Decider(hass, catalog, REGISTRY, recorder)
 
     data = RbacData(
         store=store,
@@ -99,6 +101,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         evaluator=evaluator,
         decider=decider,
         denylog=denylog,
+        recorder=recorder,
     )
     hass.data[DATA_RBAC] = data
 
@@ -316,6 +319,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     data: RbacData | None = hass.data.pop(DATA_RBAC, None)
     if data is None:
         return True
+
+    # A recording is a temporary grant of full access, so it does not
+    # outlive the thing that was granting it.
+    data.recorder.stop_all()
 
     for unsubscribe in data.unsubscribes:
         unsubscribe()

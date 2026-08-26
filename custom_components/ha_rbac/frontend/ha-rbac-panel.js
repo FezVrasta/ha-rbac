@@ -330,6 +330,7 @@ class HaRbacPanel extends HTMLElement {
     this._bindings = [];
     this._denials = [];
     this._catalog = null;
+    this._recording = {};
     this._selected = null;
     this._draft = null;
     this._notice = null;
@@ -413,14 +414,16 @@ class HaRbacPanel extends HTMLElement {
 
   async _refresh(keepDraft = false) {
     try {
-      const [roles, bindings, catalog] = await Promise.all([
+      const [roles, bindings, catalog, recording] = await Promise.all([
         this._call("roles/list"),
         this._call("bindings/list"),
         this._call("catalog"),
+        this._call("record/status"),
       ]);
       this._roles = roles;
       this._bindings = bindings;
       this._catalog = catalog;
+      this._recording = recording || {};
       if (this._urlRole && roles.some((role) => role.id === this._urlRole)) {
         // A link or a reload asked for this one.
         this._selected = this._urlRole;
@@ -688,6 +691,8 @@ class HaRbacPanel extends HTMLElement {
         <ha-button id="delete" ${locked ? "disabled" : ""}>Delete</ha-button>
       </div>`;
 
+    host.insertAdjacentHTML("afterbegin", this._recordSection(locked));
+
     host.querySelector("#adv-allow").appendChild(
       this._multiline(draft.tierAllow.join("\n"), "Always allow (one pattern per line)", locked, (value) => {
         this._draft.tierAllow = value.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -762,6 +767,65 @@ class HaRbacPanel extends HTMLElement {
       box.checked = everything.checked || chosen.includes(box.dataset.cap);
       box.disabled = locked || everything.checked;
     });
+  }
+
+  /**
+   * Writing a role blind means restricting something and finding out days later
+   * that a dashboard is empty. This turns it round: hand the role out, watch
+   * what its holder actually reaches for, and keep that.
+   *
+   * The banner is deliberately hard to ignore. While it runs, everyone holding
+   * the role has full access.
+   */
+  _recordSection(locked) {
+    if (locked) return "";
+    const live = this._recording[this._selected];
+    if (!live) {
+      return `<div class="actions" id="record-idle">
+        <ha-button id="record-start">Record what this role needs</ha-button>
+        <span class="hint">Hand the role out, let them use Home Assistant
+          normally, then stop. Everything they touched is added here.</span>
+      </div>`;
+    }
+    const counts = [
+      [live.entities ? Object.keys(live.entities).length : 0, "entity", "entities"],
+      [live.apps ? live.apps.length : 0, "app", "apps"],
+    ]
+      .filter(([n]) => n)
+      .map(([n, one, many]) => `${n} ${n === 1 ? one : many}`)
+      .join(", ");
+    return `<ha-alert alert-type="warning">
+        <strong>Recording.</strong> Everyone holding this role has full access
+        until you stop, and nothing is being enforced for them. Seen so far:
+        ${esc(counts || "nothing yet")}.
+        <div class="actions">
+          <ha-button id="record-stop">Stop and keep</ha-button>
+          <ha-button id="record-discard">Stop and discard</ha-button>
+        </div>
+      </ha-alert>`;
+  }
+
+  async _record(action) {
+    let message = "";
+    await this._guard(
+      async () => {
+        if (action === "start") {
+          await this._call("record/start", { role_id: this._selected });
+          message = "Recording. Everyone holding this role is unrestricted.";
+          return;
+        }
+        const result = await this._call("record/stop", {
+          role_id: this._selected,
+          apply: action === "keep",
+        });
+        const seen = result.seen || {};
+        const count = seen.entities ? Object.keys(seen.entities).length : 0;
+        message = result.applied
+          ? `Added ${count} ${count === 1 ? "entity" : "entities"} to this role.`
+          : "Recording discarded. The role is unchanged.";
+      },
+      () => message
+    );
   }
 
   /**
@@ -1158,6 +1222,9 @@ class HaRbacPanel extends HTMLElement {
       if (el) el.addEventListener("click", handler);
     };
     on("new-role", () => this._createRole());
+    on("record-start", () => this._record("start"));
+    on("record-stop", () => this._record("keep"));
+    on("record-discard", () => this._record("discard"));
     on("save", () => this._saveRole());
     on("clone", () => this._cloneRole());
     on("delete", () => this._deleteRole());
@@ -1297,7 +1364,10 @@ class HaRbacPanel extends HTMLElement {
         this._notice = { kind: "ok", text: this._pending };
         keepDraft = true;
       } else if (done) {
-        this._notice = { kind: "ok", text: done };
+        this._notice = {
+          kind: "ok",
+          text: typeof done === "function" ? done() : done,
+        };
       }
     } catch (err) {
       this._notice = { kind: "error", text: err.message || String(err) };
