@@ -23,10 +23,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from homeassistant.auth.permissions.const import POLICY_CONTROL, POLICY_READ
-from homeassistant.core import callback
+from homeassistant.auth.permissions.models import PermissionLookup
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
-from .policy import Permissions
+from .policy import Permissions, compile_role
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -176,3 +179,26 @@ def _merged_entities(role: dict[str, object], recording: Recording) -> dict[str,
     entities["entity_ids"] = by_id
     allow["entities"] = entities
     return allow
+
+
+@callback
+def still_blocked(
+    hass: HomeAssistant, role: dict[str, object], recording: Recording
+) -> list[str]:
+    """Return the recorded entities the role still refuses, after applying.
+
+    Granting on the allow side does not always win: within a role a denial
+    vetoes, so an entity recorded under a `deny` rule is added and then
+    immediately overruled. Removing the denial instead would be this feature
+    quietly undoing a decision somebody made on purpose, which is worse -- so
+    it is reported and left to them.
+    """
+    compiled = compile_role(
+        hass, role, PermissionLookup(er.async_get(hass), dr.async_get(hass))
+    )
+    permissions = Permissions(roles=[compiled])
+    return sorted(
+        entity_id
+        for entity_id, key in recording.entities.items()
+        if not permissions.check_entity(entity_id, key)
+    )

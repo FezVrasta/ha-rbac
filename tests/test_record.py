@@ -324,3 +324,33 @@ async def test_a_recording_that_saw_nothing_changes_nothing(
     role = {"id": "r", "name": "R", "allow": {}, "apps": {"deny": ["energy"]}}
     empty = record.Recording(role_id="r", started=None)
     assert record.apply(role, empty) == {}
+
+
+async def test_an_entity_a_denial_still_refuses_is_reported(
+    hass: HomeAssistant,
+) -> None:
+    """Granting on the allow side does not always win, and silence would lie.
+
+    Within a role a denial vetoes, so an entity recorded under one is added and
+    then immediately overruled. Removing the denial would be this feature
+    quietly undoing a decision somebody made on purpose, so it is reported
+    instead and left to them.
+    """
+    role = {
+        "id": "kids",
+        "name": "Kids",
+        "allow": {
+            CAT_ENTITIES: {
+                "entity_ids": {
+                    "lock.front": {POLICY_READ: True},
+                    "light.bed": {POLICY_READ: True},
+                }
+            }
+        },
+        "deny": {CAT_ENTITIES: {"domains": {"lock": True}}},
+    }
+    recording = record.Recording(role_id="kids", started=None)
+    recording.note_entity("lock.front", POLICY_READ)
+    recording.note_entity("light.bed", POLICY_READ)
+
+    assert record.still_blocked(hass, role, recording) == ["lock.front"]

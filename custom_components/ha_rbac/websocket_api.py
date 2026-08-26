@@ -384,7 +384,18 @@ async def handle_record_stop(
     except (KeyError, ValueError, vol.Invalid) as err:
         connection.send_error(msg["id"], websocket_api.ERR_NOT_ALLOWED, str(err))
         return
-    connection.send_result(msg["id"], {"applied": True, "seen": seen, "role": updated})
+    connection.send_result(
+        msg["id"],
+        {
+            "applied": True,
+            "seen": seen,
+            "role": updated,
+            # Adding to the allow side does not always take effect: a denial on
+            # the role vetoes it. Saying which ones beats leaving someone to
+            # find out from a broken dashboard.
+            "blocked": record.still_blocked(hass, updated, recording),
+        },
+    )
 
 
 @websocket_api.require_admin
