@@ -88,21 +88,45 @@ async def test_the_move_is_not_offered_where_it_cannot_be_done(
     assert step["data"][CONF_MANAGE_HTTP] is False
 
 
-async def test_the_proxy_defaults_to_the_port_home_assistant_answers_on(
-    hass: HomeAssistant, flow: RbacConfigFlow
+def _default(step: Any, field: str) -> Any:
+    """Return the default a form offers for one field."""
+    return next(
+        key.default() for key in step["data_schema"].schema if key.schema == field
+    )
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected_proxy", "expected_upstream"),
+    [(80, 80, 8124), (8123, 8123, 8124), (9000, 9000, 8124), (8124, 8124, 8125)],
+    ids=["supervisor-default", "core-default", "chosen-by-hand", "already-on-8124"],
+)
+async def test_the_proxy_is_offered_the_port_home_assistant_answers_on(
+    hass: HomeAssistant,
+    configured: int,
+    expected_proxy: int,
+    expected_upstream: int,
 ) -> None:
     """Taking that port is what keeps every browser, phone and bookmark working.
 
-    It is not always 8123: under Supervisor Home Assistant defaults to 80, and
-    a wizard that suggested 8123 there would propose a layout where the origin
-    changes for everyone.
+    It is not always 8123. Under Supervisor Home Assistant defaults to 80, and
+    plenty of people have picked their own, so the running server is asked
+    rather than assumed. The last case is the awkward one: Home Assistant
+    already sits on the port it would be moved to, and offering it twice would
+    produce a form that refuses itself.
     """
-    with patch.object(hass.http, "server_port", 80, create=True):
-        step = await flow.async_step_user()
+    await async_setup_component(hass, "http", {"http": {"server_port": configured}})
+    await hass.async_block_till_done()
+    assert hass.http.server_port == configured, "precondition: it really is there"
 
-    schema: Any = step["data_schema"].schema
-    default = next(key.default() for key in schema if key.schema == CONF_PROXY_PORT)
-    assert default == 80
+    handler = RbacConfigFlow()
+    handler.hass = hass
+    handler.handler = DOMAIN
+    handler.flow_id = "test"
+    handler.context = {}
+    step = await handler.async_step_user()
+
+    assert _default(step, CONF_PROXY_PORT) == expected_proxy
+    assert _default(step, CONF_UPSTREAM_PORT) == expected_upstream
 
 
 async def test_a_proxy_sharing_home_assistants_port_is_refused(

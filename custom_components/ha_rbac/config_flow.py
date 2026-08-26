@@ -100,19 +100,32 @@ class RbacConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._data = data
                 return await self.async_step_move()
 
-        # The port Home Assistant answers on today is the one every browser,
-        # phone and bookmark already uses, so it is the one to take over --
-        # nothing then needs repointing. It is not always 8123: under
-        # Supervisor, Home Assistant defaults to 80.
-        current_port = getattr(self.hass.http, "server_port", None)
         return self.async_show_form(
             step_id="user",
-            data_schema=_schema(
-                user_input or ({CONF_PROXY_PORT: current_port} if current_port else {})
-            ),
+            data_schema=_schema(user_input or self._suggested()),
             errors=errors,
             description_placeholders={"warning": await self._async_warning()},
         )
+
+    @callback
+    def _suggested(self) -> dict[str, Any]:
+        """Return the ports to offer, read from the running server.
+
+        The port Home Assistant answers on today is the one every browser,
+        phone and bookmark already uses, so it is the one to take over --
+        nothing then needs repointing afterwards. It is not always 8123: under
+        Supervisor Home Assistant defaults to 80, and someone who chose their
+        own port wants that one back.
+        """
+        current_port = getattr(self.hass.http, "server_port", None)
+        if not current_port:
+            return {}
+        suggested: dict[str, Any] = {CONF_PROXY_PORT: current_port}
+        if current_port == DEFAULT_UPSTREAM_PORT:
+            # Home Assistant already sits where it would be moved to, so the
+            # two defaults would collide and the form would refuse itself.
+            suggested[CONF_UPSTREAM_PORT] = DEFAULT_UPSTREAM_PORT + 1
+        return suggested
 
     async def _async_warning(self) -> str:
         """Return what to say about Home Assistant still being on the network.
