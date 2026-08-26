@@ -26,6 +26,11 @@ const ACCESS = [
   { value: "control", label: "Read and control" },
 ];
 
+// Red, blue, green: refused, allowed to look, allowed to touch. The stripe is
+// the fastest way to read a list of exceptions, so it says the same thing the
+// Access dropdown beside it says.
+const TONE = { none: "deny", read: "read", control: "control", full: "control" };
+
 const BASE = [
   { value: "none", label: "No access" },
   { value: "read", label: "Read" },
@@ -117,7 +122,9 @@ const STYLES = `
     .rule { grid-template-columns: minmax(0, 1fr) 48px;
             grid-template-areas: "target remove" "detail detail" "picker picker"; }
   }
-  .rule.deny { border-inline-start-color: var(--error-color); }
+  .rule.deny { border-inline-start-color: var(--error-color, #db4437); }
+  .rule.read { border-inline-start-color: var(--info-color, #039be5); }
+  .rule.control { border-inline-start-color: var(--success-color, #43a047); }
   /* What happens to everything the rows below do not name. Deliberately looks
      like a row and deliberately is not one: a setting shown where it takes
      effect beats one inferred from a control further up the page. */
@@ -133,6 +140,10 @@ const STYLES = `
   .fallback .value { font-weight: 500; color: var(--primary-text-color); }
   .fallback .note { display: block; margin-top: 2px;
                     font-size: var(--ha-font-size-s, .85rem); }
+  /* Dashed, in the same colour: the rule the rows below are exceptions to. */
+  .fallback.deny { border-inline-start-color: var(--error-color, #db4437); }
+  .fallback.read { border-inline-start-color: var(--info-color, #039be5); }
+  .fallback.control { border-inline-start-color: var(--success-color, #43a047); }
   .fallback ha-select { width: 100%; }
   @media (max-width: 700px) {
     .fallback { grid-template-columns: minmax(0, 1fr); }
@@ -672,19 +683,19 @@ class HaRbacPanel extends HTMLElement {
         <ha-button id="refresh-dashboards">Re-read the dashboards</ha-button>
       </div>
 
-      <h3>What this role can do</h3>
-      <p class="hint">Unticked, this role can live in the house but not
-        administer it: it reads and controls whatever it is allowed above and
-        reaches no settings at all. Tick a part of the settings to hand that
-        over, without granting the rest.</p>
+      <h3>Administration: what this role can change</h3>
+      <p class="hint">Everything in this section is an administrator's job.
+        Ticked, it is a job this role does too. Leave them all off and the role
+        can live in the house without changing how it works: it reads and
+        controls the entities allowed above and reaches no settings at all.</p>
       <div class="cap">
         <ha-checkbox id="tier-admin"
           ${(draft.tiers || {}).max === "admin" ? "checked" : ""}
           ${locked ? "disabled" : ""}></ha-checkbox>
         <div class="cap-text">
-          <div class="cap-title">All settings</div>
-          <p class="hint">Everything below, and anything Home Assistant adds
-            later. A full administrator.</p>
+          <div class="cap-title">A full administrator</div>
+          <p class="hint">Every job below, plus the ones nobody has grouped and
+            anything Home Assistant adds in future.</p>
         </div>
       </div>
       <div id="caps">${(this._catalog ? this._catalog.capabilities || [] : [])
@@ -700,11 +711,11 @@ class HaRbacPanel extends HTMLElement {
           </div>`
         )
         .join("")}</div>
-      <ha-alert alert-type="warning">Automations, scripts and scenes run with no
-        user context, exactly as they do in stock Home Assistant. Someone who can
-        write one can make it do anything, whatever their role allows directly.
-        These are a statement that you trust the person, not a way to contain
-        them.</ha-alert>
+      <ha-alert alert-type="warning">Automations, scripts and scenes run as Home
+        Assistant itself, not as the person who wrote them — exactly as they do
+        without this integration. So whoever can write one can make it do
+        anything, whatever the rest of their role says. Grant those three to
+        someone you trust, not to someone you are trying to contain.</ha-alert>
 
       <h3>When this role applies</h3>
       <p class="hint">Leave this empty and the role is always in force. Add a
@@ -922,10 +933,12 @@ class HaRbacPanel extends HTMLElement {
       "Unless a row below says otherwise",
       "baseline-row"
     );
+    row.className = `fallback ${TONE[this._draft.base] || ""}`;
     row.querySelector(".value").remove();
     row.appendChild(
       this._select(BASE, this._draft.base, locked, "Access", (value) => {
         this._draft.base = value;
+        row.className = `fallback ${TONE[value] || ""}`;
         this._refreshSeesNothing();
         this._syncRaw();
       })
@@ -1115,7 +1128,7 @@ class HaRbacPanel extends HTMLElement {
 
   _ruleRow(rule, index, locked) {
     const row = document.createElement("div");
-    row.className = `rule${rule.access === "none" ? " deny" : ""}`;
+    row.className = `rule ${TONE[rule.access] || ""}`;
 
     const target = this._select(TARGETS, rule.target, locked, "Applies to", (value) => {
       rule.target = value;
@@ -1130,7 +1143,7 @@ class HaRbacPanel extends HTMLElement {
 
     const access = this._select(ACCESS, rule.access, locked, "Access", (value) => {
       rule.access = value;
-      row.className = `rule${rule.access === "none" ? " deny" : ""}`;
+      row.className = `rule ${TONE[value] || ""}`;
       this._refreshSeesNothing();
       this._syncRaw();
     });
