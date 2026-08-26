@@ -121,13 +121,15 @@ const STYLES = `
   /* What happens to everything the rows below do not name. Deliberately looks
      like a row and deliberately is not one: a setting shown where it takes
      effect beats one inferred from a control further up the page. */
-  .fallback { display: flex; align-items: baseline; gap: 12px;
+  .fallback { display: flex; align-items: flex-start; gap: 12px;
               padding: 12px 0 12px 12px;
               border-inline-start: 2px dashed var(--divider-color);
               border-bottom: 1px solid var(--divider-color);
               color: var(--secondary-text-color); }
   .fallback .what { flex: 1; min-width: 0; }
   .fallback .value { font-weight: 500; color: var(--primary-text-color); }
+  .fallback .note { display: block; margin-top: 2px;
+                    font-size: var(--ha-font-size-s, .85rem); }
   .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
   .actions .spacer { flex: 1; }
   ul.roles { list-style: none; margin: 0; padding: 0; }
@@ -900,12 +902,19 @@ class HaRbacPanel extends HTMLElement {
          decides whether the screen is reachable, not what is on it.</ha-alert>`;
   }
 
-  /** What everything unnamed gets. Shown as a row, but not an editable one. */
-  _fallbackRow(what, value, id) {
+  /**
+   * The rule the rows below are exceptions to. It sits first because that is
+   * the order it is read in -- start here, then override -- which is also why
+   * it says "every entity" rather than "every other": at the top, "other" has
+   * nothing to be other than yet.
+   */
+  _fallbackRow(what, value, note, id) {
     const row = document.createElement("div");
     row.className = "fallback";
     if (id) row.id = id;
-    row.innerHTML = `<span class="what">${esc(what)}</span>
+    row.innerHTML = `<span class="what">${esc(what)}${
+      note ? `<span class="note">${esc(note)}</span>` : ""
+    }</span>
       <span class="value">${esc(value)}</span>`;
     return row;
   }
@@ -925,7 +934,12 @@ class HaRbacPanel extends HTMLElement {
     host.innerHTML = "";
     this._refreshSeesNothing();
     host.appendChild(
-      this._fallbackRow("Every other entity", this._baselineValue(), "baseline-row")
+      this._fallbackRow(
+        "Every entity",
+        this._baselineValue(),
+        "Unless an exception below says otherwise",
+        "baseline-row"
+      )
     );
     this._draft.rules.forEach((rule, index) => {
       host.appendChild(this._ruleRow(rule, index, locked));
@@ -935,7 +949,9 @@ class HaRbacPanel extends HTMLElement {
   _mountSchedule(host, locked) {
     host.innerHTML = "";
     if (!this._draft.schedule.length) {
-      host.appendChild(this._fallbackRow("No hours set", "Always in force"));
+      host.appendChild(
+        this._fallbackRow("Every hour of every day", "In force")
+      );
       return;
     }
     this._draft.schedule.forEach((window, index) => {
@@ -981,7 +997,13 @@ class HaRbacPanel extends HTMLElement {
 
   _mountAttrRules(host, locked) {
     host.innerHTML = "";
-    host.appendChild(this._fallbackRow("Every other detail", "Shown in full"));
+    host.appendChild(
+      this._fallbackRow(
+        "Every detail",
+        "Shown in full",
+        "Unless a rule below hides it"
+      )
+    );
     this._draft.attrRules.forEach((rule, index) => {
       host.appendChild(this._attrRow(rule, index, locked));
     });
