@@ -236,9 +236,26 @@ const STYLES = `
   .srule .f-until { grid-area: until; }
   .srule .f-remove { grid-area: remove; justify-self: end; }
   ha-alert { display: block; margin-bottom: 16px; }
-  ha-expansion-panel { margin-top: 12px; }
-  .actions.expand-all { margin: 20px 0 0; justify-content: flex-end; }
-  ha-expansion-panel .card-content { padding: 0 0 8px; }
+  /* The summary row ships with no vertical padding, so a stack of collapsed
+     sections runs together as one wall of text. A rule between them and room
+     to breathe is most of what makes the list readable. */
+  ha-expansion-panel {
+    display: block; margin: 0;
+    border-bottom: 1px solid var(--divider-color);
+    --expansion-panel-summary-padding: 14px 8px;
+    --expansion-panel-content-padding: 0 8px 8px;
+  }
+  ha-expansion-panel:last-of-type { border-bottom: 0; }
+  .sec-header { padding: 2px 0; min-width: 0; }
+  .sec-title { font-weight: var(--ha-font-weight-medium, 500); }
+  .sec-state { font-weight: 400; color: var(--secondary-text-color); }
+  /* The gap this whole arrangement exists for, and a measure short enough that
+     prose stays readable on a monitor that has room for far more. */
+  .sec-blurb { margin: 6px 0 0; max-width: 88ch;
+               color: var(--secondary-text-color);
+               font-size: var(--ha-font-size-s, .85rem); line-height: 1.45; }
+  .actions.expand-all { margin: 20px 0 4px; justify-content: flex-end; }
+  ha-expansion-panel .card-content { padding: 4px 0 12px; }
 `;
 
 /** Read the open tab and role back out of the address bar. */
@@ -788,9 +805,21 @@ class HaRbacPanel extends HTMLElement {
       // The section's own explanation belongs to the header, not to the body:
       // it is most wanted while the section is shut and you are deciding
       // whether to open it. Lifted from the markup so it is written once.
+      //
+      // Built into the header *slot* rather than handed over as `secondary`,
+      // because the component renders those two lines hard against each other
+      // inside its shadow, where nothing out here can put a gap between them.
       const blurb = panel.querySelector(".card-content > p.hint");
-      if (blurb) {
-        panel.dataset.blurb = blurb.textContent.replace(/\s+/g, " ").trim();
+      if (blurb && !panel.querySelector('[slot="header"]')) {
+        const header = document.createElement("div");
+        header.slot = "header";
+        header.className = "sec-header";
+        header.innerHTML = `<div class="sec-title">${esc(panel.dataset.title)}
+            <span class="sec-state"></span></div>
+          <p class="sec-blurb">${esc(
+            blurb.textContent.replace(/\s+/g, " ").trim()
+          )}</p>`;
+        panel.insertBefore(header, panel.firstChild);
         blurb.remove();
       }
       panel.expanded = this._open.has(panel.dataset.section);
@@ -1012,10 +1041,11 @@ class HaRbacPanel extends HTMLElement {
     if (!this._draft) return;
     this.shadowRoot.querySelectorAll("[data-section]").forEach((panel) => {
       const summary = this._summary(panel.dataset.section);
-      panel.header = summary
+      const state = panel.querySelector(".sec-state");
+      if (state) state.textContent = summary ? `— ${summary}` : "";
+      else panel.header = summary
         ? `${panel.dataset.title} — ${summary}`
         : panel.dataset.title;
-      if (panel.dataset.blurb) panel.secondary = panel.dataset.blurb;
     });
     this._refreshToggleLabel();
   }
