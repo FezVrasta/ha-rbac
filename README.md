@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="screenshots/panel-roles.jpg" alt="The Access Control panel, editing a Guests role" width="880">
+  <img src="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/panel-roles.jpg" alt="The Access Control panel, editing a Guests role" width="880">
 </p>
 
 <p align="center"><em>One role: see and control everything except the locks and cameras, and don't show anyone where people are.</em></p>
@@ -52,21 +52,21 @@ Four roles to start from: **Administrator**, **Editor**, **User** and
 <table>
 <tr>
 <td width="50%">
-<img src="screenshots/guest-search-no-locks.jpg" alt="A guest searching for locks finds none">
+<img src="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/guest-search-no-locks.jpg" alt="A guest searching for locks finds none">
 <p align="center"><em>A guest searching for "lock". There's nothing to find.</em></p>
 </td>
 <td width="50%">
-<img src="screenshots/owner-sidebar.jpg" alt="The same search as the owner, showing four locks">
+<img src="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/owner-sidebar.jpg" alt="The same search as the owner, showing four locks">
 <p align="center"><em>The same search, same house, signed in as yourself.</em></p>
 </td>
 </tr>
 <tr>
 <td width="50%">
-<img src="screenshots/panel-users.jpg" alt="Assigning roles to people">
+<img src="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/panel-users.jpg" alt="Assigning roles to people">
 <p align="center"><em>Who gets what.</em></p>
 </td>
 <td width="50%">
-<img src="screenshots/panel-denials.jpg" alt="The denials log">
+<img src="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/panel-denials.jpg" alt="The denials log">
 <p align="center"><em>When someone says "it stopped working", look here first.</em></p>
 </td>
 </tr>
@@ -124,7 +124,7 @@ person at a time.
 **Not everything goes through it.** Automations, add-ons and webhooks reach Home
 Assistant by other routes, and so does anyone with a login to the machine itself.
 Roles don't apply there. There's a
-[plain list of what's covered and what isn't](docs/DESIGN.md#what-this-does-and-does-not-protect-against).
+[plain list of what's covered and what isn't](https://github.com/FezVrasta/ha-rbac/blob/main/docs/DESIGN.md#what-this-does-and-does-not-protect-against).
 
 **It's an alpha.** Tested, and deliberately attacked, but it hasn't lived in
 anyone else's house yet. Try it on something that isn't your front door, and
@@ -140,13 +140,13 @@ It ships no list of what's dangerous. Home Assistant already marks its own
 administrative features, and this reads those markings on your instance — which
 is why it doesn't go stale every time Home Assistant updates.
 
-The long version is in [docs/DESIGN.md](docs/DESIGN.md).
+The long version is in [docs/DESIGN.md](https://github.com/FezVrasta/ha-rbac/blob/main/docs/DESIGN.md).
 
 ## Contributing
 
 Bug reports from real houses are the most useful thing right now — especially
 "my dashboard broke, and here's what the Denials tab said". See
-[CONTRIBUTING.md](CONTRIBUTING.md) for running the tests.
+[CONTRIBUTING.md](https://github.com/FezVrasta/ha-rbac/blob/main/CONTRIBUTING.md) for running the tests.
 
 ## Licence
 
