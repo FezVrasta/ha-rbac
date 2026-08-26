@@ -379,3 +379,81 @@ async def test_an_ordinary_media_id_is_not_read_as_an_entity(
         },
     )
     assert decision.allowed is True
+
+
+async def test_group_membership_cannot_reach_a_denied_entity(
+    hass: HomeAssistant, decider: Decider
+) -> None:
+    """A group expands to its members server-side, so it must here too.
+
+    `lock.unlock` aimed at `group.locks` names only the group -- an entity the
+    role is free to control -- while Home Assistant expands the group and acts
+    on `lock.front` inside it. Without expanding the group the resource gate
+    checked the wrapper and missed the denied member.
+    """
+    hass.states.async_set("lock.front", "locked")
+    hass.states.async_set("group.locks", "locked", {"entity_id": ["lock.front"]})
+    role = compile_role(
+        hass,
+        {
+            "id": "g",
+            "name": "g",
+            "allow": {
+                CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}}
+            },
+            "deny": {CAT_ENTITIES: {"domains": {"lock": True}}},
+            "tiers": {"max": TIER_OPEN, "allow": [], "deny": []},
+        },
+        PermissionLookup(er.async_get(hass), dr.async_get(hass)),
+    )
+    decision = decider.decide(
+        Permissions(roles=[role]),
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "lock",
+            "service": "unlock",
+            "target": {"entity_id": "group.locks"},
+        },
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_RESOURCE
+    assert "lock.front" in decision.resources
+
+
+async def test_nested_group_membership_is_expanded(
+    hass: HomeAssistant, decider: Decider
+) -> None:
+    """Group expansion recurses, so a group of groups is still caught."""
+    hass.states.async_set("lock.front", "locked")
+    hass.states.async_set("group.inner", "locked", {"entity_id": ["lock.front"]})
+    hass.states.async_set(
+        "group.outer", "locked", {"entity_id": ["group.inner", "light.kitchen"]}
+    )
+    role = compile_role(
+        hass,
+        {
+            "id": "g",
+            "name": "g",
+            "allow": {
+                CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}}
+            },
+            "deny": {CAT_ENTITIES: {"domains": {"lock": True}}},
+            "tiers": {"max": TIER_OPEN, "allow": [], "deny": []},
+        },
+        PermissionLookup(er.async_get(hass), dr.async_get(hass)),
+    )
+    decision = decider.decide(
+        Permissions(roles=[role]),
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "lock",
+            "service": "unlock",
+            "target": {"entity_id": "group.outer"},
+        },
+    )
+    assert decision.allowed is False
+    assert "lock.front" in decision.resources

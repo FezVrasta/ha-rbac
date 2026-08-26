@@ -26,6 +26,9 @@ from homeassistant.helpers import (
 from homeassistant.helpers import (
     entity_registry as er,
 )
+from homeassistant.helpers import (
+    group as group_helper,
+)
 
 from .catalog import Catalog
 from .const import (
@@ -191,6 +194,14 @@ def expand_to_entities(hass: HomeAssistant, found: Extracted) -> set[str]:
                     ent_reg, device.id, include_disabled_entities=True
                 )
             )
+
+    # Home Assistant expands group members server-side when a service targets a
+    # group, so a denied entity reachable through a group must be checked here
+    # too -- otherwise `lock.unlock` aimed at a group containing a denied lock
+    # slips past, the group id being an allowed entity of its own. Expand last,
+    # over the whole set, since a targeted area can itself contain a group. This
+    # is the same helper the service framework uses, so the expansion matches.
+    entities.update(group_helper.expand_entity_ids(hass, entities))
 
     return entities
 
