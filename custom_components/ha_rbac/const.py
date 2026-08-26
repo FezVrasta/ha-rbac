@@ -17,6 +17,8 @@ CONF_BIND_ADDRESS: Final = "bind_address"
 CONF_UPSTREAM_HOST: Final = "upstream_host"
 CONF_UPSTREAM_PORT: Final = "upstream_port"
 CONF_FAIL_OPEN: Final = "fail_open"
+# Whether this integration moves Home Assistant's own listener for you.
+CONF_MANAGE_HTTP: Final = "manage_http"
 
 DEFAULT_PROXY_PORT: Final = 8123
 DEFAULT_BIND_ADDRESS: Final = "0.0.0.0"

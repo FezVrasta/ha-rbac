@@ -3,12 +3,14 @@
 import logging
 from pathlib import Path
 
+import aiohttp
 from homeassistant.components import frontend, panel_custom
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import DOMAIN as HA_DOMAIN
 from homeassistant.core import Event, HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import (
     area_registry as ar,
 )
@@ -24,12 +26,14 @@ from homeassistant.helpers import (
 from homeassistant.helpers import (
     label_registry as lr,
 )
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.loader import async_get_integration
 
-from . import websocket_api
+from . import http_config, websocket_api
 from .catalog import Catalog
 from .const import (
     CONF_BIND_ADDRESS,
+    CONF_MANAGE_HTTP,
     CONF_PROXY_PORT,
     CONF_UPSTREAM_HOST,
     CONF_UPSTREAM_PORT,
@@ -57,6 +61,12 @@ _LOGGER = logging.getLogger(__name__)
 
 # A role naming an area or a label desugars to concrete entity ids when it is
 # compiled, so anything that changes those relationships invalidates it.
+# Spelled out rather than imported: the constant lives in
+# `homeassistant.const` on current builds and in
+# `homeassistant.components.homeassistant.const` on 2026.8, while the
+# service itself has been called this throughout.
+SERVICE_RESTART = "restart"
+
 REGISTRY_EVENTS = (
     er.EVENT_ENTITY_REGISTRY_UPDATED,
     dr.EVENT_DEVICE_REGISTRY_UPDATED,
@@ -138,8 +148,79 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             f"then this can take over {proxy_port}."
         )
 
+    manage_http = config.get(CONF_MANAGE_HTTP, False)
+
+    async def _move_home_assistant() -> bool:
+        """Stage Home Assistant's move to loopback and restart into it.
+
+        Returns True if a restart is on its way, in which case there is no
+        point starting a listener: the process is going down, and the port this
+        wants is still held by Home Assistant until it does.
+        """
+        if not manage_http or http_config.is_aligned(hass, upstream_port):
+            return False
+        try:
+            current = await http_config.async_current(hass)
+            await http_config.async_stage(
+                hass, http_config.target_config(current, upstream_port)
+            )
+        except (http_config.Unavailable, HomeAssistantError, OSError):
+            _LOGGER.exception(
+                "Could not move Home Assistant to port %s automatically. Do it "
+                "under Settings > System > Network: set the port to %s and "
+                "Server host to 127.0.0.1",
+                upstream_port,
+                upstream_port,
+            )
+            return False
+
+        _LOGGER.warning(
+            "Moving Home Assistant to 127.0.0.1:%s so this can answer on %s. "
+            "Home Assistant is restarting. If it does not come back on %s "
+            "within five minutes it undoes the change itself and returns to "
+            "the port it is on now",
+            upstream_port,
+            proxy_port,
+            proxy_port,
+        )
+        hass.async_create_task(hass.services.async_call(HA_DOMAIN, SERVICE_RESTART))
+        return True
+
+    async def _confirm_move() -> None:
+        """Make the move permanent, but only once the proxy really serves.
+
+        This is the interlock the whole thing rests on. Until it runs, Home
+        Assistant reverts to its previous configuration by itself, so a proxy
+        that binds but cannot forward still leaves a way back in. Promoting on
+        `async_start` alone would throw that away, since binding a port says
+        nothing about whether anything answers on it.
+        """
+        if not manage_http:
+            return
+        bind = config.get(CONF_BIND_ADDRESS, DEFAULT_BIND_ADDRESS)
+        reachable = "127.0.0.1" if bind in ("0.0.0.0", "::", "") else bind
+        try:
+            async with async_get_clientsession(hass).get(
+                f"http://{reachable}:{proxy_port}/",
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                served = response.status < 500
+        except (TimeoutError, aiohttp.ClientError) as err:
+            _LOGGER.error(
+                "The proxy is listening on %s but did not serve a request (%s), "
+                "so Home Assistant's move has been left unconfirmed and will "
+                "revert by itself",
+                proxy_port,
+                err,
+            )
+            return
+        if served:
+            await http_config.async_promote(hass)
+
     async def _start_proxy(_event: Event | None = None) -> None:
         """Start the listener once Home Assistant is serving."""
+        if await _move_home_assistant():
+            return
         proxy = RbacProxy(
             hass,
             evaluator,
@@ -152,6 +233,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         await proxy.async_start()
         data.proxy = proxy
+        await _confirm_move()
         # Dashboards can only be read once Home Assistant has loaded them.
         await dashboard_entities.async_start()
 

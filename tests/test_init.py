@@ -2,9 +2,10 @@
 
 import socket
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -13,6 +14,7 @@ from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 from custom_components.ha_rbac import async_setup_entry, async_unload_entry
 from custom_components.ha_rbac.const import (
     CONF_BIND_ADDRESS,
+    CONF_MANAGE_HTTP,
     CONF_PROXY_PORT,
     CONF_UPSTREAM_HOST,
     CONF_UPSTREAM_PORT,
@@ -271,3 +273,138 @@ async def test_a_taken_port_explains_the_setup_order(
     assert "already in use" in message
     assert "8124" in message, "it must name the port to move Home Assistant to"
     assert "Settings > System > Network" in message, "and where to do it"
+
+
+async def test_the_move_is_staged_and_the_proxy_waits_for_the_restart(
+    hass: HomeAssistant, socket_enabled: None
+) -> None:
+    """Home Assistant has to vacate the port before anything can take it.
+
+    So the first run stages the move and restarts rather than binding: the port
+    the proxy wants is still held by Home Assistant until the process goes down.
+    Trying anyway is the bind error this whole feature exists to avoid.
+    """
+    for domain in ("http", "websocket_api"):
+        await async_setup_component(hass, domain, {"http": {}})
+    await hass.async_block_till_done()
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_PROXY_PORT: _free_port(),
+            CONF_BIND_ADDRESS: "127.0.0.1",
+            CONF_UPSTREAM_HOST: "127.0.0.1",
+            CONF_UPSTREAM_PORT: 8124,
+            CONF_MANAGE_HTTP: True,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    staged: list[dict[str, Any]] = []
+    restarts: list[ServiceCall] = []
+    hass.services.async_register("homeassistant", "restart", restarts.append)
+
+    async def _stage(_hass: HomeAssistant, config: dict[str, Any]) -> None:
+        staged.append(config)
+
+    with (
+        patch(
+            "custom_components.ha_rbac.http_config.async_current",
+            return_value={"server_host": ["0.0.0.0"], "server_port": 8123},
+        ),
+        patch("custom_components.ha_rbac.http_config.async_stage", _stage),
+    ):
+        assert await async_setup_entry(hass, entry)
+        await hass.async_block_till_done()
+
+    assert staged == [{"server_host": ["127.0.0.1"], "server_port": 8124}]
+    assert len(restarts) == 1, "Home Assistant has to restart to apply the move"
+    assert hass.data[DATA_RBAC].proxy is None, "nothing may bind before the restart"
+
+    await async_unload_entry(hass, entry)
+
+
+async def test_the_move_is_confirmed_only_once_the_proxy_serves(
+    hass: HomeAssistant, socket_enabled: None
+) -> None:
+    """The interlock. Binding a port says nothing about answering on it.
+
+    Home Assistant reverts an unconfirmed config within five minutes, which is
+    the way back in if this layer is broken. Confirming on `async_start` alone
+    would throw that away for a proxy that listens and forwards to nothing.
+    """
+    for domain in ("http", "websocket_api"):
+        await async_setup_component(hass, domain, {"http": {}})
+    await hass.async_block_till_done()
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_PROXY_PORT: _free_port(),
+            CONF_BIND_ADDRESS: "127.0.0.1",
+            CONF_UPSTREAM_HOST: "127.0.0.1",
+            CONF_UPSTREAM_PORT: 8123,
+            CONF_MANAGE_HTTP: True,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    served = MagicMock()
+    served.__aenter__ = AsyncMock(return_value=MagicMock(status=200))
+    served.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("custom_components.ha_rbac.http_config.is_aligned", return_value=True),
+        patch(
+            "custom_components.ha_rbac.http_config.async_promote", AsyncMock()
+        ) as promote,
+        patch("custom_components.ha_rbac.async_get_clientsession") as session,
+    ):
+        session.return_value.get.return_value = served
+        assert await async_setup_entry(hass, entry)
+        await hass.async_block_till_done()
+        assert promote.called, "a proxy that answers must confirm the move"
+
+    await async_unload_entry(hass, entry)
+
+
+async def test_a_proxy_that_does_not_answer_leaves_the_move_to_revert(
+    hass: HomeAssistant, socket_enabled: None
+) -> None:
+    """Which is what puts Home Assistant back on its old port by itself.
+
+    Nothing is mocked here beyond the promotion: the proxy binds for real and
+    its upstream really is absent, so the request through it fails the way it
+    would on a misconfigured install.
+    """
+    for domain in ("http", "websocket_api"):
+        await async_setup_component(hass, domain, {"http": {}})
+    await hass.async_block_till_done()
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_PROXY_PORT: _free_port(),
+            CONF_BIND_ADDRESS: "127.0.0.1",
+            CONF_UPSTREAM_HOST: "127.0.0.1",
+            # A port nothing is listening on, named rather than assumed: other
+            # tests in this suite bind Home Assistant's usual ones, and a
+            # working upstream here would make this pass for the wrong reason.
+            CONF_UPSTREAM_PORT: _free_port(),
+            CONF_MANAGE_HTTP: True,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        patch("custom_components.ha_rbac.http_config.is_aligned", return_value=True),
+        patch(
+            "custom_components.ha_rbac.http_config.async_promote", AsyncMock()
+        ) as promote,
+    ):
+        assert await async_setup_entry(hass, entry)
+        await hass.async_block_till_done()
+
+    assert not promote.called, "an unanswerable proxy must not confirm anything"
+
+    await async_unload_entry(hass, entry)

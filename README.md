@@ -152,9 +152,6 @@ Between those two, hand over one part of the settings without the rest:
 | **Users** | create people and change their passwords |
 | **Backups** | make them, download them, restore them |
 
-Each one says how many commands it covers on your instance, because they're
-found there rather than listed here.
-
 > [!NOTE]
 > Automations, scripts and scenes run with no user context, exactly as they do
 > in stock Home Assistant. Someone who can write one can make it do anything,
@@ -223,29 +220,6 @@ Longer version in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Install
 
-Three steps, in this order. Each one leaves you with a Home Assistant you can
-still reach.
-
-The end state: **Home Assistant on `127.0.0.1:8124`**, reachable only from its
-own machine, and **this integration on `8123`**, the address everyone already
-uses. Bookmarks, the companion app, your Google or Alexa setup all keep working,
-and nobody gets signed out, because to a browser it is the same address as
-before.
-
-### 1. Move Home Assistant to port 8124
-
-**Settings → System → Network**, under **HTTP**, set **Server port** to `8124`.
-Leave **Server host** alone for now.
-
-Home Assistant restarts, then asks you to confirm it's still reachable. Do
-that at `http://your-ha:8124`. If you can't get there, it puts the old port back
-by itself.
-
-Port `8123` is now free, which is what step 2 needs. Nothing answers there until
-then, so pick a moment when a few minutes of that is fine.
-
-### 2. Install this integration
-
 **With HACS:**
 
 <a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=FezVrasta&repository=ha-rbac&category=integration"><img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Open your Home Assistant instance and open this repository inside the Home Assistant Community Store."></a>
@@ -257,32 +231,52 @@ paste `https://github.com/FezVrasta/ha-rbac`, category **Integration**.
 **Without HACS:** copy `custom_components/ha_rbac` into your
 `config/custom_components` and restart.
 
-Then add **Access Control** from Settings → Devices & Services. It defaults to
-answering on `8123` and forwarding to `127.0.0.1:8124`, so there is nothing to
-fill in.
+Then add **Access Control** from Settings → Devices & Services, and say yes when
+it offers to move Home Assistant for you.
 
-`http://your-ha:8123` now works again, and everything through it is filtered.
-`8124` still works too, unfiltered, which the last step closes.
+That is the whole install. What it does, and why it has to:
+
+Roles are only enforced on traffic that comes through this, so Home Assistant
+has to stop answering on the network itself — otherwise anyone can go straight
+round it with the token they already have. So Home Assistant moves to
+**`127.0.0.1:8124`**, reachable only from its own machine, and this takes over
+**`8123`**, the address everyone already uses. Bookmarks, the companion app,
+your Google or Alexa setup all keep working, and nobody gets signed out, because
+to a browser it is the same address as before.
+
+Home Assistant restarts once. It comes back on `8123` about fifteen seconds
+later, filtering.
+
+> [!NOTE]
+> If it does not come back, Home Assistant puts the old settings back by itself
+> within five minutes and restarts again on the port it was on before. The move
+> is only made permanent once this integration has answered a real request
+> through the new setup, so a broken install undoes itself rather than locking
+> you out.
 
 > [!NOTE]
 > Nothing changes for anyone until you give someone a role, so it is safe to
 > stop here and look around first.
 
-### 3. Close Home Assistant's own door
+<details>
+<summary><strong>Doing it by hand instead</strong></summary>
 
-> [!IMPORTANT]
-> **This is the step that makes it real.** Until you do it, anyone can walk
-> straight around the filtering by connecting to `8124` with the login they
-> already have. It warns you at startup if you skip it.
+<br>
 
-Back to **Settings → System → Network**, and this time set **Server host**
-(under *Advanced*) to `127.0.0.1`.
+Decline the offer during setup and do it in this order, which is the order that
+leaves you with a reachable Home Assistant at every step.
 
-Home Assistant restarts and asks you to confirm once more. Confirm from
-`http://your-ha:8123`, which is the proxy, and still works. If something has
-gone wrong it reverts by itself.
+1. **Settings → System → Network**, set **Server port** to `8124`, leaving
+   **Server host** alone. Confirm at `http://your-ha:8124` when asked. Port
+   `8123` is now free, which is what the next step needs.
+2. Add **Access Control** from Settings → Devices & Services. It defaults to
+   answering on `8123` and forwarding to `127.0.0.1:8124`.
+3. Back to **Settings → System → Network**, and set **Server host** (under
+   *Advanced*) to `127.0.0.1`. Confirm from `http://your-ha:8123`, which is now
+   this integration. **Until you do this last step nothing is enforced**, and it
+   says so at startup.
 
-That's it.
+</details>
 
 <details>
 <summary><strong>"So is port 8124 wide open?"</strong></summary>

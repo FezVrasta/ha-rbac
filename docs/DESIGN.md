@@ -179,11 +179,22 @@ role. A session it never issued belongs to nobody and is refused.
 **RBAC applies only to traffic through the proxy. Home Assistant must not be
 reachable from the network, or the proxy is decorative.**
 
-Set the server host to `127.0.0.1` and the port to `8124` under **Settings >
-System > Network**, and leave this integration on `8123`, which is its default.
-Do it in that order: move the port first, install this, then close the host.
-Each step leaves a reachable instance, and taking the port before Home Assistant
-has vacated it is a bind error rather than a working setup.
+The setup flow does this, and `http_config.py` is where. Home Assistant cannot
+change its HTTP config while running -- a config is *staged*, applied on the
+next start, and reverted automatically unless something promotes it within five
+minutes -- so the move is one restart rather than a live reconfiguration.
+
+That trial is what makes automating it safe. The promotion is deferred until
+the proxy has served a real request through the new arrangement, so a proxy
+that binds its port but cannot forward leaves the revert armed and Home
+Assistant comes back where it was. Binding is not evidence of serving, which is
+why the check is a request and not a socket.
+
+By hand it is three steps and the order is not guessable: move the port first,
+install this, then set the server host to `127.0.0.1`, all under **Settings >
+System > Network**. Each step leaves a reachable instance, and taking the port
+before Home Assistant has vacated it is a bind error rather than a working
+setup.
 
 `127.0.0.1` is doing the work here, not any firewall. It is the only address
 Home Assistant will accept a connection on, so after that setting it is not

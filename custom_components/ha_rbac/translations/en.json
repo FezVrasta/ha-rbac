@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "RBAC access control",
-        "description": "This answers on the port your browsers already use and forwards to Home Assistant, with each user's role applied on the way through.\n\nThe defaults are correct if you have just moved Home Assistant to port 8124.\n\n{warning}",
+        "description": "This answers on the port your browsers already use and forwards to Home Assistant, with each user's role applied on the way through.\n\nThe defaults suit most installations.\n\n{warning}",
         "data": {
           "proxy_port": "Proxy port",
           "bind_address": "Bind address",
@@ -11,10 +11,20 @@
           "upstream_port": "Home Assistant port"
         },
         "data_description": {
-          "proxy_port": "The port browsers connect to. Normally 8123, the one Home Assistant used to answer on.",
+          "proxy_port": "The port browsers connect to: the one Home Assistant answers on today, so nothing you already use has to be repointed.",
           "bind_address": "Which network to answer on. 0.0.0.0 means all of them.",
-          "upstream_host": "Where Home Assistant itself is listening. Leave this as 127.0.0.1.",
-          "upstream_port": "The port you moved Home Assistant to under Settings > System > Network."
+          "upstream_host": "Where Home Assistant itself listens. Leave this as 127.0.0.1.",
+          "upstream_port": "Where Home Assistant will answer instead. Nothing you use needs to know about this port."
+        }
+      },
+      "move": {
+        "title": "Move Home Assistant out of the way",
+        "description": "Roles are only enforced on traffic that comes through here, so Home Assistant has to stop answering on the network itself. Otherwise anyone can go straight round this with the token they already have.\n\nHome Assistant can be moved to port {upstream_port}, reachable only from its own machine, leaving port {proxy_port} to this. It will restart once.\n\nIf it cannot be reached afterwards, Home Assistant puts the old settings back by itself within five minutes and restarts again on port {proxy_port}. This is not a way to lock yourself out.",
+        "data": {
+          "manage_http": "Move Home Assistant for me"
+        },
+        "data_description": {
+          "manage_http": "Leave this off to do it yourself under Settings > System > Network. Nothing is enforced until it is done."
         }
       }
     },
@@ -33,13 +43,15 @@
           "proxy_port": "Proxy port",
           "bind_address": "Bind address",
           "upstream_host": "Home Assistant host",
-          "upstream_port": "Home Assistant port"
+          "upstream_port": "Home Assistant port",
+          "manage_http": "Keep Home Assistant out of the way"
         },
         "data_description": {
-          "proxy_port": "The port browsers connect to. Normally 8123, the one Home Assistant used to answer on.",
+          "proxy_port": "The port browsers connect to: the one Home Assistant answers on today, so nothing you already use has to be repointed.",
           "bind_address": "Which network to answer on. 0.0.0.0 means all of them.",
-          "upstream_host": "Where Home Assistant itself is listening. Leave this as 127.0.0.1.",
-          "upstream_port": "The port you moved Home Assistant to under Settings > System > Network."
+          "upstream_host": "Where Home Assistant itself listens. Leave this as 127.0.0.1.",
+          "upstream_port": "Where Home Assistant will answer instead. Nothing you use needs to know about this port.",
+          "manage_http": "Move Home Assistant to the port above, reachable only from its own machine, restarting it if it is not there already."
         }
       }
     }
