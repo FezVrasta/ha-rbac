@@ -236,7 +236,9 @@ const STYLES = `
   .srule .f-until { grid-area: until; }
   .srule .f-remove { grid-area: remove; justify-self: end; }
   ha-alert { display: block; margin-bottom: 16px; }
-  ha-expansion-panel { margin-top: 24px; }
+  ha-expansion-panel { margin-top: 12px; }
+  .actions.expand-all { margin: 20px 0 0; justify-content: flex-end; }
+  ha-expansion-panel .card-content { padding: 0 0 8px; }
 `;
 
 /** Read the open tab and role back out of the address bar. */
@@ -390,6 +392,9 @@ class HaRbacPanel extends HTMLElement {
     this._denials = [];
     this._catalog = null;
     this._recording = {};
+    // Which sections are open, kept across renders: saving a role should
+    // not fold away the section you were working in.
+    this._open = new Set();
     this._selected = null;
     this._draft = null;
     this._notice = null;
@@ -619,8 +624,13 @@ class HaRbacPanel extends HTMLElement {
 
       <div id="record-host"></div>
 
-      <h3>Where this role can go</h3>
-      <p class="hint">Every dashboard, add-on and built-in screen in the sidebar.
+      <div class="actions expand-all">
+        <ha-button id="toggle-sections">Expand all</ha-button>
+      </div>
+
+      <ha-expansion-panel data-section="apps" data-title="Where this role can go"
+        header="Where this role can go">
+        <div class="card-content">      <p class="hint">Every dashboard, add-on and built-in screen in the sidebar.
         Unticking one hides it and refuses the requests behind it. This decides
         which screens they can reach, not what appears on them: a dashboard they
         can open still shows only the entities allowed below.</p>
@@ -636,9 +646,12 @@ class HaRbacPanel extends HTMLElement {
           </ha-formfield>`
         )
         .join("")}</div>
+        </div>
+      </ha-expansion-panel>
 
-      <h3>Dashboards</h3>
-      <p class="hint">A dashboard can be opened empty, which shows only what the
+      <ha-expansion-panel data-section="dashboards" data-title="Dashboards"
+        header="Dashboards">
+        <div class="card-content">      <p class="hint">A dashboard can be opened empty, which shows only what the
         role is allowed elsewhere, or it can carry its own contents with it.
         Those are read from the dashboard whenever a request is judged, so
         editing a dashboard changes what its holders see without anyone
@@ -664,8 +677,12 @@ class HaRbacPanel extends HTMLElement {
           })
           .join("")}</tbody>
       </table>
-      <h3>Entities: what this role can see</h3>
-      <p class="hint">The first row is where every entity starts. Add rows below
+        </div>
+      </ha-expansion-panel>
+
+      <ha-expansion-panel data-section="entities" data-title="Entities: what this role can see"
+        header="Entities: what this role can see">
+        <div class="card-content">      <p class="hint">The first row is where every entity starts. Add rows below
         it to override that for particular areas, domains, labels, floors or
         devices — most roles are one of each: see everything, except the locks.
         This decides what a role sees wherever it goes, including on the screens
@@ -675,9 +692,12 @@ class HaRbacPanel extends HTMLElement {
       <div class="actions">
         <ha-button id="add-rule" ${locked ? "disabled" : ""}>Add exception</ha-button>
       </div>
+        </div>
+      </ha-expansion-panel>
 
-      <h3>Details to withhold</h3>
-      <p class="hint">An entity someone can see, they see in full: every
+      <ha-expansion-panel data-section="details" data-title="Details to withhold"
+        header="Details to withhold">
+        <div class="card-content">      <p class="hint">An entity someone can see, they see in full: every
         attribute it reports. Hide the ones you did not mean to share: where
         someone is, an access code, an IP address, a serial number. Rules are
         targeted, so hiding <code>latitude</code> on people leaves the zones
@@ -688,9 +708,12 @@ class HaRbacPanel extends HTMLElement {
       <div class="actions">
         <ha-button id="add-attr" ${locked ? "disabled" : ""}>Hide an attribute</ha-button>
       </div>
+        </div>
+      </ha-expansion-panel>
 
-      <h3>Administration: what this role can change</h3>
-      <p class="hint">Everything in this section is an administrator's job.
+      <ha-expansion-panel data-section="admin" data-title="Administration: what this role can change"
+        header="Administration: what this role can change">
+        <div class="card-content">      <p class="hint">Everything in this section is an administrator's job.
         Ticked, it is a job this role does too. Leave them all off and the role
         can live in the house without changing how it works: it reads and
         controls the entities allowed above and reaches no settings at all.</p>
@@ -722,9 +745,12 @@ class HaRbacPanel extends HTMLElement {
         without this integration. So whoever can write one can make it do
         anything, whatever the rest of their role says. Grant those three to
         someone you trust, not to someone you are trying to contain.</ha-alert>
+        </div>
+      </ha-expansion-panel>
 
-      <h3>When this role applies</h3>
-      <p class="hint">Leave this empty and the role is always in force. Add a
+      <ha-expansion-panel data-section="hours" data-title="When this role applies"
+        header="When this role applies">
+        <div class="card-content">      <p class="hint">Leave this empty and the role is always in force. Add a
         window and it applies only inside it; add several and any one of them is
         enough, so "Monday and Tuesday, 10:00 to 12:00 and 15:00 to 19:00" is two
         rows. Outside them the person holds no role at all, which means no access
@@ -734,6 +760,8 @@ class HaRbacPanel extends HTMLElement {
       <div class="actions">
         <ha-button id="add-window" ${locked ? "disabled" : ""}>Add a window</ha-button>
       </div>
+        </div>
+      </ha-expansion-panel>
 
       <ha-expansion-panel header="Advanced">
         <div class="card-content">
@@ -755,6 +783,29 @@ class HaRbacPanel extends HTMLElement {
       </div>`;
 
     host.querySelector("#record-host").innerHTML = this._recordSection(locked);
+
+    host.querySelectorAll("[data-section]").forEach((panel) => {
+      // The section's own explanation belongs to the header, not to the body:
+      // it is most wanted while the section is shut and you are deciding
+      // whether to open it. Lifted from the markup so it is written once.
+      const blurb = panel.querySelector(".card-content > p.hint");
+      if (blurb) {
+        panel.dataset.blurb = blurb.textContent.replace(/\s+/g, " ").trim();
+        blurb.remove();
+      }
+      panel.expanded = this._open.has(panel.dataset.section);
+      panel.addEventListener("expanded-changed", (event) => {
+        event.stopPropagation();
+        const open = event.detail ? event.detail.expanded : panel.expanded;
+        if (open) this._open.add(panel.dataset.section);
+        else this._open.delete(panel.dataset.section);
+        // Summaries come from the draft, so they are recomputed here rather
+        // than on every keystroke: by the time a section is folded away, its
+        // header is the only thing left saying what is in it.
+        this._refreshSummaries();
+      });
+    });
+    this._refreshSummaries();
 
     host.querySelector("#adv-allow").appendChild(
       this._multiline(draft.tierAllow.join("\n"), "Always allow (one pattern per line)", locked, (value) => {
@@ -912,6 +963,79 @@ class HaRbacPanel extends HTMLElement {
          dashboards will open but come up empty. Add an exception below to let
          it see something. Ticking a dashboard under "Where this role can go"
          decides whether the screen is reachable, not what is on it.</ha-alert>`;
+  }
+
+  /** One line per section, so a folded form still says what it holds. */
+  _summary(section) {
+    const draft = this._draft;
+    switch (section) {
+      case "apps": {
+        const hidden = this._visibleApps().filter((a) =>
+          draft.appDenied.includes(a.url_path)
+        );
+        return hidden.length ? `${hidden.length} hidden` : "Everything visible";
+      }
+      case "dashboards": {
+        const levels = Object.values(draft.dashboardLevels || {});
+        return levels.length
+          ? `${levels.length} carrying contents`
+          : "Open only, no contents";
+      }
+      case "entities": {
+        const base = (BASE.find((o) => o.value === draft.base) || {}).label || "";
+        const rules = draft.rules.filter((r) => r.ids && r.ids.length).length;
+        return rules ? `${base}, ${rules} exception${rules === 1 ? "" : "s"}` : base;
+      }
+      case "details": {
+        const rules = draft.attrRules.filter((r) => r.names.length).length;
+        return rules ? `${rules} rule${rules === 1 ? "" : "s"}` : "Nothing hidden";
+      }
+      case "admin": {
+        if ((draft.tiers || {}).max === "admin") return "A full administrator";
+        const n = (draft.capabilities || []).length;
+        return n ? `${n} of the settings` : "No settings";
+      }
+      case "hours": {
+        const windows = draft.schedule.filter(
+          (w) => w.days.length || w.start || w.end
+        ).length;
+        return windows
+          ? `${windows} window${windows === 1 ? "" : "s"}`
+          : "Always in force";
+      }
+      default:
+        return "";
+    }
+  }
+
+  _refreshSummaries() {
+    if (!this._draft) return;
+    this.shadowRoot.querySelectorAll("[data-section]").forEach((panel) => {
+      const summary = this._summary(panel.dataset.section);
+      panel.header = summary
+        ? `${panel.dataset.title} — ${summary}`
+        : panel.dataset.title;
+      if (panel.dataset.blurb) panel.secondary = panel.dataset.blurb;
+    });
+    this._refreshToggleLabel();
+  }
+
+  _refreshToggleLabel() {
+    const button = this.shadowRoot.getElementById("toggle-sections");
+    if (!button) return;
+    const sections = this.shadowRoot.querySelectorAll("[data-section]");
+    const allOpen = sections.length > 0 && this._open.size >= sections.length;
+    button.textContent = allOpen ? "Collapse all" : "Expand all";
+  }
+
+  _toggleSections() {
+    const sections = [...this.shadowRoot.querySelectorAll("[data-section]")];
+    const open = this._open.size < sections.length;
+    this._open = new Set(open ? sections.map((s) => s.dataset.section) : []);
+    sections.forEach((panel) => {
+      panel.expanded = open;
+    });
+    this._refreshSummaries();
   }
 
   /**
@@ -1332,6 +1456,7 @@ class HaRbacPanel extends HTMLElement {
       if (el) el.addEventListener("click", handler);
     };
     on("new-role", () => this._createRole());
+    on("toggle-sections", () => this._toggleSections());
     on("record-start", () => this._record("start"));
     on("record-stop", () => this._record("keep"));
     on("record-discard", () => this._record("discard"));
