@@ -118,6 +118,16 @@ const STYLES = `
             grid-template-areas: "target remove" "detail detail" "picker picker"; }
   }
   .rule.deny { border-inline-start-color: var(--error-color); }
+  /* What happens to everything the rows below do not name. Deliberately looks
+     like a row and deliberately is not one: a setting shown where it takes
+     effect beats one inferred from a control further up the page. */
+  .fallback { display: flex; align-items: baseline; gap: 12px;
+              padding: 12px 0 12px 12px;
+              border-inline-start: 2px dashed var(--divider-color);
+              border-bottom: 1px solid var(--divider-color);
+              color: var(--secondary-text-color); }
+  .fallback .what { flex: 1; min-width: 0; }
+  .fallback .value { font-weight: 500; color: var(--primary-text-color); }
   .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
   .actions .spacer { flex: 1; }
   ul.roles { list-style: none; margin: 0; padding: 0; }
@@ -154,6 +164,31 @@ const STYLES = `
   .cap-title { cursor: pointer; }
   .cap .hint { margin: 2px 0 12px; }
   .cap.indent { margin-left: 28px; }
+  /* The recording offer is part of the role, not page furniture, so it sits in
+     the form with a border of its own rather than loose above the title. */
+  .record { display: flex; align-items: center; gap: 16px; margin: 4px 0 20px;
+            padding: 12px 16px; border: 1px solid var(--divider-color, #e0e0e0);
+            border-radius: 12px; background: var(--card-background-color); }
+  .record-text { flex: 1; min-width: 0; }
+  .record-text strong { display: flex; align-items: center; gap: 8px; }
+  .record .hint { margin: 2px 0 0; }
+  .record-actions { display: flex; align-items: center; gap: 4px;
+                    flex-wrap: wrap; justify-content: flex-end; }
+  .record.recording { border-color: var(--warning-color, #ffa726);
+                      background: color-mix(in srgb,
+                                  var(--warning-color, #ffa726) 8%,
+                                  var(--card-background-color)); }
+  .record .seen { margin: 8px 0 0; font-size: var(--ha-font-size-s, .85rem); }
+  .record .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+                 background: var(--warning-color, #ffa726);
+                 animation: rbac-pulse 1.8s ease-in-out infinite; }
+  .record ha-button.quiet { --mdc-theme-primary: var(--secondary-text-color); }
+  @keyframes rbac-pulse { 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) { .record .dot { animation: none; } }
+  @media (max-width: 600px) {
+    .record { flex-direction: column; align-items: stretch; }
+    .record-actions { justify-content: flex-start; }
+  }
   /* Seven three-letter labels do not need the width an app name does. */
   /* A time picker is hh:mm, a meridiem dropdown and a clear button, which is
      wider than it looks; four controls abreast clipped it. Days take the first
@@ -552,9 +587,14 @@ class HaRbacPanel extends HTMLElement {
           ${locked ? "disabled" : ""}></ha-input>
       </div>
 
+      <div id="record-host"></div>
+
       <h3>What this role can see</h3>
-      <p class="hint">Start from a baseline, then add exceptions. Most roles are
-        one line of each: see everything, except the locks.</p>
+      <p class="hint">The baseline is what this role gets for every entity in
+        the house; exceptions below override it for the ones you name. Most
+        roles are one line of each: see everything, except the locks. It applies
+        to entities only -- dashboards, settings and hours are set further
+        down.</p>
       <div class="field" id="base-host"></div>
       <div id="sees-nothing"></div>
 
@@ -691,7 +731,7 @@ class HaRbacPanel extends HTMLElement {
         <ha-button id="delete" ${locked ? "disabled" : ""}>Delete</ha-button>
       </div>`;
 
-    host.insertAdjacentHTML("afterbegin", this._recordSection(locked));
+    host.querySelector("#record-host").innerHTML = this._recordSection(locked);
 
     host.querySelector("#adv-allow").appendChild(
       this._multiline(draft.tierAllow.join("\n"), "Always allow (one pattern per line)", locked, (value) => {
@@ -715,6 +755,8 @@ class HaRbacPanel extends HTMLElement {
     host.querySelector("#base-host").appendChild(
       this._select(BASE, draft.base, locked, "Baseline", (value) => {
         this._draft.base = value;
+        const shown = host.querySelector("#baseline-row .value");
+        if (shown) shown.textContent = this._baselineValue();
         this._refreshSeesNothing();
         this._syncRaw();
       })
@@ -781,28 +823,36 @@ class HaRbacPanel extends HTMLElement {
     if (locked) return "";
     const live = this._recording[this._selected];
     if (!live) {
-      return `<div class="actions" id="record-idle">
-        <ha-button id="record-start">Record what this role needs</ha-button>
-        <span class="hint">Hand the role out, let them use Home Assistant
-          normally, then stop. Everything they touched is added here.</span>
+      return `<div class="record">
+        <div class="record-text">
+          <strong>Not sure what to allow?</strong>
+          <p class="hint">Hand the role out and let them use Home Assistant
+            normally for a few minutes. Everything they touch is added here when
+            you stop.</p>
+        </div>
+        <ha-button id="record-start">Record</ha-button>
       </div>`;
     }
     const counts = [
       [live.entities ? Object.keys(live.entities).length : 0, "entity", "entities"],
       [live.apps ? live.apps.length : 0, "app", "apps"],
+      [live.capabilities ? live.capabilities.length : 0, "setting", "settings"],
     ]
       .filter(([n]) => n)
       .map(([n, one, many]) => `${n} ${n === 1 ? one : many}`)
       .join(", ");
-    return `<ha-alert alert-type="warning">
-        <strong>Recording.</strong> Everyone holding this role has full access
-        until you stop, and nothing is being enforced for them. Seen so far:
-        ${esc(counts || "nothing yet")}.
-        <div class="actions">
-          <ha-button id="record-stop">Stop and keep</ha-button>
-          <ha-button id="record-discard">Stop and discard</ha-button>
+    return `<div class="record recording">
+        <div class="record-text">
+          <strong><span class="dot"></span>Recording</strong>
+          <p class="hint">Everyone holding this role has full access until you
+            stop, and nothing is enforced for them.</p>
+          <p class="seen">Seen so far: ${esc(counts || "nothing yet")}</p>
         </div>
-      </ha-alert>`;
+        <div class="record-actions">
+          <ha-button id="record-stop">Stop and keep</ha-button>
+          <ha-button id="record-discard" class="quiet">Discard</ha-button>
+        </div>
+      </div>`;
   }
 
   async _record(action) {
@@ -850,13 +900,33 @@ class HaRbacPanel extends HTMLElement {
          decides whether the screen is reachable, not what is on it.</ha-alert>`;
   }
 
+  /** What everything unnamed gets. Shown as a row, but not an editable one. */
+  _fallbackRow(what, value, id) {
+    const row = document.createElement("div");
+    row.className = "fallback";
+    if (id) row.id = id;
+    row.innerHTML = `<span class="what">${esc(what)}</span>
+      <span class="value">${esc(value)}</span>`;
+    return row;
+  }
+
+  _baselineValue() {
+    return (
+      {
+        none: "No access",
+        read: "Read",
+        control: "Read and control",
+        full: "Unfiltered",
+      }[this._draft.base] || ""
+    );
+  }
+
   _mountRules(host, locked) {
     host.innerHTML = "";
     this._refreshSeesNothing();
-    if (!this._draft.rules.length) {
-      host.innerHTML = `<p class="hint">No exceptions. The baseline applies to everything.</p>`;
-      return;
-    }
+    host.appendChild(
+      this._fallbackRow("Every other entity", this._baselineValue(), "baseline-row")
+    );
     this._draft.rules.forEach((rule, index) => {
       host.appendChild(this._ruleRow(rule, index, locked));
     });
@@ -865,7 +935,7 @@ class HaRbacPanel extends HTMLElement {
   _mountSchedule(host, locked) {
     host.innerHTML = "";
     if (!this._draft.schedule.length) {
-      host.innerHTML = `<p class="hint">Always in force.</p>`;
+      host.appendChild(this._fallbackRow("No hours set", "Always in force"));
       return;
     }
     this._draft.schedule.forEach((window, index) => {
@@ -911,11 +981,7 @@ class HaRbacPanel extends HTMLElement {
 
   _mountAttrRules(host, locked) {
     host.innerHTML = "";
-    if (!this._draft.attrRules.length) {
-      host.innerHTML = `<p class="hint">Nothing hidden. Entities this role can
-        see, it sees in full.</p>`;
-      return;
-    }
+    host.appendChild(this._fallbackRow("Every other detail", "Shown in full"));
     this._draft.attrRules.forEach((rule, index) => {
       host.appendChild(this._attrRow(rule, index, locked));
     });
@@ -925,6 +991,12 @@ class HaRbacPanel extends HTMLElement {
    * `ha-select` renders its own items from an `options` property. Slotted
    * children are ignored unless they are `ha-dropdown-item`s, which is why a
    * list of `ha-list-item`s showed the raw value and selected nothing.
+   *
+   * It is also controlled: choosing an item announces the new value but does
+   * not adopt it, so the value has to be written back. Without that the draft
+   * changed while the box went on showing the old choice -- which reads as a
+   * broken dropdown, and is worse than one, because saving then applied a
+   * setting the screen said was not selected.
    */
   _select(options, value, locked, label, onChange, id) {
     const el = document.createElement("ha-select");
@@ -937,6 +1009,7 @@ class HaRbacPanel extends HTMLElement {
       event.stopPropagation();
       const next = event.detail ? event.detail.value : el.value;
       if (next === undefined || next === null) return;
+      el.value = next;
       onChange(next);
     });
     return el;
