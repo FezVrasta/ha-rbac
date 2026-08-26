@@ -112,3 +112,35 @@ async def test_a_proxy_sharing_home_assistants_port_is_refused(
     step = await flow.async_step_user({**PORTS, CONF_UPSTREAM_PORT: 8123})
     assert step["type"] is FlowResultType.FORM
     assert step["errors"] == {CONF_PROXY_PORT: "port_conflict"}
+
+
+async def test_no_manual_instruction_when_the_move_is_on_offer(
+    hass: HomeAssistant, flow: RbacConfigFlow
+) -> None:
+    """Telling someone to do a thing you are about to offer to do reads badly.
+
+    On a fresh install Home Assistant is of course still on the network -- that
+    is the whole point of the next step -- so saying so here, with directions,
+    only makes the offer look like it does not work.
+    """
+    with patch.object(hass.http, "server_host", ["0.0.0.0"], create=True):
+        step = await flow.async_step_user()
+    assert step["description_placeholders"] == {"warning": ""}
+
+
+async def test_the_manual_instruction_survives_where_it_is_the_only_route(
+    hass: HomeAssistant, flow: RbacConfigFlow
+) -> None:
+    """A build this cannot drive leaves the manual route, so it has to say so."""
+    with (
+        patch.object(hass.http, "server_host", ["0.0.0.0"], create=True),
+        patch(
+            "custom_components.ha_rbac.http_config.async_can_manage",
+            return_value=False,
+        ),
+    ):
+        step = await flow.async_step_user()
+
+    warning = step["description_placeholders"]["warning"]
+    assert "127.0.0.1" in warning
+    assert "Settings > System > Network" in warning

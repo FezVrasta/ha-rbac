@@ -111,20 +111,28 @@ class RbacConfigFlow(ConfigFlow, domain=DOMAIN):
                 user_input or ({CONF_PROXY_PORT: current_port} if current_port else {})
             ),
             errors=errors,
-            description_placeholders={
-                "warning": (
-                    ""
-                    if async_upstream_is_loopback_only(self.hass)
-                    else (
-                        "Home Assistant is currently reachable from the "
-                        "network, so nothing here is enforced yet. Once this is "
-                        "answering, set Server host to 127.0.0.1 under Settings "
-                        "> System > Network. Until you do, anyone can bypass "
-                        "these rules by connecting to Home Assistant directly "
-                        "with the token they already have."
-                    )
-                )
-            },
+            description_placeholders={"warning": await self._async_warning()},
+        )
+
+    async def _async_warning(self) -> str:
+        """Return what to say about Home Assistant still being on the network.
+
+        Which is nothing, in the ordinary case: it is on the network, that is
+        exactly what the next step offers to change, and telling someone to go
+        and do it by hand immediately before offering to do it for them reads
+        as a contradiction. The warning is for the build where the offer cannot
+        be made, since then the manual route really is the only one.
+        """
+        if async_upstream_is_loopback_only(self.hass):
+            return ""
+        if await http_config.async_can_manage(self.hass):
+            return ""
+        return (
+            "Home Assistant is currently reachable from the network, so "
+            "nothing here is enforced yet. Once this is answering, set Server "
+            "host to 127.0.0.1 under Settings > System > Network. Until you "
+            "do, anyone can bypass these rules by connecting to Home Assistant "
+            "directly with the token they already have."
         )
 
     async def async_step_move(
