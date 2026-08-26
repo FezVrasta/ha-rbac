@@ -28,7 +28,13 @@ from homeassistant.helpers import (
 )
 
 from .catalog import Catalog
-from .const import CAPABILITY_PATTERNS, MAX_WALK_DEPTH, RESOURCE_KEYS, TIER_ADMIN
+from .const import (
+    CAPABILITY_PATTERNS,
+    MAX_WALK_DEPTH,
+    RESOURCE_KEYS,
+    TIER_ADMIN,
+    TIER_OPEN,
+)
 from .extract import Extracted, entity_ids_in, extract, is_bounded
 from .filters import FilterRegistry
 from .policy import Permissions
@@ -465,14 +471,27 @@ class Decider:
         ):
             return None
 
+        named = f"{domain}.{service}"
         if self._catalog.service_is_admin_only(domain, service):
-            if not permissions.tier_allowed(f"{domain}.{service}", TIER_ADMIN):
+            if not permissions.tier_allowed(named, TIER_ADMIN):
                 return Decision(
                     allowed=False,
                     reason=REASON_TIER,
                     detail=(f"{domain}.{service} is an administrative service"),
                 )
             return Decision(allowed=True, filter_response=True)
+
+        # A role may forbid a service Home Assistant does not consider
+        # administrative -- one that names no entity, so nothing else here would
+        # catch it. Asked at the lowest tier, so the ranked comparison passes
+        # and only an explicit rule decides: a denial refuses, an allowance
+        # grants, and a role that says nothing about it is unaffected.
+        if not permissions.tier_allowed(named, TIER_OPEN):
+            return Decision(
+                allowed=False,
+                reason=REASON_TIER,
+                detail=f"role does not permit the {named} action",
+            )
 
         # The probe is never a real entity; it makes the domain-level rule in
         # the policy answer for a call that names no particular one.

@@ -1270,3 +1270,64 @@ def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+async def test_a_role_can_refuse_one_ordinary_service(
+    hass: HomeAssistant,
+) -> None:
+    """A denial written against a service name did nothing, and said nothing.
+
+    Home Assistant marks its own dangerous services, and those were checked
+    against the role. Everything else took the domain-level path, where the
+    name is never consulted -- so an administrator could write
+    `notify.mobile_app_kids` in the deny box, watch it save, and have it
+    silently ignored for the life of the role. Worse than absent: it looked
+    like it worked.
+
+    The shape comes from the RBAC proposal in home-assistant/architecture#1374,
+    which asks core for a `services` category with per-service denial. The tier
+    globs already were one; they just were not being read here.
+    """
+    for domain in ("websocket_api", "config", "persistent_notification"):
+        await async_setup_component(hass, domain, {})
+    await hass.async_block_till_done()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    decider = Decider(hass, catalog, REGISTRY)
+    assert (
+        catalog.service_is_admin_only("persistent_notification", "create") is False
+    ), "precondition: Home Assistant does not gate this one itself"
+
+    def _call(deny: list[str]) -> Decision:
+        role = compile_role(
+            hass,
+            {
+                "id": "r",
+                "name": "R",
+                "allow": {
+                    CAT_ENTITIES: {
+                        SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}
+                    }
+                },
+                "tiers": {"max": TIER_USER, "allow": [], "deny": deny},
+            },
+            PermissionLookup(er.async_get(hass), dr.async_get(hass)),
+        )
+        return decider.decide(
+            Permissions(roles=[role]),
+            KIND_WS,
+            "call_service",
+            {
+                "type": "call_service",
+                "domain": "persistent_notification",
+                "service": "create",
+                "service_data": {"message": "hello"},
+            },
+        )
+
+    assert _call([]).allowed is True, "precondition: allowed when nothing forbids it"
+    assert _call(["persistent_notification.create"]).allowed is False
+    assert _call(["persistent_notification.*"]).allowed is False
+    assert _call(["notify.*"]).allowed is True, (
+        "a rule for another domain must not bite"
+    )

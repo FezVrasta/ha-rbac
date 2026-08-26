@@ -20,6 +20,32 @@ If that derivation ever stops working, the catalog reports itself **degraded**
 and every request is refused. The failure direction for an introspection-based
 scheme is otherwise silent and open, which is the worst way for it to break.
 
+## Why this is not a core patch
+
+Home Assistant's architecture discussion
+[#1374](https://github.com/home-assistant/architecture/discussions/1374) is a
+worked RBAC proposal for core -- deny-overrides-allow, label-based entity
+permissions, custom role CRUD, per-service and per-automation categories --
+with a branch behind it. It was declined, and so was a follow-up asking for
+about eighty lines: `AuthManager` group CRUD, and widening the policy schema to
+accept `False`.
+
+The reason given was not disagreement about the feature. It was that
+authentication and authorization need "significant care and oversight from the
+Foundation, well beyond just code review" -- external audits, ongoing security
+monitoring, long-term maintenance -- and those resources are not allocated.
+
+Two things follow for this project. Waiting for either change would be waiting
+indefinitely, which is why deny is expressed by compiling two policies rather
+than by asking the schema to accept `False`, and why roles live in this
+integration's own store rather than in `.storage/auth`. And the same reasoning
+applies here with the same force: this layer has had one adversarial pass by its
+author and no external audit, which is what the alpha warning is about.
+
+The proposal is worth reading anyway. It is an independent design of the same
+thing, and the places it reaches that this does not -- per-automation `read`,
+`edit` and `trigger` in particular -- are a fair list of what is still missing.
+
 ## The gates
 
 A request passes through these in order, and the first refusal wins.
