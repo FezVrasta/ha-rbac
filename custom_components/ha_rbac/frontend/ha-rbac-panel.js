@@ -619,36 +619,11 @@ class HaRbacPanel extends HTMLElement {
 
       <div id="record-host"></div>
 
-      <h3>Entities: what this role can see</h3>
-      <p class="hint">The first row is where every entity starts. Add rows below
-        it to override that for particular areas, domains, labels, floors or
-        devices — most roles are one of each: see everything, except the locks.
-        This covers entities only; dashboards, settings and hours are their own
-        sections further down.</p>
-      <div id="sees-nothing"></div>
-      <div id="rules"></div>
-      <div class="actions">
-        <ha-button id="add-rule" ${locked ? "disabled" : ""}>Add exception</ha-button>
-      </div>
-
-      <h3>Details to withhold</h3>
-      <p class="hint">An entity someone can see, they see in full: every
-        attribute it reports. Hide the ones you did not mean to share: where
-        someone is, an access code, an IP address, a serial number. Rules are
-        targeted, so hiding <code>latitude</code> on people leaves the zones
-        that define where home is working. Comma separated;
-        <code>gps_*</code> matches a group, and an empty picker means every
-        entity.</p>
-      <div id="attr-rules"></div>
-      <div class="actions">
-        <ha-button id="add-attr" ${locked ? "disabled" : ""}>Hide an attribute</ha-button>
-      </div>
-
       <h3>Where this role can go</h3>
       <p class="hint">Every dashboard, add-on and built-in screen in the sidebar.
         Unticking one hides it and refuses the requests behind it. This decides
         which screens they can reach, not what appears on them: a dashboard they
-        can open still shows only the entities they are allowed above.</p>
+        can open still shows only the entities allowed below.</p>
       <div class="checks" id="apps">${this._visibleApps()
         .filter((app) => app.kind !== "lovelace")
         .map(
@@ -689,6 +664,31 @@ class HaRbacPanel extends HTMLElement {
           })
           .join("")}</tbody>
       </table>
+      <h3>Entities: what this role can see</h3>
+      <p class="hint">The first row is where every entity starts. Add rows below
+        it to override that for particular areas, domains, labels, floors or
+        devices — most roles are one of each: see everything, except the locks.
+        This decides what a role sees wherever it goes, including on the screens
+        chosen above.</p>
+      <div id="sees-nothing"></div>
+      <div id="rules"></div>
+      <div class="actions">
+        <ha-button id="add-rule" ${locked ? "disabled" : ""}>Add exception</ha-button>
+      </div>
+
+      <h3>Details to withhold</h3>
+      <p class="hint">An entity someone can see, they see in full: every
+        attribute it reports. Hide the ones you did not mean to share: where
+        someone is, an access code, an IP address, a serial number. Rules are
+        targeted, so hiding <code>latitude</code> on people leaves the zones
+        that define where home is working. Comma separated;
+        <code>gps_*</code> matches a group, and an empty picker means every
+        entity.</p>
+      <div id="attr-rules"></div>
+      <div class="actions">
+        <ha-button id="add-attr" ${locked ? "disabled" : ""}>Hide an attribute</ha-button>
+      </div>
+
       <h3>Administration: what this role can change</h3>
       <p class="hint">Everything in this section is an administrator's job.
         Ticked, it is a job this role does too. Leave them all off and the role
