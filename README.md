@@ -19,7 +19,7 @@
   <img src="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/panel-roles.jpg" alt="The Access Control panel, editing a Guests role" width="880">
 </p>
 
-<p align="center"><em>One role: see and control everything except the locks and cameras, and don't show anyone where people are.</em></p>
+<p align="center"><em>One role at a glance: where it can go, what it can see, what it can change. Each line opens.</em></p>
 
 ---
 
