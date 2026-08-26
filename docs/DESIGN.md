@@ -39,8 +39,8 @@ Two things follow for this project. Waiting for either change would be waiting
 indefinitely, which is why deny is expressed by compiling two policies rather
 than by asking the schema to accept `False`, and why roles live in this
 integration's own store rather than in `.storage/auth`. And the same reasoning
-applies here with the same force: this layer has had one adversarial pass by its
-author and no external audit, which is what the alpha warning is about.
+applies here with the same force: this layer has had two adversarial passes by
+its author and no external audit, which is what the alpha warning is about.
 
 The proposal is worth reading anyway. It is an independent design of the same
 thing, and the places it reaches that this does not -- per-automation `read`,

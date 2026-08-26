@@ -132,8 +132,9 @@ Assistant by other routes, and so does anyone with a login to the machine itself
 Roles don't apply there. There's a
 [plain list of what's covered and what isn't](https://github.com/FezVrasta/ha-rbac/blob/main/docs/DESIGN.md#what-this-does-and-does-not-protect-against).
 
-**It's an alpha.** Tested, and deliberately attacked, but it hasn't lived in
-anyone else's house yet. Try it on something that isn't your front door, and
+**It's an alpha.** Tested, and deliberately attacked twice — two adversarial
+reviews by its author, no external audit yet — but it hasn't lived in anyone
+else's house yet. Try it on something that isn't your front door, and
 [tell me what broke](https://github.com/FezVrasta/ha-rbac/issues).
 
 ## How it works
