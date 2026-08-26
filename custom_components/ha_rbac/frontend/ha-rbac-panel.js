@@ -151,6 +151,10 @@ const STYLES = `
   .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
   .actions .spacer { flex: 1; }
   ul.roles { list-style: none; margin: 0; padding: 0; }
+  /* Separated from the role list above it: it acts on every role, not the one
+     that happens to be selected. */
+  .hint.aside { margin: 20px 0 0; padding-top: 16px;
+                border-top: 1px solid var(--divider-color); }
   ul.roles li {
     padding: 12px; border-radius: var(--ha-border-radius-md, 8px); cursor: pointer;
     display: flex; justify-content: space-between; align-items: center; gap: 8px;
@@ -577,6 +581,12 @@ class HaRbacPanel extends HTMLElement {
             <h2>Roles</h2>
             <ul class="roles">${list}</ul>
             <div class="actions"><ha-button id="new-role">New role</ha-button></div>
+            <p class="hint aside">Dashboard contents are re-read whenever Home
+              Assistant says one changed. This is for when you would rather not
+              take its word for it.</p>
+            <div class="actions">
+              <ha-button id="refresh-dashboards">Re-read dashboards</ha-button>
+            </div>
           </div>
         </ha-card>
         <ha-card><div class="card-content" id="editor"></div></ha-card>
@@ -679,10 +689,6 @@ class HaRbacPanel extends HTMLElement {
           })
           .join("")}</tbody>
       </table>
-      <div class="actions">
-        <ha-button id="refresh-dashboards">Re-read the dashboards</ha-button>
-      </div>
-
       <h3>Administration: what this role can change</h3>
       <p class="hint">Everything in this section is an administrator's job.
         Ticked, it is a job this role does too. Leave them all off and the role
