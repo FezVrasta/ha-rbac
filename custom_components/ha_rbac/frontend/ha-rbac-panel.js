@@ -27,13 +27,13 @@ const ACCESS = [
 ];
 
 const BASE = [
-  { value: "none", label: "Nothing by default" },
-  { value: "read", label: "Read everything" },
-  { value: "control", label: "Read and control everything" },
+  { value: "none", label: "No access" },
+  { value: "read", label: "Read" },
+  { value: "control", label: "Read and control" },
   // Distinct from "control": this is the policy Home Assistant itself treats as
   // unrestricted, and it lets the proxy skip filtering entirely. Collapsing it
   // into "control" would quietly cost a clone of Administrator that fast path.
-  { value: "full", label: "Everything, unfiltered" },
+  { value: "full", label: "Unfiltered" },
 ];
 
 // Where each kind of exception lives in a stored policy.
@@ -121,15 +121,22 @@ const STYLES = `
   /* What happens to everything the rows below do not name. Deliberately looks
      like a row and deliberately is not one: a setting shown where it takes
      effect beats one inferred from a control further up the page. */
-  .fallback { display: flex; align-items: flex-start; gap: 12px;
+  /* Same grid as a rule row, so the access it sets sits in the same column as
+     the access on every row that overrides it. */
+  .fallback { display: grid; gap: 12px; align-items: center;
+              grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 48px;
               padding: 12px 0 12px 12px;
               border-inline-start: 2px dashed var(--divider-color);
               border-bottom: 1px solid var(--divider-color);
               color: var(--secondary-text-color); }
-  .fallback .what { flex: 1; min-width: 0; }
+  .fallback .what { min-width: 0; }
   .fallback .value { font-weight: 500; color: var(--primary-text-color); }
   .fallback .note { display: block; margin-top: 2px;
                     font-size: var(--ha-font-size-s, .85rem); }
+  .fallback ha-select { width: 100%; }
+  @media (max-width: 700px) {
+    .fallback { grid-template-columns: minmax(0, 1fr); }
+  }
   .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
   .actions .spacer { flex: 1; }
   ul.roles { list-style: none; margin: 0; padding: 0; }
@@ -591,16 +598,13 @@ class HaRbacPanel extends HTMLElement {
 
       <div id="record-host"></div>
 
-      <h3>What this role can see</h3>
-      <p class="hint">The baseline is what this role gets for every entity in
-        the house; exceptions below override it for the ones you name. Most
-        roles are one line of each: see everything, except the locks. It applies
-        to entities only -- dashboards, settings and hours are set further
-        down.</p>
-      <div class="field" id="base-host"></div>
+      <h3>Entities: what this role can see</h3>
+      <p class="hint">The first row is where every entity starts. Add rows below
+        it to override that for particular areas, domains, labels, floors or
+        devices — most roles are one of each: see everything, except the locks.
+        This covers entities only; dashboards, settings and hours are their own
+        sections further down.</p>
       <div id="sees-nothing"></div>
-
-      <h3>Exceptions</h3>
       <div id="rules"></div>
       <div class="actions">
         <ha-button id="add-rule" ${locked ? "disabled" : ""}>Add exception</ha-button>
@@ -754,15 +758,6 @@ class HaRbacPanel extends HTMLElement {
     raw.id = "raw";
     host.querySelector("#adv-raw").appendChild(raw);
 
-    host.querySelector("#base-host").appendChild(
-      this._select(BASE, draft.base, locked, "Baseline", (value) => {
-        this._draft.base = value;
-        const shown = host.querySelector("#baseline-row .value");
-        if (shown) shown.textContent = this._baselineValue();
-        this._refreshSeesNothing();
-        this._syncRaw();
-      })
-    );
     host.querySelector("#tier-admin").addEventListener("change", () =>
       this._refreshCapabilities()
     );
@@ -919,28 +914,29 @@ class HaRbacPanel extends HTMLElement {
     return row;
   }
 
-  _baselineValue() {
-    return (
-      {
-        none: "No access",
-        read: "Read",
-        control: "Read and control",
-        full: "Unfiltered",
-      }[this._draft.base] || ""
+  /** The row every other row is an exception to, and where its value is set. */
+  _baselineRow(locked) {
+    const row = this._fallbackRow(
+      "Every entity",
+      "",
+      "Unless a row below says otherwise",
+      "baseline-row"
     );
+    row.querySelector(".value").remove();
+    row.appendChild(
+      this._select(BASE, this._draft.base, locked, "Access", (value) => {
+        this._draft.base = value;
+        this._refreshSeesNothing();
+        this._syncRaw();
+      })
+    );
+    return row;
   }
 
   _mountRules(host, locked) {
     host.innerHTML = "";
     this._refreshSeesNothing();
-    host.appendChild(
-      this._fallbackRow(
-        "Every entity",
-        this._baselineValue(),
-        "Unless an exception below says otherwise",
-        "baseline-row"
-      )
-    );
+    host.appendChild(this._baselineRow(locked));
     this._draft.rules.forEach((rule, index) => {
       host.appendChild(this._ruleRow(rule, index, locked));
     });
