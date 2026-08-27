@@ -22,7 +22,7 @@
 
 const ACCESS = [
   { value: "none", label: "No access" },
-  { value: "read", label: "Read" },
+  { value: "read", label: "Read only" },
   { value: "control", label: "Read and control" },
 ];
 
@@ -33,7 +33,7 @@ const TONE = { none: "deny", read: "read", control: "control", full: "control" }
 
 const BASE = [
   { value: "none", label: "No access" },
-  { value: "read", label: "Read" },
+  { value: "read", label: "Read only" },
   { value: "control", label: "Read and control" },
   // Distinct from "control": this is the policy Home Assistant itself treats as
   // unrestricted, and it lets the proxy skip filtering entirely. Collapsing it

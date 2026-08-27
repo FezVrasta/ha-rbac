@@ -454,6 +454,114 @@ def desugar(hass: HomeAssistant, policy: dict[str, Any]) -> PolicyType:
     return {CAT_ENTITIES: out} if out else {}
 
 
+# Home Assistant's own precedence, most specific first. `desugar` folds areas,
+# labels and floors into entity ids, so `ENTITY_AREAS` cannot survive into a
+# compiled policy; it is listed anyway so this stays a faithful mirror of
+# `compile_entities` rather than something that has to be revisited if that
+# changes.
+_PRECEDENCE = (
+    ENTITY_ENTITY_IDS,
+    ENTITY_DEVICE_IDS,
+    ENTITY_AREAS,
+    ENTITY_DOMAINS,
+    SUBCAT_ALL,
+)
+# The same, minus the baseline: the levels a role uses to name an *exception*.
+_EXCEPTION_LEVELS = _PRECEDENCE[:-1]
+
+
+def _named_at(level: str, value: Any) -> Any:
+    """Reduce one level's grants to "does it name this entity at all".
+
+    Which keys are granted is dropped, so the result answers matching alone.
+    `SUBCAT_ALL` is not a mapping of targets -- the value *is* the grant -- so it
+    matches everything or nothing.
+    """
+    if level == SUBCAT_ALL:
+        return True
+    if isinstance(value, dict):
+        return dict.fromkeys(value, True)
+    return value
+
+
+def _levels(
+    entities: dict[str, Any],
+    perm_lookup: PermissionLookup,
+    levels: tuple[str, ...],
+) -> list[tuple[Callable[[str, str], bool], Callable[[str, str], bool]]]:
+    """Compile each level on its own, as (names it, grants the key) pairs.
+
+    Compiling one level at a time is the whole point: it is what removes Home
+    Assistant's fall-through, because a policy with a single subcategory has
+    nowhere to fall through to.
+    """
+    return [
+        (
+            compile_entities({level: _named_at(level, value)}, perm_lookup),
+            compile_entities({level: value}, perm_lookup),
+        )
+        for level in levels
+        if (value := entities.get(level)) is not None
+    ]
+
+
+def compile_capped_entities(
+    entities: Any, perm_lookup: PermissionLookup
+) -> Callable[[str, str], bool]:
+    """Compile an allow policy where the most specific grant is the whole answer.
+
+    Home Assistant reads a key missing from a matched grant as "no opinion" and
+    keeps looking, so `{"read": True}` on one entity does not withhold the
+    control a broader `all` grant hands out. Every narrowing exception in the
+    editor was therefore silently doing nothing: a role whose baseline is read
+    and control could still control the one entity marked read-only.
+
+    Here the first level that names an entity settles every key for it, which is
+    what an exception says it does. Widening is unaffected -- an entity granted
+    read *and* control still gets both under a read-only baseline, because that
+    level names it and grants the key.
+    """
+    if entities is True:
+        return lambda entity_id, key: True
+    if not isinstance(entities, dict) or not entities:
+        return lambda entity_id, key: False
+
+    levels = _levels(entities, perm_lookup, _PRECEDENCE)
+
+    def apply_capped(entity_id: str, key: str) -> bool:
+        for names, grants in levels:
+            if names(entity_id, key):
+                return grants(entity_id, key)
+        return False
+
+    return apply_capped
+
+
+def compile_caps(
+    entities: Any, perm_lookup: PermissionLookup
+) -> Callable[[str, str], bool]:
+    """Compile "an exception names this entity and withholds this key from it".
+
+    Consulted so that a dashboard held at `control` cannot hand back what an
+    exception took away. The baseline is deliberately not a level here: a
+    read-only baseline with a dashboard the role is meant to operate is the
+    feature working as intended, whereas an entity singled out as read-only is
+    an instruction about that entity.
+    """
+    if entities is True or not isinstance(entities, dict) or not entities:
+        return lambda entity_id, key: False
+
+    levels = _levels(entities, perm_lookup, _EXCEPTION_LEVELS)
+
+    def apply_caps(entity_id: str, key: str) -> bool:
+        for names, grants in levels:
+            if names(entity_id, key):
+                return not grants(entity_id, key)
+        return False
+
+    return apply_caps
+
+
 @dataclass(slots=True)
 class CompiledAttributeRule:
     """Attribute names withheld from the entities a rule targets."""
@@ -530,6 +638,9 @@ class CompiledRole:
     name: str
     allow_fn: Callable[[str, str], bool]
     deny_fn: Callable[[str, str], bool]
+    # "an exception names this entity and withholds this key", which a dashboard
+    # grant must not undo.
+    cap_fn: Callable[[str, str], bool]
     tier_max: str
     tier_allow: list[str]
     tier_deny: list[str]
@@ -554,6 +665,8 @@ class CompiledRole:
             return False
         if self.allow_fn(entity_id, key):
             return True
+        if self.cap_fn(entity_id, key):
+            return False
         return self._granted_by_a_dashboard(entity_id, key)
 
     def _granted_by_a_dashboard(self, entity_id: str, key: str) -> bool:
@@ -561,7 +674,9 @@ class CompiledRole:
 
         A denial still wins, which is checked before this: naming an entity a
         role must not see should not be undone by someone putting it on a
-        dashboard the role happens to hold.
+        dashboard the role happens to hold. So does an exception that caps an
+        entity below the level asked for -- a garage door marked read-only is
+        read-only wherever it is drawn.
         """
         if self.dashboard_entities is None:
             return False
@@ -598,8 +713,9 @@ def compile_role(
     return CompiledRole(
         role_id=role["id"],
         name=role.get("name", role["id"]),
-        allow_fn=compile_entities(allow_policy.get(CAT_ENTITIES), perm_lookup),
+        allow_fn=compile_capped_entities(allow_policy.get(CAT_ENTITIES), perm_lookup),
         deny_fn=compile_entities(deny_policy.get(CAT_ENTITIES), perm_lookup),
+        cap_fn=compile_caps(allow_policy.get(CAT_ENTITIES), perm_lookup),
         tier_max=tier_max,
         tier_allow=tier_allow,
         tier_deny=[*BASELINE_DENY, *(tiers.get("deny") or [])],
