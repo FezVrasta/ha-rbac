@@ -16,10 +16,14 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/panel-roles.jpg" alt="The Access Control panel, editing a Guests role" width="880">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/how-it-works-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/how-it-works-light.svg">
+    <img src="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/how-it-works-light.svg" alt="Everyone's requests pass through Access Control on the way to Home Assistant. A guest asking to unlock the front door is refused; the same request from the owner goes through. Answers coming back are trimmed to what that person may see." width="880">
+  </picture>
 </p>
 
-<p align="center"><em>One role at a glance: where it can go, what it can see, what it can change. Each line opens.</em></p>
+<p align="center"><em>Everyone talks to the same Home Assistant. Each person only ever gets their own slice of it.</em></p>
 
 ---
 
@@ -55,6 +59,12 @@ Four roles to start from: **Administrator**, **Editor**, **User** and
 ## Take a look
 
 <table>
+<tr>
+<td colspan="2">
+<img src="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/panel-roles.jpg" alt="The Access Control panel, editing a Guests role">
+<p align="center"><em>One role at a glance: where it can go, what it can see, what it can change. Each line opens.</em></p>
+</td>
+</tr>
 <tr>
 <td width="50%">
 <img src="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/guest-search-no-locks.jpg" alt="A guest searching for locks finds none">

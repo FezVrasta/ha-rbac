@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 880" width="1600" height="880" font-family="Helvetica, Arial, sans-serif">
+  <rect id="light" width="0" height="0" fill="none"></rect>
+  <rect id="dark" width="0" height="0" fill="none"></rect>
+  
+  <g class="ui">
+  
+
+  <rect class="bg" x="0" y="0" width="1600" height="880" fill="#0f1216"></rect>
+
+
+  <g transform="translate(0,-84)">
+  <rect class="card" x="60" y="160" width="300" height="100" rx="16" fill="#171b21" stroke="#262c34"></rect>
+  <circle cx="94" cy="210" r="7" fill="#41BDF5"></circle>
+  <text class="t" x="120" y="203" font-size="26" font-weight="600" fill="#eef1f4">You</text>
+  <text class="m" x="120" y="233" font-size="19" fill="#9aa4b0">Everything</text>
+
+  <rect class="card" x="60" y="290" width="300" height="100" rx="16" fill="#171b21" stroke="#262c34"></rect>
+  <circle class="dot" cx="94" cy="340" r="7" fill="#7d8791"></circle>
+  <text class="t" x="120" y="333" font-size="26" font-weight="600" fill="#eef1f4">Kid</text>
+  <text class="m" x="120" y="363" font-size="19" fill="#9aa4b0">Bedroom lights only</text>
+
+  <rect class="card" x="60" y="420" width="300" height="100" rx="16" fill="#171b21" stroke="#262c34"></rect>
+  <circle class="dot" cx="94" cy="470" r="7" fill="#7d8791"></circle>
+  <text class="t" x="120" y="463" font-size="26" font-weight="600" fill="#eef1f4">Guest</text>
+  <text class="m" x="120" y="493" font-size="19" fill="#9aa4b0">Living room lights only</text>
+
+  <g fill="none" stroke="#49525d" stroke-width="3" class="arrow">
+    <path d="M360 210 C460 210 460 250 541 250"></path>
+    <path d="M360 340 H541"></path>
+    <path d="M360 470 C460 470 460 450 541 450"></path>
+  </g>
+  <g class="head" fill="#49525d">
+    <polygon points="541,242 558,250 541,258"></polygon>
+    <polygon points="541,332 558,340 541,348"></polygon>
+    <polygon points="541,442 558,450 541,458"></polygon>
+  </g>
+
+  <rect class="accbox" x="560" y="160" width="280" height="380" rx="20" fill="#10222c" stroke="#41BDF5" stroke-width="2"></rect>
+  <g transform="translate(662,196) scale(0.14844)">
+    <rect x="0" y="0" width="512" height="512" rx="112" fill="#41BDF5"></rect>
+    <path d="M135 130 H377 V244 C377 320 320 371 256 396 C192 371 135 320 135 244 Z" fill="#ffffff"></path>
+    <circle cx="256" cy="243" r="39" fill="#41BDF5"></circle>
+    <path d="M243 268 H269 L263 341 H249 Z" fill="#41BDF5"></path>
+  </g>
+  <text class="t" x="700" y="348" font-size="28" font-weight="600" text-anchor="middle" fill="#eef1f4">Access Control</text>
+  <text class="accsub" x="700" y="388" font-size="19" text-anchor="middle" fill="#9dc7dc">Every request in,</text>
+  <text class="accsub" x="700" y="415" font-size="19" text-anchor="middle" fill="#9dc7dc">every answer out</text>
+
+  <path d="M856 350 H1064" fill="none" stroke="#41BDF5" stroke-width="3"></path>
+  <polygon fill="#41BDF5" points="1064,342 1080,350 1064,358"></polygon>
+  <polygon fill="#41BDF5" points="856,342 840,350 856,358"></polygon>
+
+  <rect class="card" x="1080" y="160" width="460" height="380" rx="20" fill="#171b21" stroke="#262c34"></rect>
+  <text class="t" x="1112" y="215" font-size="28" font-weight="600" fill="#eef1f4">Home Assistant</text>
+
+  <rect class="chip" x="1112" y="250" width="190" height="56" rx="12" fill="#1f242b"></rect>
+  <circle class="dot" cx="1136" cy="278" r="6" fill="#7d8791"></circle>
+  <text class="t" x="1156" y="285" font-size="20" fill="#eef1f4">Lights</text>
+
+  <rect class="chip" x="1318" y="250" width="190" height="56" rx="12" fill="#1f242b"></rect>
+  <rect class="dot" x="1330" y="272" width="12" height="12" rx="3" fill="#7d8791"></rect>
+  <text class="t" x="1362" y="285" font-size="20" fill="#eef1f4">Door lock</text>
+
+  <rect class="chip" x="1112" y="322" width="190" height="56" rx="12" fill="#1f242b"></rect>
+  <rect class="dot" x="1130" y="344" width="12" height="12" fill="#7d8791" transform="rotate(45 1136 350)"></rect>
+  <text class="t" x="1156" y="357" font-size="20" fill="#eef1f4">Camera</text>
+
+  <rect class="chip" x="1318" y="322" width="190" height="56" rx="12" fill="#1f242b"></rect>
+  <circle class="dotline" cx="1336" cy="350" r="6" fill="none" stroke="#7d8791" stroke-width="3"></circle>
+  <text class="t" x="1362" y="357" font-size="20" fill="#eef1f4">Settings</text>
+
+  <text class="m" x="1112" y="500" font-size="19" fill="#9aa4b0">One house. One Home Assistant.</text>
+
+  <rect class="card" x="60" y="600" width="740" height="300" rx="20" fill="#171b21" stroke="#262c34"></rect>
+  <text class="m" x="96" y="648" font-size="17" letter-spacing="2" font-family="ui-monospace,Menlo,monospace" fill="#9aa4b0">01 · GOING IN</text>
+  <text class="t" x="96" y="692" font-size="26" font-weight="600" fill="#eef1f4">Asking for something</text>
+
+  <text class="t" x="96" y="754" font-size="20" font-weight="500" fill="#eef1f4">Guest</text>
+  <rect class="chip" x="180" y="726" width="252" height="40" rx="10" fill="#1f242b"></rect>
+  <text class="t" x="196" y="753" font-size="19" fill="#eef1f4">“Unlock the front door”</text>
+  <path class="arrow" d="M448 746 H484" fill="none" stroke="#49525d" stroke-width="3"></path>
+  <polygon class="head" points="484,738 500,746 484,754" fill="#49525d"></polygon>
+  <g transform="translate(512,728) scale(0.07031)">
+    <rect x="0" y="0" width="512" height="512" rx="112" fill="#41BDF5"></rect>
+    <path d="M135 130 H377 V244 C377 320 320 371 256 396 C192 371 135 320 135 244 Z" fill="#ffffff"></path>
+    <circle cx="256" cy="243" r="39" fill="#41BDF5"></circle>
+    <path d="M243 268 H269 L263 341 H249 Z" fill="#41BDF5"></path>
+  </g>
+  <circle class="redsoft" cx="580" cy="746" r="21" fill="#3a1a17"></circle>
+  <path class="redline" d="M572 738 L588 754 M588 738 L572 754" fill="none" stroke="#FF6B5E" stroke-width="3.5" stroke-linecap="round"></path>
+  <text class="red" x="614" y="756" font-size="25" font-weight="600" fill="#FF6B5E">No</text>
+
+  <text class="t" x="96" y="826" font-size="20" font-weight="500" fill="#eef1f4">You</text>
+  <rect class="chip" x="180" y="798" width="252" height="40" rx="10" fill="#1f242b"></rect>
+  <text class="t" x="196" y="825" font-size="19" fill="#eef1f4">“Unlock the front door”</text>
+  <path class="arrow" d="M448 818 H484" fill="none" stroke="#49525d" stroke-width="3"></path>
+  <polygon class="head" points="484,810 500,818 484,826" fill="#49525d"></polygon>
+  <g transform="translate(512,800) scale(0.07031)">
+    <rect x="0" y="0" width="512" height="512" rx="112" fill="#41BDF5"></rect>
+    <path d="M135 130 H377 V244 C377 320 320 371 256 396 C192 371 135 320 135 244 Z" fill="#ffffff"></path>
+    <circle cx="256" cy="243" r="39" fill="#41BDF5"></circle>
+    <path d="M243 268 H269 L263 341 H249 Z" fill="#41BDF5"></path>
+  </g>
+  <circle class="greensoft" cx="580" cy="818" r="21" fill="#14301f"></circle>
+  <path class="greenline" d="M571 818 L578 827 L590 809" fill="none" stroke="#4FC585" stroke-width="3.5" stroke-linecap="round"></path>
+  <text class="green" x="614" y="828" font-size="25" font-weight="600" fill="#4FC585">Yes</text>
+
+  <text class="m" x="96" y="876" font-size="19" fill="#9aa4b0">A request you’re not allowed to make stops at the door.</text>
+
+  <rect class="card" x="830" y="600" width="710" height="300" rx="20" fill="#171b21" stroke="#262c34"></rect>
+  <text class="m" x="866" y="648" font-size="17" letter-spacing="2" font-family="ui-monospace,Menlo,monospace" fill="#9aa4b0">02 · COMING BACK</text>
+  <text class="t" x="866" y="692" font-size="26" font-weight="600" fill="#eef1f4">Getting an answer</text>
+
+  <text class="m" x="866" y="736" font-size="19" fill="#9aa4b0">Home Assistant sends</text>
+  <rect class="chip" x="866" y="752" width="86" height="38" rx="9" fill="#1f242b"></rect>
+  <text class="t" x="882" y="777" font-size="19" fill="#eef1f4">Lights</text>
+  <rect class="chip" x="960" y="752" width="74" height="38" rx="9" fill="#1f242b"></rect>
+  <text class="t" x="976" y="777" font-size="19" fill="#eef1f4">Lock</text>
+  <rect class="chip" x="1042" y="752" width="100" height="38" rx="9" fill="#1f242b"></rect>
+  <text class="t" x="1058" y="777" font-size="19" fill="#eef1f4">Camera</text>
+  <rect class="chip" x="1150" y="752" width="98" height="38" rx="9" fill="#1f242b"></rect>
+  <text class="t" x="1166" y="777" font-size="19" fill="#eef1f4">Settings</text>
+
+  <path class="arrow" d="M1258 771 H1276" fill="none" stroke="#49525d" stroke-width="3"></path>
+  <polygon class="head" points="1276,763 1292,771 1276,779" fill="#49525d"></polygon>
+  <g transform="translate(1302,753) scale(0.07031)">
+    <rect x="0" y="0" width="512" height="512" rx="112" fill="#41BDF5"></rect>
+    <path d="M135 130 H377 V244 C377 320 320 371 256 396 C192 371 135 320 135 244 Z" fill="#ffffff"></path>
+    <circle cx="256" cy="243" r="39" fill="#41BDF5"></circle>
+    <path d="M243 268 H269 L263 341 H249 Z" fill="#41BDF5"></path>
+  </g>
+  <path class="arrow" d="M1348 771 H1366" fill="none" stroke="#49525d" stroke-width="3"></path>
+  <polygon class="head" points="1366,763 1382,771 1366,779" fill="#49525d"></polygon>
+
+  <text class="m" x="1398" y="736" font-size="19" fill="#9aa4b0">Guest receives</text>
+  <rect class="greensoft" x="1398" y="752" width="94" height="38" rx="9" fill="#14301f"></rect>
+  <text class="green" x="1414" y="777" font-size="19" font-weight="500" fill="#4FC585">Lights</text>
+
+  <text class="m" x="866" y="876" font-size="19" fill="#9aa4b0">The lock and camera aren’t greyed out. They’re gone.</text>
+  </g>
+  </g>
+</svg>
