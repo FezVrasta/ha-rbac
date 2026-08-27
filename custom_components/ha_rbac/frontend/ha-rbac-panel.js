@@ -41,6 +41,11 @@ const BASE = [
   { value: "full", label: "Unfiltered" },
 ];
 
+const LOCATION_MODES = [
+  { value: "in", label: "Only while inside these zones" },
+  { value: "not_in", label: "Only while outside these zones" },
+];
+
 // Where each kind of exception lives in a stored policy.
 const TARGETS = [
   { value: "area_ids", label: "Areas", block: "entities", selector: { area: { multiple: true } } },
@@ -1154,31 +1159,25 @@ class HaRbacPanel extends HTMLElement {
     host.innerHTML = "";
     const loc = this._draft.location;
 
-    const mode = document.createElement("ha-selector");
-    mode.hass = this._hass;
-    mode.selector = {
-      select: {
-        mode: "dropdown",
-        options: [
-          { value: "in", label: "Only while inside these zones" },
-          { value: "not_in", label: "Only while outside these zones" },
-        ],
-      },
-    };
-    mode.label = "When to apply";
-    mode.required = false;
-    mode.value = loc.mode || "in";
-    mode.disabled = locked;
-    mode.addEventListener("value-changed", (event) => {
-      event.stopPropagation();
-      loc.mode = event.detail.value || "in";
-      this._refreshSummaries();
-    });
+    // Built through the same helper as every other dropdown here. A bare
+    // `ha-selector` renders from its `value` property and nothing wrote the new
+    // one back, so picking the other option re-rendered the old one and the
+    // choice never stuck.
+    const mode = this._select(
+      LOCATION_MODES,
+      loc.mode || "in",
+      locked,
+      "When to apply",
+      (value) => {
+        loc.mode = value || "in";
+        this._refreshSummaries();
+      }
+    );
 
     const zones = document.createElement("ha-selector");
     zones.hass = this._hass;
     zones.selector = { entity: { filter: { domain: "zone" }, multiple: true } };
-    zones.label = "Zones (any if empty)";
+    zones.label = "Zones (anywhere if empty)";
     zones.required = false;
     zones.value = loc.zones.slice();
     zones.disabled = locked;
@@ -1189,7 +1188,14 @@ class HaRbacPanel extends HTMLElement {
       this._refreshSummaries();
     });
 
-    host.append(mode, zones);
+    // `.field` is what every other stacked control here uses for its spacing;
+    // appended bare, the two sat flush against each other.
+    for (const el of [mode, zones]) {
+      const field = document.createElement("div");
+      field.className = "field";
+      field.append(el);
+      host.append(field);
+    }
   }
 
   _windowRow(window, index, locked) {
