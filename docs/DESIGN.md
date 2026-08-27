@@ -343,6 +343,15 @@ rather than ingress alone.
   admin-gated today, which is not the same as being safe forever.
 - **Automations execute with no user context**, unchanged from stock Home
   Assistant.
+- **Assist is granted or withheld, not filtered.** A sentence names no entity
+  until Home Assistant resolves it, and by the time the result comes back the
+  action has happened, so the whole intent surface is refused for any role that
+  restricts anything. A role allowed to control its own lights still cannot ask
+  Assist to turn them on. Both spellings are refused, the websocket command
+  `conversation/process` and the service `conversation.process`: a glob written
+  for one does not match the other, and denying only the command left the
+  service open until v0.15.1. [ASSIST.md](ASSIST.md) is what enforcing it rather
+  than refusing it would take.
 - **Timing and existence oracles.** A denied entity is distinguishable from one
   that does not exist.
 - **Out-of-band capability URLs.** A signed path minted for the read-only
