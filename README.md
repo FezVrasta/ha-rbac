@@ -263,7 +263,7 @@ Bug reports from real houses are the most useful thing right now, especially
 "my dashboard broke, and here's what the Denials tab said". See
 [CONTRIBUTING.md](https://github.com/FezVrasta/ha-rbac/blob/main/CONTRIBUTING.md) for running the tests.
 
-## Licence
+## License
 
 This project is licensed under the [MIT License](LICENSE). 
 See the [LICENSE](LICENSE) file for more details, including copyright information and full terms of use.
