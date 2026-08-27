@@ -528,6 +528,10 @@ class HaRbacPanel extends HTMLElement {
           appDenied: [...((role.apps || {}).deny || [])],
           dashboardLevels: { ...((role.apps || {}).dashboards || {}) },
           schedule: readSchedule(role),
+          location: {
+            zones: [...((role.location || {}).zones || [])],
+            mode: (role.location || {}).mode || "in",
+          },
           capabilities: [...(role.capabilities || [])],
           tierAllow: [...((role.tiers || {}).allow || [])],
           tierDeny: [...((role.tiers || {}).deny || [])],
@@ -780,6 +784,17 @@ class HaRbacPanel extends HTMLElement {
         </div>
       </ha-expansion-panel>
 
+      <ha-expansion-panel data-section="location" data-title="Where the user must be"
+        header="Where the user must be">
+        <div class="card-content">      <p class="hint">Leave this empty and the role applies anywhere. Choose one or
+        more zones and it is held only while the person bound to this role is
+        inside them — or, in the other mode, only while they are outside them, for
+        access you want to grant just when someone is away. If Home Assistant does
+        not know where they are, the role is not held.</p>
+      <div id="location"></div>
+        </div>
+      </ha-expansion-panel>
+
       <ha-expansion-panel header="Advanced">
         <div class="card-content">
           <p class="hint">Overrides by command name, and the raw policy this role
@@ -878,6 +893,7 @@ class HaRbacPanel extends HTMLElement {
 
     this._wireDashboards(locked);
     this._mountSchedule(host.querySelector("#schedule"), locked);
+    this._mountLocation(host.querySelector("#location"), locked);
     this._mountRules(host.querySelector("#rules"), locked);
     this._mountAttrRules(host.querySelector("#attr-rules"), locked);
   }
@@ -1032,6 +1048,12 @@ class HaRbacPanel extends HTMLElement {
           ? `${windows} window${windows === 1 ? "" : "s"}`
           : "Always in force";
       }
+      case "location": {
+        const zones = (draft.location.zones || []).length;
+        if (!zones) return "Anywhere";
+        const word = draft.location.mode === "not_in" ? "away from" : "inside";
+        return `${word} ${zones} zone${zones === 1 ? "" : "s"}`;
+      }
       default:
         return "";
     }
@@ -1126,6 +1148,48 @@ class HaRbacPanel extends HTMLElement {
     this._draft.schedule.forEach((window, index) => {
       host.appendChild(this._windowRow(window, index, locked));
     });
+  }
+
+  _mountLocation(host, locked) {
+    host.innerHTML = "";
+    const loc = this._draft.location;
+
+    const mode = document.createElement("ha-selector");
+    mode.hass = this._hass;
+    mode.selector = {
+      select: {
+        mode: "dropdown",
+        options: [
+          { value: "in", label: "Only while inside these zones" },
+          { value: "not_in", label: "Only while outside these zones" },
+        ],
+      },
+    };
+    mode.label = "When to apply";
+    mode.required = false;
+    mode.value = loc.mode || "in";
+    mode.disabled = locked;
+    mode.addEventListener("value-changed", (event) => {
+      event.stopPropagation();
+      loc.mode = event.detail.value || "in";
+      this._refreshSummaries();
+    });
+
+    const zones = document.createElement("ha-selector");
+    zones.hass = this._hass;
+    zones.selector = { entity: { filter: { domain: "zone" }, multiple: true } };
+    zones.label = "Zones (any if empty)";
+    zones.required = false;
+    zones.value = loc.zones.slice();
+    zones.disabled = locked;
+    zones.addEventListener("value-changed", (event) => {
+      event.stopPropagation();
+      const value = event.detail.value;
+      loc.zones = Array.isArray(value) ? value : value ? [value] : [];
+      this._refreshSummaries();
+    });
+
+    host.append(mode, zones);
   }
 
   _windowRow(window, index, locked) {
@@ -1599,6 +1663,10 @@ class HaRbacPanel extends HTMLElement {
         days: [],
         start: "",
         end: "",
+      },
+      location: {
+        zones: [...this._draft.location.zones],
+        mode: this._draft.location.mode,
       },
       apps: {
         dashboards: { ...this._draft.dashboardLevels },

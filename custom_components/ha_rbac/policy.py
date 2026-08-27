@@ -35,7 +35,7 @@ from homeassistant.auth.permissions.entities import (
 )
 from homeassistant.auth.permissions.models import PermissionLookup
 from homeassistant.auth.permissions.types import PolicyType
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant, State, callback
 from homeassistant.helpers import (
     area_registry as ar,
 )
@@ -163,6 +163,18 @@ SCHEDULE_SCHEMA = vol.Schema(
     }
 )
 
+LOCATION_SCHEMA = vol.Schema(
+    {
+        # Zone entity ids the bound user's person must be inside for the role to
+        # apply, e.g. "zone.home". Empty means no location condition at all, the
+        # same as an empty schedule.
+        vol.Optional("zones", default=list): [str],
+        # "in": in force only while inside one of the zones. "not_in": in force
+        # only while inside none of them -- "this access, but only when away".
+        vol.Optional("mode", default="in"): vol.In(("in", "not_in")),
+    }
+)
+
 # How much of a dashboard a role gets. Absent means "empty": it can open the
 # dashboard, and sees on it only what it is allowed elsewhere.
 DASHBOARD_EMPTY = "empty"
@@ -195,6 +207,7 @@ ROLE_SCHEMA = vol.Schema(
         vol.Optional("apps", default=dict): APPS_SCHEMA,
         vol.Optional("attributes", default=dict): ATTRIBUTES_SCHEMA,
         vol.Optional("schedule", default=dict): SCHEDULE_SCHEMA,
+        vol.Optional("location", default=dict): LOCATION_SCHEMA,
     }
 )
 
@@ -273,6 +286,48 @@ def _window_active(window: dict[str, Any], now: datetime) -> bool:
     if not in_window:
         return False
     return not days or DAYS[opened.weekday()] in days
+
+
+def _person_in_zone(hass: HomeAssistant, zone_id: str, person: State) -> bool:
+    """Return True if the person is inside one zone, False on any doubt.
+
+    Home Assistant's own zone condition does the work -- it prefers the
+    `in_zones` a person reports over recomputing from coordinates, and handles
+    the home/passive/radius rules. Imported lazily so the module does not pull in
+    the automation stack at import time, and any error (unknown zone, no
+    coordinates) is read as "not there" rather than propagated.
+    """
+    from homeassistant.components.zone.condition import (  # noqa: PLC0415
+        zone as zone_condition,
+    )
+
+    try:
+        return zone_condition(hass, zone_id, person)
+    except Exception:  # noqa: BLE001 -- any failure means location unproven
+        return False
+
+
+def location_active(
+    hass: HomeAssistant, location: dict[str, Any] | None, person: State | None
+) -> bool:
+    """Return True if a role's location condition is met right now.
+
+    No zones means no condition, like an empty schedule. Otherwise the bound
+    user's person must be inside one of the zones ("in") or inside none of them
+    ("not_in"). If where they are cannot be established -- no person is linked to
+    the user, or it carries no location -- a location-gated role grants nothing:
+    it has to prove the condition holds, never assume it, so that losing track of
+    someone can only take access away.
+    """
+    zones = (location or {}).get("zones") or []
+    if not zones:
+        return True
+    if person is None:
+        return False
+    inside = any(_person_in_zone(hass, zone_id, person) for zone_id in zones)
+    if (location or {}).get("mode") == "not_in":
+        return not inside
+    return inside
 
 
 def capability_patterns(capabilities: Any) -> list[str]:
@@ -648,6 +703,7 @@ class CompiledRole:
     app_deny: list[str]
     attribute_rules: "list[CompiledAttributeRule]"
     schedule: dict[str, Any]
+    location: dict[str, Any]
     # url_path -> level, for dashboards this role gets the contents of.
     dashboard_levels: dict[str, str]
     # Resolved when asked rather than when the role was saved, so editing a
@@ -723,6 +779,7 @@ def compile_role(
         app_deny=list(apps.get("deny") or []),
         attribute_rules=attribute_rules,
         schedule=dict(role.get("schedule") or {}),
+        location=dict(role.get("location") or {}),
         dashboard_levels={
             url_path: level
             for url_path, level in (apps.get("dashboards") or {}).items()
@@ -872,6 +929,21 @@ class Evaluator:
         self._compiled.clear()
         self._cache.clear()
 
+    @callback
+    def _person_state_for(self, user: Any) -> State | None:
+        """Return the person entity tracking this user, if there is one.
+
+        Home Assistant links a person to a user through the person's `user_id`
+        attribute, so the person's state -- the zone it is in -- stands in for
+        where the user is. No person, or more than one and none conclusive, means
+        the location is unknown, which a location-gated role treats as "not
+        there".
+        """
+        for state in self._hass.states.async_all("person"):
+            if state.attributes.get("user_id") == user.id:
+                return state
+        return None
+
     def _compiled_role(self, role_id: str) -> CompiledRole | None:
         """Return a role, compiling it on first use."""
         if (compiled := self._compiled.get(role_id)) is not None:
@@ -904,16 +976,32 @@ class Evaluator:
             role_ids = [ROLE_ADMIN if user.is_admin else ROLE_USER]
 
         now = dt_util.now()
-        roles = [
+        candidates = [
             compiled
             for role_id in role_ids
             if (compiled := self._compiled_role(role_id)) is not None
             and compiled.active_at(now)
         ]
-        # A role that is out of hours is simply not held. If that leaves none,
-        # the user has no permissions rather than falling back to the Home
-        # Assistant group they would have had unbound: outside its hours a role
-        # has to grant less, never more.
+        # Where the user is only matters if some still-in-hours role asks, so the
+        # person is looked up only then -- most roles carry no location and pay
+        # nothing for the feature.
+        person = (
+            self._person_state_for(user)
+            if any(role.location.get("zones") for role in candidates)
+            else None
+        )
+        roles = [
+            role
+            for role in candidates
+            if location_active(self._hass, role.location, person)
+        ]
+        # A role that is out of hours, or whose holder is outside the zone it is
+        # tied to, is simply not held. If that leaves none, the user has no
+        # permissions rather than falling back to the Home Assistant group they
+        # would have had unbound: a condition on a role has to grant less, never
+        # more. The cache is keyed on which roles are in force, so a schedule
+        # opening or someone crossing a zone boundary makes a fresh key rather
+        # than a stale hit.
         key = (user.id, tuple(role.role_id for role in roles))
         if (cached := self._cache.get(key)) is not None:
             return cached
