@@ -35,6 +35,7 @@ from homeassistant.auth.permissions.entities import (
 )
 from homeassistant.auth.permissions.models import PermissionLookup
 from homeassistant.auth.permissions.types import PolicyType
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, State, callback
 from homeassistant.helpers import (
     area_registry as ar,
@@ -315,14 +316,24 @@ def location_active(
     No zones means no condition, like an empty schedule. Otherwise the bound
     user's person must be inside one of the zones ("in") or inside none of them
     ("not_in"). If where they are cannot be established -- no person is linked to
-    the user, or it carries no location -- a location-gated role grants nothing:
-    it has to prove the condition holds, never assume it, so that losing track of
-    someone can only take access away.
+    the user, or its state is unknown or unavailable -- a location-gated role
+    grants nothing: it has to prove the condition holds, never assume it, so that
+    losing track of someone can only take access away.
+
+    That last check is what `not_in` needs to be safe. The zone condition answers
+    False for a person it cannot place, which is indistinguishable from one it
+    has placed outside every zone -- so inverting it turned "we have no idea
+    where they are" into "they are provably away", and a tracker going offline
+    silently handed out the access. An unplaceable person is refused before the
+    inversion can reach it.
+
+    A person Home Assistant reports as `not_home` is placed: that state means
+    inside no zone at all, so `not_in` holding for them is the right answer.
     """
     zones = (location or {}).get("zones") or []
     if not zones:
         return True
-    if person is None:
+    if person is None or person.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
         return False
     inside = any(_person_in_zone(hass, zone_id, person) for zone_id in zones)
     if (location or {}).get("mode") == "not_in":

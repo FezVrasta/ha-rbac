@@ -75,6 +75,43 @@ async def test_not_in_mode_inverts_it(hass: HomeAssistant) -> None:
     )
 
 
+@pytest.mark.parametrize("state", ["unknown", "unavailable"])
+async def test_an_unplaceable_person_grants_nothing_in_either_mode(
+    hass: HomeAssistant, state: str
+) -> None:
+    """A person Home Assistant cannot place must not satisfy either mode.
+
+    `not_in` is the one that bites. The zone condition answers False both for
+    someone placed outside every zone and for someone it cannot place at all, so
+    inverting it read "we have no idea where they are" as "provably away" and
+    handed over the access -- which is what a tracker going offline looks like.
+    """
+    hass.states.async_set("person.alice", state, {"user_id": "u1"})
+    person = hass.states.get("person.alice")
+
+    assert location_active(hass, {"zones": ["zone.home"]}, person) is False
+    assert (
+        location_active(hass, {"zones": ["zone.home"], "mode": "not_in"}, person)
+        is False
+    )
+
+
+async def test_not_home_still_counts_as_placed(hass: HomeAssistant) -> None:
+    """`not_home` is an answer, not an absence of one.
+
+    It means inside no zone at all, so a role granted while away is held -- the
+    unplaceable check must not swallow this case too.
+    """
+    hass.states.async_set("person.alice", "not_home", {"user_id": "u1", **AWAY})
+    person = hass.states.get("person.alice")
+
+    assert (
+        location_active(hass, {"zones": ["zone.home"], "mode": "not_in"}, person)
+        is True
+    )
+    assert location_active(hass, {"zones": ["zone.home"]}, person) is False
+
+
 def test_the_schema_defaults_and_keeps_a_location() -> None:
     """An absent location reads as no condition; a written one round-trips."""
     assert ROLE_SCHEMA({"id": "r", "name": "R"})["location"] == {
