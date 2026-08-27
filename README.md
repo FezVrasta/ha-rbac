@@ -162,4 +162,5 @@ Bug reports from real houses are the most useful thing right now — especially
 
 ## Licence
 
-MIT.
+This project is licensed under the [MIT License](LICENSE). 
+See the [LICENSE](LICENSE) file for more details, including copyright information and full terms of use.
