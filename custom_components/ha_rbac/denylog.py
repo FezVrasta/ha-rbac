@@ -24,6 +24,10 @@ class Denial:
     name: str
     reason: str
     resources: list[str]
+    # The diagnostic. It used to be what the refused person was shown, which
+    # made it terse for them and unavailable here; now it is only ever read by
+    # whoever is working out why a role is too tight.
+    detail: str = ""
 
 
 class DenyLog:

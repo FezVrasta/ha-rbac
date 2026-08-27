@@ -512,7 +512,7 @@ async def test_reusing_an_id_after_eviction_is_still_refused() -> None:
     # The reuse check no longer depends on the evicted entry.
     assert await session._intercept({"id": 5, "type": "get_config"}) is False
     assert session._correlate(5) is None
-    assert "Message id reused" in sent[-1]
+    assert "Lost track of this connection" in sent[-1]
 
 
 async def test_a_streaming_id_survives_eviction() -> None:

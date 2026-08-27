@@ -153,6 +153,11 @@ const STYLES = `
   @media (max-width: 700px) {
     .fallback { grid-template-columns: minmax(0, 1fr); }
   }
+  /* The diagnostic under a denial's reason -- the exact command, tier or entity
+     ids. Secondary to the plain sentence above it, and allowed to break
+     anywhere, because a long REST path has no spaces to wrap on. */
+  td .detail { display: block; margin-top: 2px; color: var(--secondary-text-color);
+               font-size: var(--ha-font-size-s, .85rem); overflow-wrap: anywhere; }
   .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
   .actions .spacer { flex: 1; }
   ul.roles { list-style: none; margin: 0; padding: 0; }
@@ -1475,7 +1480,11 @@ class HaRbacPanel extends HTMLElement {
         (d) => `<tr>
           <td>${esc(d.user_name || d.user_id)}</td>
           <td><code>${esc(d.name)}</code></td>
-          <td>${esc(this._reason(d.reason))}</td>
+          <td>${esc(this._reason(d.reason))}${
+            // Absent on denials recorded before this was logged, and on the
+            // few refusals that carry no diagnostic worth showing.
+            d.detail ? `<span class="detail">${esc(d.detail)}</span>` : ""
+          }</td>
           <td class="hint" style="margin:0">${esc(d.resources.join(", "))}</td>
         </tr>`
       )
@@ -1484,9 +1493,11 @@ class HaRbacPanel extends HTMLElement {
     return `<ha-card>
       <div class="card-content">
         <h2>Recent denials</h2>
-        <p class="hint">A refused request reaches the person as a screen that quietly
-          does less, with no explanation. This is where to look when someone says
-          something stopped working.</p>
+        <p class="hint">The person is told only that they do not have permission,
+          and which accessory when it is one they can already see. Everything
+          else &mdash; the command, the tier, the entities &mdash; would describe
+          the policy to them, so it is kept here instead. This is where to look
+          when someone says something stopped working.</p>
         <div class="actions" style="margin-top:0">
           <ha-button id="load-denials">Refresh</ha-button>
         </div>

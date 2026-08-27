@@ -122,6 +122,26 @@ def _invokes_a_service(node: Any, depth: int = 0) -> bool:
     return False
 
 
+# What a refused person is told. `detail` beside it stays a diagnostic for the
+# deny log: it names commands, tiers and entity ids, which is noise to the
+# person reading it and an existence oracle to anyone probing.
+#
+# Deliberately vague about *why*. "Your role does not include that screen" and
+# "you cannot control that" are both answers a restricted user can act on --
+# ask whoever runs the house -- without describing the shape of the policy.
+USER_MESSAGES = {
+    REASON_TIER: "That is a Home Assistant setting your role does not include.",
+    REASON_APP: "Your role does not include that screen.",
+    REASON_RESOURCE: "You do not have permission to do that.",
+    REASON_UNBOUNDED: "Your role does not allow that action.",
+    REASON_DEGRADED: (
+        "Access control cannot check permissions right now, so this was "
+        "refused. Ask an administrator to check the logs."
+    ),
+}
+DEFAULT_USER_MESSAGE = "You do not have permission to do that."
+
+
 @dataclass(slots=True)
 class Decision:
     """The verdict on one request, and why."""
@@ -129,14 +149,20 @@ class Decision:
     allowed: bool
     reason: str = ""
     detail: str = ""
+    # What the person is shown. Defaulted from `reason` rather than written at
+    # each refusal, so a gate added later cannot leak its diagnostic by anyone
+    # forgetting to set this.
+    message: str = ""
     # Entities the request named, for the deny log and for response filtering.
     resources: list[str] = None  # type: ignore[assignment]
     filter_response: bool = False
 
     def __post_init__(self) -> None:
-        """Default the resource list."""
+        """Default the resource list and the message shown to the person."""
         if self.resources is None:
             self.resources = []
+        if not self.allowed and not self.message:
+            self.message = USER_MESSAGES.get(self.reason, DEFAULT_USER_MESSAGE)
 
 
 @callback
@@ -221,6 +247,39 @@ class Decider:
         self._catalog = catalog
         self._filters = filter_registry
         self._recorder = recorder
+
+    @callback
+    def _resource_message(
+        self, permissions: Permissions, denied: list[str], key: str
+    ) -> str:
+        """Say what was refused, in the words the person sees on their screen.
+
+        Only entities the role may *see* are named. Someone refused control of
+        the porch light already has it on their dashboard, so naming it tells
+        them nothing they did not know and saves them guessing which tap failed.
+        Naming one they cannot see would hand over the existence of a thing that
+        is otherwise entirely hidden from them, so those stay anonymous.
+        """
+        names = []
+        for entity_id in denied:
+            if not permissions.check_entity(entity_id, POLICY_READ):
+                continue
+            state = self._hass.states.get(entity_id)
+            friendly = state.attributes.get("friendly_name") if state else None
+            names.append(str(friendly) if friendly else entity_id)
+
+        verb = "control" if key == POLICY_CONTROL else "see"
+        if not names:
+            return f"You do not have permission to {verb} that."
+        if len(names) == 1:
+            return f"You do not have permission to {verb} {names[0]}."
+        # Long lists help nobody; the count carries the same meaning.
+        if len(names) > 3:
+            return f"You do not have permission to {verb} {len(names)} of those."
+        return (
+            f"You do not have permission to {verb} "
+            f"{', '.join(names[:-1])} or {names[-1]}."
+        )
 
     @callback
     def decide(
@@ -325,6 +384,7 @@ class Decider:
                 allowed=False,
                 reason=REASON_RESOURCE,
                 detail=f"no {key} access to {', '.join(denied[:5])}",
+                message=self._resource_message(permissions, denied, key),
                 resources=denied,
             )
 

@@ -292,7 +292,9 @@ class RbacProxy:
             )
             if not decision.allowed:
                 self._record(user, KIND_HTTP, name, decision)
-                return web.json_response({"message": "Unauthorized"}, status=401)
+                return web.json_response(
+                    {"message": decision.message or "Unauthorized"}, status=401
+                )
 
         try:
             return await self._forward_http(request, permissions, decision)
@@ -483,6 +485,7 @@ class RbacProxy:
                 name=name,
                 reason=decision.reason,
                 resources=decision.resources,
+                detail=decision.detail,
             )
         )
 
@@ -739,6 +742,13 @@ class _WsSession:
                         allowed=False,
                         reason="id_reuse",
                         detail="Message id reused on this connection",
+                        # Not a permission problem, so it must not read as one.
+                        # A reused id means this connection is out of step, and
+                        # reconnecting is the thing that fixes it.
+                        message=(
+                            "Lost track of this connection. "
+                            "Reload the page to continue."
+                        ),
                     ),
                 )
                 return False
@@ -758,6 +768,10 @@ class _WsSession:
                     allowed=False,
                     reason=REASON_APP,
                     detail="too many Supervisor calls in flight to judge this one",
+                    # Also not a permission problem: the same request will work
+                    # once the queue drains, so do not tell them their role is
+                    # at fault and send them to an administrator for nothing.
+                    message="Home Assistant is busy. Try that again in a moment.",
                 )
                 self._record(self._user, KIND_WS, str(msg_type), decision)
                 self._pending.pop(msg_id, None)
@@ -836,7 +850,9 @@ class _WsSession:
                     "success": False,
                     "error": {
                         "code": ERR_UNAUTHORIZED,
-                        "message": decision.detail or "Unauthorized",
+                        # The person gets the plain sentence; `detail` names
+                        # commands and entity ids and goes to the deny log.
+                        "message": decision.message or "Unauthorized",
                     },
                 }
             )
