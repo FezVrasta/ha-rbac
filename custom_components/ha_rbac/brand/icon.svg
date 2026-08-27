@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <circle cx="256" cy="256" r="256" fill="#24418F"/>
+  <!-- Centred on the glyph's centre of mass, not its bounding box: the flat top
+       block outweighs the tapering point, so a bbox-centred shield reads high. -->
+  <g transform="translate(72.04,80.46) scale(0.72)">
+    <path d="M135 130 H377 V244 C377 320 320 371 256 396 C192 371 135 320 135 244 Z" fill="#ffffff"/>
+    <circle cx="256" cy="243" r="39" fill="#24418F"/>
+    <path d="M243 268 H269 L263 341 H249 Z" fill="#24418F"/>
+  </g>
+</svg>

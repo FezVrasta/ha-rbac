@@ -37,10 +37,12 @@
 
   <rect class="accbox" x="560" y="160" width="280" height="380" rx="20" fill="#10222c" stroke="#41BDF5" stroke-width="2"></rect>
   <g transform="translate(662,196) scale(0.14844)">
-    <rect x="0" y="0" width="512" height="512" rx="112" fill="#41BDF5"></rect>
-    <path d="M135 130 H377 V244 C377 320 320 371 256 396 C192 371 135 320 135 244 Z" fill="#ffffff"></path>
-    <circle cx="256" cy="243" r="39" fill="#41BDF5"></circle>
-    <path d="M243 268 H269 L263 341 H249 Z" fill="#41BDF5"></path>
+    <circle cx="256" cy="256" r="256" fill="#24418F"></circle>
+    <g transform="translate(72.04,80.46) scale(0.72)">
+      <path d="M135 130 H377 V244 C377 320 320 371 256 396 C192 371 135 320 135 244 Z" fill="#ffffff"></path>
+      <circle cx="256" cy="243" r="39" fill="#24418F"></circle>
+      <path d="M243 268 H269 L263 341 H249 Z" fill="#24418F"></path>
+    </g>
   </g>
   <text class="t" x="700" y="348" font-size="28" font-weight="600" text-anchor="middle" fill="#eef1f4">Access Control</text>
   <text class="accsub" x="700" y="388" font-size="19" text-anchor="middle" fill="#9dc7dc">Every request in,</text>
@@ -81,10 +83,12 @@
   <path class="arrow" d="M448 746 H484" fill="none" stroke="#49525d" stroke-width="3"></path>
   <polygon class="head" points="484,738 500,746 484,754" fill="#49525d"></polygon>
   <g transform="translate(512,728) scale(0.07031)">
-    <rect x="0" y="0" width="512" height="512" rx="112" fill="#41BDF5"></rect>
-    <path d="M135 130 H377 V244 C377 320 320 371 256 396 C192 371 135 320 135 244 Z" fill="#ffffff"></path>
-    <circle cx="256" cy="243" r="39" fill="#41BDF5"></circle>
-    <path d="M243 268 H269 L263 341 H249 Z" fill="#41BDF5"></path>
+    <circle cx="256" cy="256" r="256" fill="#24418F"></circle>
+    <g transform="translate(72.04,80.46) scale(0.72)">
+      <path d="M135 130 H377 V244 C377 320 320 371 256 396 C192 371 135 320 135 244 Z" fill="#ffffff"></path>
+      <circle cx="256" cy="243" r="39" fill="#24418F"></circle>
+      <path d="M243 268 H269 L263 341 H249 Z" fill="#24418F"></path>
+    </g>
   </g>
   <circle class="redsoft" cx="580" cy="746" r="21" fill="#3a1a17"></circle>
   <path class="redline" d="M572 738 L588 754 M588 738 L572 754" fill="none" stroke="#FF6B5E" stroke-width="3.5" stroke-linecap="round"></path>
@@ -96,10 +100,12 @@
   <path class="arrow" d="M448 818 H484" fill="none" stroke="#49525d" stroke-width="3"></path>
   <polygon class="head" points="484,810 500,818 484,826" fill="#49525d"></polygon>
   <g transform="translate(512,800) scale(0.07031)">
-    <rect x="0" y="0" width="512" height="512" rx="112" fill="#41BDF5"></rect>
-    <path d="M135 130 H377 V244 C377 320 320 371 256 396 C192 371 135 320 135 244 Z" fill="#ffffff"></path>
-    <circle cx="256" cy="243" r="39" fill="#41BDF5"></circle>
-    <path d="M243 268 H269 L263 341 H249 Z" fill="#41BDF5"></path>
+    <circle cx="256" cy="256" r="256" fill="#24418F"></circle>
+    <g transform="translate(72.04,80.46) scale(0.72)">
+      <path d="M135 130 H377 V244 C377 320 320 371 256 396 C192 371 135 320 135 244 Z" fill="#ffffff"></path>
+      <circle cx="256" cy="243" r="39" fill="#24418F"></circle>
+      <path d="M243 268 H269 L263 341 H249 Z" fill="#24418F"></path>
+    </g>
   </g>
   <circle class="greensoft" cx="580" cy="818" r="21" fill="#14301f"></circle>
   <path class="greenline" d="M571 818 L578 827 L590 809" fill="none" stroke="#4FC585" stroke-width="3.5" stroke-linecap="round"></path>
@@ -124,10 +130,12 @@
   <path class="arrow" d="M1258 771 H1276" fill="none" stroke="#49525d" stroke-width="3"></path>
   <polygon class="head" points="1276,763 1292,771 1276,779" fill="#49525d"></polygon>
   <g transform="translate(1302,753) scale(0.07031)">
-    <rect x="0" y="0" width="512" height="512" rx="112" fill="#41BDF5"></rect>
-    <path d="M135 130 H377 V244 C377 320 320 371 256 396 C192 371 135 320 135 244 Z" fill="#ffffff"></path>
-    <circle cx="256" cy="243" r="39" fill="#41BDF5"></circle>
-    <path d="M243 268 H269 L263 341 H249 Z" fill="#41BDF5"></path>
+    <circle cx="256" cy="256" r="256" fill="#24418F"></circle>
+    <g transform="translate(72.04,80.46) scale(0.72)">
+      <path d="M135 130 H377 V244 C377 320 320 371 256 396 C192 371 135 320 135 244 Z" fill="#ffffff"></path>
+      <circle cx="256" cy="243" r="39" fill="#24418F"></circle>
+      <path d="M243 268 H269 L263 341 H249 Z" fill="#24418F"></path>
+    </g>
   </g>
   <path class="arrow" d="M1348 771 H1366" fill="none" stroke="#49525d" stroke-width="3"></path>
   <polygon class="head" points="1366,763 1382,771 1366,779" fill="#49525d"></polygon>
