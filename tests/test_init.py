@@ -317,7 +317,16 @@ async def test_the_move_is_staged_and_the_proxy_waits_for_the_restart(
         assert await async_setup_entry(hass, entry)
         await hass.async_block_till_done()
 
-    assert staged == [{"server_host": ["127.0.0.1"], "server_port": 8124}]
+    assert staged == [
+        {
+            "server_host": ["127.0.0.1"],
+            "server_port": 8124,
+            # Without these every request reaches Home Assistant from the proxy
+            # and it sees one client for the whole house.
+            "trusted_proxies": ["127.0.0.1"],
+            "use_x_forwarded_for": True,
+        }
+    ]
     assert len(restarts) == 1, "Home Assistant has to restart to apply the move"
     assert hass.data[DATA_RBAC].proxy is None, "nothing may bind before the restart"
 

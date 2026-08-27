@@ -39,8 +39,12 @@ def test_the_target_keeps_everything_it_is_not_moving() -> None:
     assert moved["server_port"] == 8124
     assert moved["ssl_certificate"] == "/ssl/fullchain.pem"
     assert moved["cors_allowed_origins"] == ["https://cast.home-assistant.io"]
-    assert moved["trusted_proxies"] == ["10.0.0.0/8"]
     assert moved["ip_ban_enabled"] is True
+    # The proxy's own address is added so Home Assistant will read a forwarded
+    # client address from it, and the existing entry survives: an outer reverse
+    # proxy has to stay trusted for the chain to resolve past it.
+    assert moved["trusted_proxies"] == ["10.0.0.0/8", "127.0.0.1"]
+    assert moved["use_x_forwarded_for"] is True
 
 
 def test_the_target_drops_what_home_assistant_records_about_a_config() -> None:

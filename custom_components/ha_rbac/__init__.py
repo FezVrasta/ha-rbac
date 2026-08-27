@@ -227,6 +227,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Start the listener once Home Assistant is serving."""
         if await _move_home_assistant():
             return
+        # Every request now arrives from the proxy, so unless Home Assistant is
+        # told to read a forwarded address it sees one client for the whole
+        # house. It only reads one from a peer it trusts, and rejects the
+        # request outright otherwise, so this is asked rather than assumed.
+        running = await http_config.async_running_or_empty(hass)
         proxy = RbacProxy(
             hass,
             evaluator,
@@ -236,6 +241,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             upstream_port=upstream_port,
             bind_address=config.get(CONF_BIND_ADDRESS, DEFAULT_BIND_ADDRESS),
             port=proxy_port,
+            forward_client_ip=await http_config.async_trusts_loopback(hass),
+            trusted_proxies=[str(e) for e in (running.get("trusted_proxies") or [])],
         )
         await proxy.async_start()
         data.proxy = proxy

@@ -18,6 +18,7 @@ import json
 import logging
 from collections import OrderedDict
 from collections.abc import Callable
+from ipaddress import ip_address, ip_network
 from typing import Any
 
 import aiohttp
@@ -34,6 +35,7 @@ from yarl import URL
 from .decide import KIND_HTTP, KIND_WS, REASON_APP, Decider, Decision
 from .denylog import Denial, DenyLog
 from .filters import REGISTRY, FilterContext, strip_denied_addons
+from .http_config import LOOPBACK
 from .ingress import (
     SESSION_COOKIE,
     SESSION_ENDPOINT,
@@ -158,6 +160,7 @@ class RbacProxy:
         bind_address: str,
         port: int,
         forward_client_ip: bool = False,
+        trusted_proxies: "list[str] | None" = None,
     ) -> None:
         """Initialise the proxy."""
         self._hass = hass
@@ -172,6 +175,15 @@ class RbacProxy:
         # would let one bad password ban every user. The caller checks the
         # configuration and leaves this off unless it is safe.
         self._forward_client_ip = forward_client_ip
+        # Which peers may contribute a forwarded chain, mirroring Home
+        # Assistant's own `trusted_proxies`. Unparseable entries are dropped
+        # rather than raised on: the list is Home Assistant's to validate.
+        self._trusted_proxies: list[Any] = []
+        for entry in trusted_proxies or []:
+            try:
+                self._trusted_proxies.append(ip_network(str(entry), strict=False))
+            except ValueError:
+                _LOGGER.debug("Ignoring unparseable trusted proxy %r", entry)
         self._runner: web.AppRunner | None = None
         self._websession = async_get_clientsession(hass)
         self._ingress = IngressGuard(hass)
@@ -194,6 +206,42 @@ class RbacProxy:
             self._bind_address,
             self._port,
             self._base,
+        )
+        if self._forward_client_ip:
+            await self._confirm_forwarding()
+
+    async def _confirm_forwarding(self) -> None:
+        """Prove Home Assistant accepts a forwarded header before sending any.
+
+        The stored config says it should. This asks. Reading a config is not
+        evidence of what the running server does with it, and the failure is not
+        a degraded feature: Home Assistant answers 400 to *every* request
+        carrying a header it does not trust, so getting this wrong takes the
+        whole instance off the network with no route back through the proxy.
+        The same reasoning as the move itself, where binding a port is not
+        accepted as evidence of serving a request.
+        """
+        target = self._base.with_path("/manifest.json")
+        try:
+            async with self._websession.get(
+                target,
+                headers={hdrs.X_FORWARDED_FOR: LOOPBACK},
+                timeout=ClientTimeout(total=10),
+            ) as response:
+                accepted = response.status == 200
+        except (aiohttp.ClientError, TimeoutError) as err:
+            _LOGGER.debug("Could not check forwarded headers: %s", err)
+            accepted = False
+        if accepted:
+            return
+        self._forward_client_ip = False
+        _LOGGER.warning(
+            "Home Assistant did not accept a forwarded client address from this "
+            "proxy, so requests will be attributed to %s. IP bans and the "
+            "trusted_networks auth provider cannot tell users apart until "
+            "use_x_forwarded_for and trusted_proxies are set under Settings > "
+            "System > Network",
+            LOOPBACK,
         )
 
     async def async_stop(self) -> None:
@@ -219,10 +267,33 @@ class RbacProxy:
         # checks `trusted_proxies` and disables this otherwise, because
         # untrusted forwarded headers make HA reject the request outright.
         if self._forward_client_ip:
-            headers[hdrs.X_FORWARDED_FOR] = request.remote or ""
+            peer = request.remote or ""
+            # Home Assistant reads the chain right to left, skipping addresses
+            # it trusts, and takes the first it does not. So an outer reverse
+            # proxy's chain is *appended to* rather than replaced -- overwriting
+            # it would report that proxy as the client and lose the real one.
+            #
+            # Only a peer Home Assistant itself trusts may contribute a chain.
+            # From anyone else the header is just something the client typed,
+            # and honouring it would let them forge their way past IP banning
+            # and the `trusted_networks` auth provider.
+            chain = request.headers.get(hdrs.X_FORWARDED_FOR, "").strip()
+            headers[hdrs.X_FORWARDED_FOR] = (
+                f"{chain}, {peer}" if chain and self._peer_is_trusted(peer) else peer
+            )
             headers[hdrs.X_FORWARDED_HOST] = request.headers.get(hdrs.HOST, "")
             headers[hdrs.X_FORWARDED_PROTO] = request.scheme
         return headers
+
+    def _peer_is_trusted(self, peer: str) -> bool:
+        """Return True if Home Assistant would trust a chain from this peer."""
+        if not peer:
+            return False
+        try:
+            address = ip_address(peer)
+        except ValueError:
+            return False
+        return any(address in network for network in self._trusted_proxies)
 
     async def _resolve_user(self, request: web.Request) -> User | None:
         """Identify the user behind a request.
