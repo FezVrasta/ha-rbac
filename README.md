@@ -35,7 +35,7 @@ give your kid a tablet that can't open the front door.
 This adds roles. You decide what each one can see and do, then hand them out.
 
 It isn't only for people. Point an **AI assistant or agent** at Home Assistant
-through its own restricted login and it's held to the same role — it reads and
+through its own restricted login and it's held to the same role. It reads and
 changes exactly what you allowed, and nothing else. A useful fence to put around
 what an LLM can do in your home.
 
@@ -50,7 +50,7 @@ what an LLM can do in your home.
 | **When** | Days and hours. *A cleaner, weekdays 9 to 5. A babysitter, Friday evenings.* |
 | **What they can change** | Nothing, everything, or one part of the settings: automations, dashboards, helpers, users, backups. |
 
-Hidden means hidden. A restricted device isn't greyed out, it's absent — from
+Hidden means hidden. A restricted device isn't greyed out, it's absent: from
 the dashboard, from search, from history, and from the API.
 
 Four roles to start from: **Administrator**, **Editor**, **User** and
@@ -116,8 +116,8 @@ takes over the address everyone already uses.
 
 Prefer to do it yourself? Decline the offer, then set **Server port** to `8124`
 under Settings → System → Network, add **Access Control**, and finally set
-**Server host** to `127.0.0.1`. In that order — each step leaves you with a Home
-Assistant you can still reach.
+**Server host** to `127.0.0.1`. In that order, because each step leaves you
+with a Home Assistant you can still reach.
 
 </details>
 
@@ -147,8 +147,8 @@ Assistant by other routes, and so does anyone with a login to the machine itself
 Roles don't apply there. There's a
 [plain list of what's covered and what isn't](https://github.com/FezVrasta/ha-rbac/blob/main/docs/DESIGN.md#what-this-does-and-does-not-protect-against).
 
-**It's an alpha.** Tested, and deliberately attacked twice — two adversarial
-reviews by its author, no external audit yet — but it hasn't lived in anyone
+**It's an alpha.** Tested, and deliberately attacked twice (two adversarial
+reviews by its author, no external audit yet), but it hasn't lived in anyone
 else's house yet. Try it on something that isn't your front door, and
 [tell me what broke](https://github.com/FezVrasta/ha-rbac/issues).
 
@@ -159,14 +159,107 @@ guest's browser asks what's in the house, it answers with their part of it. When
 something asks to unlock a door it isn't allowed to, it says no.
 
 It ships no list of what's dangerous. Home Assistant already marks its own
-administrative features, and this reads those markings on your instance — which
+administrative features, and this reads those markings on your instance, which
 is why it doesn't go stale every time Home Assistant updates.
 
 The long version is in [docs/DESIGN.md](https://github.com/FezVrasta/ha-rbac/blob/main/docs/DESIGN.md).
 
+## Frequently asked questions
+
+<details>
+<summary><strong>Is this a fork of Home Assistant? Does it change the interface?</strong></summary>
+
+<br>
+
+No. It's stock Home Assistant, unmodified. This filters the API in front of it,
+which is why a hidden device isn't greyed out: your browser was never told it
+exists. Nothing is patched, so nothing re-breaks on update.
+
+</details>
+
+<details>
+<summary><strong>Can installing this make my security worse?</strong></summary>
+
+<br>
+
+No. It can only remove access, never add it. Home Assistant still authenticates
+every request exactly as before; this runs after that and can only say no.
+
+</details>
+
+<details>
+<summary><strong>Isn't this security by obscurity?</strong></summary>
+
+<br>
+
+No. Denied data is never sent to the browser and denied requests never reach
+Home Assistant. Open the developer tools and read the websocket frames: it isn't
+there. The [known limitations](https://github.com/FezVrasta/ha-rbac/blob/main/docs/DESIGN.md#known-limitations) are written down rather
+than glossed.
+
+</details>
+
+<details>
+<summary><strong>Why not contribute to the official RBAC effort instead?</strong></summary>
+
+<br>
+
+There isn't one to contribute to yet. The
+[core proposal](https://github.com/home-assistant/architecture/discussions/1374)
+was declined, and so was the small change that would have unblocked doing this
+properly, on the grounds that authorisation needs oversight the Foundation
+hasn't allocated. [The longer answer](https://github.com/FezVrasta/ha-rbac/blob/main/docs/DESIGN.md#why-this-is-not-a-core-patch).
+
+</details>
+
+<details>
+<summary><strong>Does the search dialog (Ctrl+K) leak things?</strong></summary>
+
+<br>
+
+No, it just finds less. Search runs over the data the browser already has, and a
+restricted browser was never sent the hidden entities or the denied screens.
+There's a [screenshot of exactly that](#take-a-look).
+
+</details>
+
+<details>
+<summary><strong>Home Assistant is still listening on 8124. Can't someone go there?</strong></summary>
+
+<br>
+
+Only from the machine itself. Home Assistant's server host is set to
+`127.0.0.1`, so it isn't listening on your network at all. That's the mechanism,
+not Docker, and it works the same on Home Assistant OS, Supervised, Container
+and Core. Anyone with a shell on the box is
+[out of scope](https://github.com/FezVrasta/ha-rbac/blob/main/docs/DESIGN.md#what-this-does-and-does-not-protect-against) either way.
+
+</details>
+
+<details>
+<summary><strong>Do I have to use 8123 and 8124?</strong></summary>
+
+<br>
+
+No, both are configurable. The default keeps `8123` here so that browsers,
+phones and cloud integrations carry on working without being repointed.
+
+</details>
+
+<details>
+<summary><strong>Does it work behind NGINX, Traefik or Cloudflare?</strong></summary>
+
+<br>
+
+Yes, with nothing to reconfigure: your reverse proxy already points at `8123`,
+and that's still where this answers. Real client addresses survive the extra
+hop, because it appends to the `X-Forwarded-For` chain rather than replacing it.
+
+</details>
+
 ## Contributing
 
-Bug reports from real houses are the most useful thing right now — especially
+Bug reports from real houses are the most useful thing right now, especially
 "my dashboard broke, and here's what the Denials tab said". See
 [CONTRIBUTING.md](https://github.com/FezVrasta/ha-rbac/blob/main/CONTRIBUTING.md) for running the tests.
 
