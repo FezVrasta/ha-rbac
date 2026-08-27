@@ -179,11 +179,18 @@ class RbacProxy:
         # Assistant's own `trusted_proxies`. Unparseable entries are dropped
         # rather than raised on: the list is Home Assistant's to validate.
         self._trusted_proxies: list[Any] = []
-        for entry in trusted_proxies or []:
+        for position, entry in enumerate(trusted_proxies or []):
             try:
                 self._trusted_proxies.append(ip_network(str(entry), strict=False))
             except ValueError:
-                _LOGGER.debug("Ignoring unparseable trusted proxy %r", entry)
+                # The entry itself is not written out. It arrives from Home
+                # Assistant's HTTP config, which is also where the SSL key
+                # lives, and nothing here needs to be the thing that copies any
+                # part of that into a log file. Its position is enough to find
+                # it under Settings > System > Network.
+                _LOGGER.debug(
+                    "Ignoring unparseable trusted proxy at position %d", position
+                )
         self._runner: web.AppRunner | None = None
         self._websession = async_get_clientsession(hass)
         self._ingress = IngressGuard(hass)
