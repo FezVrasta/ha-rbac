@@ -90,9 +90,17 @@ Execute from the result already recognised:
 
 ```python
 await intent.async_handle(
-    hass, conversation.DOMAIN, result.intent.name, slots,
-    user_input.text, user_input.context, language, assistant=conversation.DOMAIN,
-    device_id=..., satellite_id=..., conversation_agent_id=user_input.agent_id,
+    hass,
+    conversation.DOMAIN,
+    result.intent.name,
+    slots,
+    user_input.text,
+    user_input.context,
+    language,
+    assistant=conversation.DOMAIN,
+    device_id=...,
+    satellite_id=...,
+    conversation_agent_id=user_input.agent_id,
 )
 ```
 
