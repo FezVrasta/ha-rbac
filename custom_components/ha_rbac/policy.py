@@ -77,6 +77,16 @@ BASELINE_DENY = (
     "conversation/*",
     "assist_pipeline/*",
     "assist_satellite/*",
+    # The same three surfaces reached as service calls rather than as websocket
+    # commands. A command is `conversation/process` and the service behind it is
+    # `conversation.process`, and a glob written for one cannot match the other,
+    # so denying only the command left the service wide open: a role forbidden
+    # from controlling a light could turn it off by asking for it in words, and
+    # `_decide_service` saw a call naming no entity and let the domain answer
+    # for it. Both spellings, because both are reachable.
+    "conversation.*",
+    "assist_pipeline.*",
+    "assist_satellite.*",
 )
 ACTS_ON_INTENT = BASELINE_DENY
 
