@@ -44,14 +44,16 @@
           "bind_address": "Bind address",
           "upstream_host": "Home Assistant host",
           "upstream_port": "Home Assistant port",
-          "manage_http": "Keep Home Assistant out of the way"
+          "manage_http": "Keep Home Assistant out of the way",
+          "restore_network_on_removal": "Put Home Assistant back if this is removed"
         },
         "data_description": {
           "proxy_port": "The port browsers connect to: the one Home Assistant answers on today, so nothing you already use has to be repointed.",
           "bind_address": "Which network to answer on. 0.0.0.0 means all of them.",
           "upstream_host": "Where Home Assistant itself listens. Leave this as 127.0.0.1.",
           "upstream_port": "Where Home Assistant will answer instead. Nothing you use needs to know about this port.",
-          "manage_http": "Move Home Assistant to the port above, reachable only from its own machine, restarting it if it is not there already."
+          "manage_http": "Move Home Assistant to the port above, reachable only from its own machine, restarting it if it is not there already.",
+          "restore_network_on_removal": "Removing or disabling this integration moves Home Assistant back to the address it answered on before, and restarts it once. Leave this off and it stays where it is, reachable only from its own machine."
         }
       }
     }

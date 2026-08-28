@@ -247,6 +247,20 @@ phones and cloud integrations carry on working without being repointed.
 </details>
 
 <details>
+<summary><strong>What happens if I uninstall it?</strong></summary>
+
+<br>
+
+Home Assistant goes back to the address it was on before and restarts once, so
+you keep reaching it exactly as you do now. Without that it would be left
+answering only on its own machine, and getting back in would need a shell.
+
+Your roles are kept, so reinstalling picks up where you left off. Disabling the
+integration behaves the same way as removing it.
+
+</details>
+
+<details>
 <summary><strong>Does it work behind NGINX, Traefik or Cloudflare?</strong></summary>
 
 <br>
