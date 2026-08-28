@@ -23,10 +23,13 @@ from .const import (
     CONF_BIND_ADDRESS,
     CONF_MANAGE_HTTP,
     CONF_PROXY_PORT,
+    CONF_RESTORE_ON_REMOVAL,
     CONF_UPSTREAM_HOST,
     CONF_UPSTREAM_PORT,
+    DATA_PREVIOUS_HTTP,
     DEFAULT_BIND_ADDRESS,
     DEFAULT_PROXY_PORT,
+    DEFAULT_RESTORE_ON_REMOVAL,
     DEFAULT_UPSTREAM_HOST,
     DEFAULT_UPSTREAM_PORT,
     DOMAIN,
@@ -34,7 +37,9 @@ from .const import (
 from .util import async_upstream_is_loopback_only
 
 
-def _schema(defaults: dict[str, Any], *, manage: bool = False) -> vol.Schema:
+def _schema(
+    defaults: dict[str, Any], *, manage: bool = False, moved: bool = False
+) -> vol.Schema:
     """Return the configuration schema.
 
     `manage` adds the "keep Home Assistant out of the way" toggle, which the
@@ -66,6 +71,18 @@ def _schema(defaults: dict[str, Any], *, manage: bool = False) -> vol.Schema:
         fields[
             vol.Required(
                 CONF_MANAGE_HTTP, default=defaults.get(CONF_MANAGE_HTTP, False)
+            )
+        ] = BooleanSelector()
+    if moved:
+        # Home Assistant offers no question at removal time -- an integration
+        # gets one fire-and-forget callback and no way to prompt -- so the
+        # question is asked here instead, while there is somewhere to ask it.
+        fields[
+            vol.Required(
+                CONF_RESTORE_ON_REMOVAL,
+                default=defaults.get(
+                    CONF_RESTORE_ON_REMOVAL, DEFAULT_RESTORE_ON_REMOVAL
+                ),
             )
         ] = BooleanSelector()
     return vol.Schema(fields)
@@ -206,6 +223,9 @@ class RbacOptionsFlow(OptionsFlow):
                     CONF_UPSTREAM_HOST: user_input[CONF_UPSTREAM_HOST],
                     CONF_UPSTREAM_PORT: int(user_input[CONF_UPSTREAM_PORT]),
                     CONF_MANAGE_HTTP: user_input.get(CONF_MANAGE_HTTP, False),
+                    CONF_RESTORE_ON_REMOVAL: user_input.get(
+                        CONF_RESTORE_ON_REMOVAL, DEFAULT_RESTORE_ON_REMOVAL
+                    ),
                 }
             )
 
@@ -213,6 +233,9 @@ class RbacOptionsFlow(OptionsFlow):
         return self.async_show_form(
             step_id="init",
             data_schema=_schema(
-                current, manage=await http_config.async_can_manage(self.hass)
+                current,
+                manage=await http_config.async_can_manage(self.hass),
+                # Only worth asking where there is something to put back.
+                moved=bool(self.config_entry.data.get(DATA_PREVIOUS_HTTP)),
             ),
         )

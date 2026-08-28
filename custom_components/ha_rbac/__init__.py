@@ -35,12 +35,15 @@ from .const import (
     CONF_BIND_ADDRESS,
     CONF_MANAGE_HTTP,
     CONF_PROXY_PORT,
+    CONF_RESTORE_ON_REMOVAL,
     CONF_UPSTREAM_HOST,
     CONF_UPSTREAM_PORT,
+    DATA_PREVIOUS_HTTP,
     DATA_RBAC,
     DATA_STATIC_PATH_REGISTERED,
     DEFAULT_BIND_ADDRESS,
     DEFAULT_PROXY_PORT,
+    DEFAULT_RESTORE_ON_REMOVAL,
     DEFAULT_UPSTREAM_HOST,
     DEFAULT_UPSTREAM_PORT,
     DOMAIN,
@@ -153,6 +156,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     manage_http = config.get(CONF_MANAGE_HTTP, False)
 
+    if (
+        manage_http
+        and not entry.data.get(DATA_PREVIOUS_HTTP)
+        and http_config.is_aligned(hass, upstream_port)
+    ):
+        # Moved by a build that did not record where from. Without something
+        # here, removing this integration would leave the instance on loopback
+        # with nothing in front of it, which is the failure the restore exists
+        # to prevent -- and it would only be fixed for people who installed
+        # after this, which is the wrong half of them.
+        #
+        # What the move does is take the address Home Assistant was on, so the
+        # port it was on is the port the proxy is on now. The bind address is
+        # not recoverable and is left out, which restores Home Assistant's own
+        # default of every interface: reachable, which is the safe direction to
+        # be wrong in.
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, DATA_PREVIOUS_HTTP: {"server_port": proxy_port}},
+        )
+
     async def _move_home_assistant() -> bool:
         """Stage Home Assistant's move to loopback and restart into it.
 
@@ -164,6 +188,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return False
         try:
             current = await http_config.async_current(hass)
+            # Recorded before the move, because afterwards there is no way to
+            # tell what Home Assistant was doing on its own. Removing this
+            # integration has to be able to put it back.
+            hass.config_entries.async_update_entry(
+                entry,
+                data={
+                    **entry.data,
+                    DATA_PREVIOUS_HTTP: http_config.snapshot(current),
+                },
+            )
             await http_config.async_stage(
                 hass, http_config.target_config(current, upstream_port)
             )
@@ -321,6 +355,62 @@ async def _async_reload(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)
 
 
+async def _async_restore_network(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Put Home Assistant back on the address it answered on before.
+
+    Stopping the proxy frees the port but leaves Home Assistant on loopback, so
+    without this the instance is off the network entirely: nothing serves the
+    address everyone uses, and the port Home Assistant is on refuses anything
+    that is not the machine itself. Getting back in needs a shell. That is a
+    reasonable thing to ask of somebody recovering from a mistake, and an
+    unreasonable one to ask of somebody who just uninstalled an integration.
+
+    A restart is the cost. There is no way to move a running Home Assistant, and
+    leaving it where it is means leaving it unreachable.
+    """
+    previous = entry.data.get(DATA_PREVIOUS_HTTP)
+    if not previous:
+        # Never moved from here, so there is nothing of ours to undo.
+        return
+    if not entry.options.get(
+        CONF_RESTORE_ON_REMOVAL,
+        entry.data.get(CONF_RESTORE_ON_REMOVAL, DEFAULT_RESTORE_ON_REMOVAL),
+    ):
+        _LOGGER.warning(
+            "Leaving Home Assistant on its current address because restoring it "
+            "is switched off for this entry. It is reachable only from its own "
+            "machine until you change Server host and Server port under "
+            "Settings > System > Network"
+        )
+        return
+
+    try:
+        current = await http_config.async_current(hass)
+        await http_config.async_restore(
+            hass, http_config.restore_config(current, previous)
+        )
+    except (http_config.Unavailable, HomeAssistantError, OSError):
+        _LOGGER.exception(
+            "Could not put Home Assistant back on its previous address. It is "
+            "still answering only on its own machine. Set Server host and "
+            "Server port under Settings > System > Network, which needs access "
+            "to the machine itself"
+        )
+        return
+
+    _LOGGER.warning(
+        "Putting Home Assistant back on its previous address and restarting. "
+        "It will answer on %s again shortly",
+        previous.get("server_port", DEFAULT_PROXY_PORT),
+    )
+    await hass.services.async_call(HA_DOMAIN, SERVICE_RESTART, blocking=False)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Undo the move when the integration is removed."""
+    await _async_restore_network(hass, entry)
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Stop the proxy and remove the panel."""
     data: RbacData | None = hass.data.pop(DATA_RBAC, None)
@@ -341,4 +431,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # The handlers close over hass.data[DATA_RBAC], which has just been removed.
     websocket_api.async_unregister(hass)
     frontend.async_remove_panel(hass, PANEL_URL_PATH, warn_if_unknown=False)
+
+    # A reload unloads as well, and must undo nothing. Disabling leaves the same
+    # instance unreachable as removing does, so it gets the same treatment.
+    # Home Assistant sets `disabled_by` before it unloads, which is what tells
+    # the two apart.
+    if entry.disabled_by is not None:
+        await _async_restore_network(hass, entry)
     return True

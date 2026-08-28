@@ -59,6 +59,43 @@ async def _store(hass: HomeAssistant) -> Any:
     return await config.async_get_and_load_store(hass)
 
 
+# The only keys `target_config` changes, and therefore the only ones a restore
+# has any business putting back. Everything else in the config may have been
+# edited since the move and is left alone.
+MOVED_KEYS = (
+    "server_host",
+    "server_port",
+    "trusted_proxies",
+    "use_x_forwarded_for",
+)
+
+
+def snapshot(current: dict[str, Any]) -> dict[str, Any]:
+    """Record the keys the move is about to overwrite.
+
+    Only the ones actually present are kept. A key missing from the snapshot
+    means it was not set before, and restoring removes it again rather than
+    writing a default that was never there.
+    """
+    return {key: current[key] for key in MOVED_KEYS if key in current}
+
+
+def restore_config(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
+    """Return the running config with the move undone.
+
+    Built from the running config, not from the snapshot, so an SSL certificate
+    or a CORS origin added while this was installed survives being uninstalled.
+    Only what the move changed goes back.
+    """
+    restored = {key: value for key, value in current.items() if key not in _META_KEYS}
+    for key in MOVED_KEYS:
+        if key in previous:
+            restored[key] = previous[key]
+        else:
+            restored.pop(key, None)
+    return restored
+
+
 def covers_loopback(entry: object) -> bool:
     """Return True if a `trusted_proxies` entry covers the address we call from.
 
@@ -198,6 +235,27 @@ async def async_stage(hass: HomeAssistant, config: dict[str, Any]) -> None:
     await server.async_verify_can_bind(hass, config)
     store = await api_config.async_get_and_load_store(hass)
     await store.async_set_pending(config)
+
+
+async def async_restore(hass: HomeAssistant, config: dict[str, Any]) -> None:
+    """Put a config back as the *stable* one, not as a trial.
+
+    Staging alone would undo itself. A pending config is a trial that Home
+    Assistant reverts unless something promotes it within five minutes, and the
+    thing that promotes it is this integration, which by now is being removed.
+    Nobody would be left to confirm the restore, so it would be rolled back to
+    the loopback config and the instance would go off the network again, which
+    is the failure this exists to prevent.
+
+    So it is promoted immediately. That gives up the trial, and the bind check
+    is what stands in for it: the port has to be free and bindable before
+    anything is written, and by this point the proxy holding it has stopped.
+    """
+    api_config, server = _api()
+    await server.async_verify_can_bind(hass, config)
+    store = await api_config.async_get_and_load_store(hass)
+    await store.async_set_pending(config)
+    await store.async_promote_pending()
 
 
 async def async_promote(hass: HomeAssistant) -> bool:

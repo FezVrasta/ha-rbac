@@ -19,6 +19,14 @@ CONF_UPSTREAM_PORT: Final = "upstream_port"
 CONF_FAIL_OPEN: Final = "fail_open"
 # Whether this integration moves Home Assistant's own listener for you.
 CONF_MANAGE_HTTP: Final = "manage_http"
+# Put Home Assistant back where it was if this integration is removed or
+# disabled. On by default: leaving it on loopback with nothing in front of it
+# takes the instance off the network entirely.
+CONF_RESTORE_ON_REMOVAL: Final = "restore_network_on_removal"
+DEFAULT_RESTORE_ON_REMOVAL: Final = True
+# What the HTTP config looked like before the move, recorded on the config entry
+# at the moment it is staged. Without it there is nothing to put back.
+DATA_PREVIOUS_HTTP: Final = "previous_http"
 
 DEFAULT_PROXY_PORT: Final = 8123
 DEFAULT_BIND_ADDRESS: Final = "0.0.0.0"
