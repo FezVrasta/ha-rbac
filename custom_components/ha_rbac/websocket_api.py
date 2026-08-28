@@ -8,7 +8,22 @@ from homeassistant.components.websocket_api import const as ws_const
 from homeassistant.core import HomeAssistant, callback
 
 from . import record
-from .const import DATA_RBAC, DOMAIN
+from .const import (
+    CONF_BIND_ADDRESS,
+    CONF_MANAGE_HTTP,
+    CONF_PROXY_PORT,
+    CONF_RESTORE_ON_REMOVAL,
+    CONF_UPSTREAM_HOST,
+    CONF_UPSTREAM_PORT,
+    DATA_PREVIOUS_HTTP,
+    DATA_RBAC,
+    DEFAULT_BIND_ADDRESS,
+    DEFAULT_PROXY_PORT,
+    DEFAULT_RESTORE_ON_REMOVAL,
+    DEFAULT_UPSTREAM_HOST,
+    DEFAULT_UPSTREAM_PORT,
+    DOMAIN,
+)
 
 COMMANDS = (
     "roles/list",
@@ -24,6 +39,8 @@ COMMANDS = (
     "dashboards/refresh",
     "denials/recent",
     "simulate",
+    "settings/get",
+    "settings/set",
 )
 
 
@@ -58,6 +75,8 @@ def async_register(hass: HomeAssistant) -> None:
         handle_dashboards_refresh,
         handle_denials_recent,
         handle_simulate,
+        handle_settings_get,
+        handle_settings_set,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -414,3 +433,86 @@ def handle_record_status(
             if (recording := recorder.get(role_id)) is not None
         },
     )
+
+
+# The settings that live on the config entry rather than in a role. Home
+# Assistant has an options flow for these already, and it cannot be reached:
+# `config_panel_domain` points the Configure gear at this panel, and there is no
+# second affordance. So they are served here, where the rest of this
+# integration is administered anyway.
+_SETTING_DEFAULTS = {
+    CONF_PROXY_PORT: DEFAULT_PROXY_PORT,
+    CONF_BIND_ADDRESS: DEFAULT_BIND_ADDRESS,
+    CONF_UPSTREAM_HOST: DEFAULT_UPSTREAM_HOST,
+    CONF_UPSTREAM_PORT: DEFAULT_UPSTREAM_PORT,
+    CONF_MANAGE_HTTP: False,
+    CONF_RESTORE_ON_REMOVAL: DEFAULT_RESTORE_ON_REMOVAL,
+}
+
+
+@callback
+def _entry(hass: HomeAssistant) -> Any:
+    """Return this integration's config entry, or None if it has gone."""
+    entries = hass.config_entries.async_entries(DOMAIN)
+    return entries[0] if entries else None
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/settings/get"})
+@callback
+def handle_settings_get(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return the entry's settings, with the defaults filled in."""
+    entry = _entry(hass)
+    if entry is None:
+        connection.send_error(msg["id"], "not_found", "No config entry")
+        return
+    current = {**entry.data, **entry.options}
+    connection.send_result(
+        msg["id"],
+        {
+            **{
+                key: current.get(key, default)
+                for key, default in _SETTING_DEFAULTS.items()
+            },
+            # Whether this integration moved Home Assistant, which decides
+            # whether there is anything for the restore setting to put back.
+            "moved": bool(entry.data.get(DATA_PREVIOUS_HTTP)),
+        },
+    )
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/settings/set",
+        vol.Optional(CONF_PROXY_PORT): vol.All(int, vol.Range(min=1, max=65535)),
+        vol.Optional(CONF_BIND_ADDRESS): str,
+        vol.Optional(CONF_UPSTREAM_HOST): str,
+        vol.Optional(CONF_UPSTREAM_PORT): vol.All(int, vol.Range(min=1, max=65535)),
+        vol.Optional(CONF_MANAGE_HTTP): bool,
+        vol.Optional(CONF_RESTORE_ON_REMOVAL): bool,
+    }
+)
+@callback
+def handle_settings_set(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Change the entry's settings.
+
+    Written to `options` rather than `data`, which is where the options flow put
+    them and what `async_setup_entry` reads on top of `data`. Updating the entry
+    reloads it, so a changed port takes effect without a restart -- and takes the
+    connection that asked for it with it, which the panel is told to expect.
+    """
+    entry = _entry(hass)
+    if entry is None:
+        connection.send_error(msg["id"], "not_found", "No config entry")
+        return
+    changes = {key: msg[key] for key in _SETTING_DEFAULTS if key in msg}
+    if not changes:
+        connection.send_error(msg["id"], "invalid_format", "Nothing to change")
+        return
+    hass.config_entries.async_update_entry(entry, options={**entry.options, **changes})
+    connection.send_result(msg["id"], {"changed": sorted(changes)})

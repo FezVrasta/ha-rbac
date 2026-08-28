@@ -64,7 +64,7 @@ const SYSTEM_PANELS = ["_my_redirect", "notfound", "app"];
 
 // The panel is mounted here, and everything after it is ours to route on.
 const PANEL_PATH = "/rbac";
-const TABS = ["roles", "users", "denials"];
+const TABS = ["roles", "users", "denials", "settings"];
 
 const DAYS = [
   { value: "mon", label: "Mon" },
@@ -472,6 +472,7 @@ class HaRbacPanel extends HTMLElement {
         this._loadDraft();
       }
       this._render();
+      this._loadForTab();
     };
     window.addEventListener("popstate", this._onPopState);
   }
@@ -527,6 +528,15 @@ class HaRbacPanel extends HTMLElement {
       this._notice = { kind: "error", text: err.message || String(err) };
     }
     this._render();
+    // A reload or a link can land straight on a tab that fetches its own data,
+    // which until now only happened when the tab was clicked.
+    this._loadForTab();
+  }
+
+  /** Fetch whatever the current tab needs and is not already loaded with. */
+  _loadForTab() {
+    if (this._tab === "denials") this._loadDenials();
+    else if (this._tab === "settings") this._loadSettings();
   }
 
   _loadDraft() {
@@ -556,6 +566,7 @@ class HaRbacPanel extends HTMLElement {
     const bar = this.shadowRoot.querySelector("ha-top-app-bar-fixed");
     if (bar) bar.narrow = this._narrow;
     if (this._tab === "roles") this._mountEditor();
+    else if (this._tab === "settings") this._mountSettings();
     this._wire();
   }
 
@@ -576,6 +587,7 @@ class HaRbacPanel extends HTMLElement {
       ["roles", "Roles"],
       ["users", "Users"],
       ["denials", "Denials"],
+      ["settings", "Settings"],
     ]
       .map(
         ([id, label]) =>
@@ -586,6 +598,7 @@ class HaRbacPanel extends HTMLElement {
     let body = "";
     if (this._tab === "roles") body = this._rolesView();
     else if (this._tab === "users") body = this._usersView();
+    else if (this._tab === "settings") body = this._settingsView();
     else body = this._denialsView();
 
     // The navigationIcon slot is deliberately left empty: ha-top-app-bar-fixed
@@ -1474,6 +1487,101 @@ class HaRbacPanel extends HTMLElement {
     </ha-card>`;
   }
 
+  _settingsView() {
+    const s = this._settings;
+    if (!s)
+      return `<ha-card><div class="card-content"><p class="hint">Loading.</p></div></ha-card>`;
+
+    // Home Assistant has an options flow for these and no way to open it: the
+    // Configure gear goes to this panel instead, and there is no second way in.
+    // So they live here, where everything else about this is administered.
+    //
+    // The inputs are mounted in code rather than written as markup, like every
+    // other field in this panel: they are Home Assistant's own components and
+    // take their value as a property, not an attribute.
+    return `<ha-card>
+      <div class="card-content">
+        <h2>Where this answers</h2>
+        <p class="hint">Changing any of these restarts the listener, which drops
+          the connection this page is using. Reload afterwards.</p>
+        <div id="settings-fields"></div>
+
+        ${
+          s.moved
+            ? `<h3>Uninstalling</h3>
+        <p class="hint">This integration moved Home Assistant to answer only on
+          its own machine. If it is removed or disabled and nothing puts that
+          back, Home Assistant is left off the network, and getting in again
+          needs a shell on the machine it runs on.</p>
+        <div class="field">
+          <ha-formfield label="Put Home Assistant back if this is removed">
+            <ha-switch id="set-restore" ${s.restore_network_on_removal ? "checked" : ""}></ha-switch>
+          </ha-formfield>
+        </div>`
+            : ""
+        }
+
+        <div class="actions">
+          <ha-button id="save-settings" raised>Save</ha-button>
+        </div>
+      </div>
+    </ha-card>`;
+  }
+
+  /** Build the address fields, writing straight back into the loaded settings. */
+  _mountSettings() {
+    const host = this.shadowRoot.getElementById("settings-fields");
+    if (!host || !this._settings) return;
+    host.innerHTML = "";
+
+    const port = { number: { min: 1, max: 65535, step: 1, mode: "box" } };
+    const text = { text: {} };
+    const fields = [
+      ["proxy_port", "Proxy port", port, "The port browsers connect to."],
+      [
+        "bind_address",
+        "Bind address",
+        text,
+        "Which network to answer on. 0.0.0.0 means all of them.",
+      ],
+      [
+        "upstream_host",
+        "Home Assistant host",
+        text,
+        "Where Home Assistant itself listens. Leave this as 127.0.0.1.",
+      ],
+      [
+        "upstream_port",
+        "Home Assistant port",
+        port,
+        "Where Home Assistant answers instead. Nothing you use needs to know about it.",
+      ],
+    ];
+
+    for (const [key, label, selector, hint] of fields) {
+      const el = document.createElement("ha-selector");
+      el.hass = this._hass;
+      el.selector = selector;
+      el.label = label;
+      el.required = false;
+      el.value = this._settings[key];
+      el.addEventListener("value-changed", (event) => {
+        event.stopPropagation();
+        this._settings[key] = event.detail.value;
+      });
+
+      const field = document.createElement("div");
+      field.className = "field";
+      field.append(el);
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.style.margin = "4px 0 0";
+      note.textContent = hint;
+      field.append(note);
+      host.append(field);
+    }
+  }
+
   _denialsView() {
     const rows = this._denials
       .map(
@@ -1549,7 +1657,8 @@ class HaRbacPanel extends HTMLElement {
         this._tab = b.dataset.tab;
         this._notice = null;
         this._syncUrl();
-        if (this._tab === "denials") this._loadDenials();
+        if (this._tab === "denials" || this._tab === "settings")
+          this._loadForTab();
         else this._render();
       };
     });
@@ -1576,6 +1685,7 @@ class HaRbacPanel extends HTMLElement {
     on("delete", () => this._deleteRole());
     on("save-bindings", () => this._saveBindings());
     on("load-denials", () => this._loadDenials());
+    on("save-settings", () => this._saveSettings());
     on("refresh-dashboards", () => this._refreshDashboards());
     on("add-window", () => {
       this._draft.schedule.push({ days: [], start: "", end: "" });
@@ -1780,6 +1890,41 @@ class HaRbacPanel extends HTMLElement {
         await this._call("bindings/set", { user_id: userId, role_ids: roleIds });
       }
     }, "Assignments saved.");
+  }
+
+  async _loadSettings() {
+    try {
+      this._settings = await this._call("settings/get");
+    } catch (err) {
+      this._notice = { kind: "error", text: err.message || String(err) };
+    }
+    this._render();
+  }
+
+  async _saveSettings() {
+    const root = this.shadowRoot;
+    const s = this._settings;
+    const changes = {
+      proxy_port: Number(s.proxy_port),
+      bind_address: String(s.bind_address || "").trim(),
+      upstream_host: String(s.upstream_host || "").trim(),
+      upstream_port: Number(s.upstream_port),
+    };
+    const restore = root.getElementById("set-restore");
+    if (restore) changes.restore_network_on_removal = restore.checked;
+
+    try {
+      await this._call("settings/set", changes);
+      // The reload takes this connection with it, so there is no result worth
+      // waiting for beyond the acknowledgement.
+      this._notice = {
+        kind: "ok",
+        text: "Saved. The listener is restarting, so reload this page.",
+      };
+    } catch (err) {
+      this._notice = { kind: "error", text: err.message || String(err) };
+    }
+    this._render();
   }
 
   async _loadDenials() {
