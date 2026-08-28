@@ -49,6 +49,10 @@ async def test_the_wizard_offers_to_move_home_assistant(
 ) -> None:
     """The step that exists so nobody has to know the install order."""
     step = await flow.async_step_user(PORTS)
+    assert step["type"] is FlowResultType.MENU
+    assert step["step_id"] == "backup"
+
+    step = await flow.async_step_backup_skip()
     assert step["type"] is FlowResultType.FORM
     assert step["step_id"] == "move"
     assert step["description_placeholders"] == {
@@ -65,6 +69,7 @@ async def test_the_wizard_offers_to_move_home_assistant(
 async def test_declining_the_move_still_sets_up(flow: RbacConfigFlow) -> None:
     """Doing it by hand stays a supported route, not a dead end."""
     await flow.async_step_user(PORTS)
+    await flow.async_step_backup_skip()
     step = await flow.async_step_move({CONF_MANAGE_HTTP: False})
     assert step["type"] is FlowResultType.CREATE_ENTRY
     assert step["data"][CONF_MANAGE_HTTP] is False
@@ -79,10 +84,14 @@ async def test_the_move_is_not_offered_where_it_cannot_be_done(
     manual route, and the wizard should not stop to ask about something it
     would then fail to do.
     """
+    step = await flow.async_step_user(PORTS)
+    assert step["type"] is FlowResultType.MENU
+    assert step["step_id"] == "backup"
+
     with patch(
         "custom_components.ha_rbac.http_config.async_can_manage", return_value=False
     ):
-        step = await flow.async_step_user(PORTS)
+        step = await flow.async_step_backup_skip()
 
     assert step["type"] is FlowResultType.CREATE_ENTRY
     assert step["data"][CONF_MANAGE_HTTP] is False
@@ -150,6 +159,21 @@ async def test_no_manual_instruction_when_the_move_is_on_offer(
     with patch.object(hass.http, "server_host", ["0.0.0.0"], create=True):
         step = await flow.async_step_user()
     assert step["description_placeholders"] == {"warning": ""}
+
+
+async def test_the_backup_step_fires_backup_create(
+    hass: HomeAssistant, flow: RbacConfigFlow
+) -> None:
+    """Choosing "create a backup" calls the service, then moves on."""
+    await flow.async_step_user(PORTS)
+
+    with patch.object(hass.services, "async_call") as mock_call:
+        step = await flow.async_step_backup_create()
+
+    mock_call.assert_called_once_with("backup", "create", blocking=False)
+    # It should land on the move step.
+    assert step["type"] is FlowResultType.FORM
+    assert step["step_id"] == "move"
 
 
 async def test_the_manual_instruction_survives_where_it_is_the_only_route(

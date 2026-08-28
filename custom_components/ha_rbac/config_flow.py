@@ -115,7 +115,7 @@ class RbacConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_PROXY_PORT] = "port_conflict"
             else:
                 self._data = data
-                return await self.async_step_move()
+                return await self.async_step_backup()
 
         return self.async_show_form(
             step_id="user",
@@ -165,6 +165,35 @@ class RbacConfigFlow(ConfigFlow, domain=DOMAIN):
             "directly with the token they already have."
         )
 
+    async def async_step_backup(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Offer to create a backup before changing ports.
+
+        The next step restarts Home Assistant on a different port. A backup
+        gives the user a way back if something unexpected happens -- the
+        five-minute revert restores the port and bind address, but not the
+        integration's own configuration or anything outside the HTTP server.
+        The backup runs in the background and does not block the flow.
+        """
+        return self.async_show_menu(
+            step_id="backup",
+            menu_options=["backup_create", "backup_skip"],
+        )
+
+    async def async_step_backup_create(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Fire a backup and continue to the move step."""
+        await self.hass.services.async_call("backup", "create", blocking=False)
+        return await self.async_step_move()
+
+    async def async_step_backup_skip(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Skip the backup and continue to the move step."""
+        return await self.async_step_move()
+
     async def async_step_move(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -210,6 +239,9 @@ class RbacConfigFlow(ConfigFlow, domain=DOMAIN):
 
 class RbacOptionsFlow(OptionsFlow):
     """Handle reconfiguration."""
+
+    # TODO: offer a backup step here too, at least when `manage_http` is being
+    # toggled on for the first time -- the same port-swap risk applies.
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None

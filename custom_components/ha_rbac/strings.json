@@ -17,6 +17,14 @@
           "upstream_port": "Where Home Assistant will answer instead. Nothing you use needs to know about this port."
         }
       },
+      "backup": {
+        "title": "Create a backup first?",
+        "description": "The next step can restart Home Assistant on a different port. If something goes wrong, Home Assistant reverts by itself within five minutes — but a backup gives you a second way back.\n\nThe backup runs in the background and does not slow anything down.",
+        "menu_options": {
+          "backup_create": "Create a backup, then continue",
+          "backup_skip": "Skip, continue without a backup"
+        }
+      },
       "move": {
         "title": "Move Home Assistant out of the way",
         "description": "Roles are only enforced on traffic that comes through here, so Home Assistant has to stop answering on the network itself. Otherwise anyone can go straight round this with the token they already have.\n\nHome Assistant can be moved to port {upstream_port}, reachable only from its own machine, leaving port {proxy_port} to this. It restarts once and comes back on {proxy_port} in about fifteen seconds.\n\nIf it does not come back, Home Assistant undoes the change within five minutes and restarts again on {proxy_port} as it is now.",
