@@ -49,6 +49,10 @@ from .policy import Evaluator
 
 _LOGGER = logging.getLogger(__name__)
 
+# How long to let in-flight requests land when the listener stops. Bounded
+# because the request that stops it is usually one of them.
+SHUTDOWN_DRAIN = 5
+
 INIT_HEADERS_FILTER = {
     hdrs.CONTENT_LENGTH,
     hdrs.CONTENT_ENCODING,
@@ -202,11 +206,13 @@ class RbacProxy:
         # path, so any rewriting breaks every camera snapshot and download link.
         app.router.add_route("*", "/{path:.*}", self._handle)
 
-        self._runner = web.AppRunner(app, handler_cancellation=True)
-        await self._runner.setup()
-        site = web.TCPSite(
-            self._runner, self._bind_address, self._port, shutdown_timeout=10
+        # `shutdown_timeout` belongs on the runner; aiohttp accepts it on the
+        # site and warns, which is the deprecation this was tripping.
+        self._runner = web.AppRunner(
+            app, handler_cancellation=True, shutdown_timeout=SHUTDOWN_DRAIN
         )
+        await self._runner.setup()
+        site = web.TCPSite(self._runner, self._bind_address, self._port)
         await site.start()
         _LOGGER.info(
             "RBAC proxy listening on %s:%s, forwarding to %s",
@@ -252,10 +258,30 @@ class RbacProxy:
         )
 
     async def async_stop(self) -> None:
-        """Release the listener."""
+        """Release the listener, without waiting on a request that cannot finish.
+
+        Removing or disabling this integration is itself a request, and it
+        arrives through this proxy. So the connection asking for the removal is
+        one of the ones `cleanup()` drains before returning, and it cannot
+        complete until the unload that is awaiting `cleanup()` returns. That is
+        a cycle, and it hangs: Home Assistant stops serving its own address
+        while the removal never finishes and nothing is put back.
+
+        Draining is still worth a moment for the ordinary case of a reload,
+        where in-flight requests belong to somebody and should land. It is not
+        worth the instance.
+        """
         if self._runner is not None:
-            await self._runner.cleanup()
-            self._runner = None
+            runner, self._runner = self._runner, None
+            try:
+                async with asyncio.timeout(SHUTDOWN_DRAIN):
+                    await runner.cleanup()
+            except TimeoutError:
+                _LOGGER.debug(
+                    "Gave up draining connections after %ss; a request through "
+                    "this proxy is most likely the one that asked it to stop",
+                    SHUTDOWN_DRAIN,
+                )
 
     @callback
     def _upstream_url(self, request: web.Request) -> URL:
