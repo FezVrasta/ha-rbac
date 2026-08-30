@@ -33,8 +33,9 @@ from .const import (
     DEFAULT_UPSTREAM_HOST,
     DEFAULT_UPSTREAM_PORT,
     DOMAIN,
+    LOOPBACK_BIND_WARNING,
 )
-from .util import async_upstream_is_loopback_only
+from .util import async_upstream_is_loopback_only, is_loopback_bind
 
 
 def _schema(
@@ -190,6 +191,10 @@ class RbacConfigFlow(ConfigFlow, domain=DOMAIN):
                 data={**self._data, CONF_MANAGE_HTTP: False},
             )
 
+        warning = ""
+        if is_loopback_bind(self._data.get(CONF_BIND_ADDRESS, DEFAULT_BIND_ADDRESS)):
+            warning = f"\n\n{LOOPBACK_BIND_WARNING}"
+
         return self.async_show_form(
             step_id="move",
             data_schema=vol.Schema(
@@ -198,6 +203,7 @@ class RbacConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "proxy_port": str(self._data[CONF_PROXY_PORT]),
                 "upstream_port": str(upstream_port),
+                "warning": warning,
             },
         )
 
@@ -214,7 +220,13 @@ class RbacOptionsFlow(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Change the ports the proxy uses."""
+        """Change the ports the proxy uses.
+
+        A loopback bind with the move on is allowed, not refused: it is the
+        right setup behind a reverse proxy on the same host. The warning about
+        the case where nothing bridges the network is shown in the panel, which
+        is the surface this integration is actually administered from.
+        """
         if user_input is not None:
             return self.async_create_entry(
                 data={

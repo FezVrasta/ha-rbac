@@ -54,6 +54,7 @@ async def test_the_wizard_offers_to_move_home_assistant(
     assert step["description_placeholders"] == {
         "proxy_port": "8123",
         "upstream_port": "8124",
+        "warning": "",
     }
 
     step = await flow.async_step_move({CONF_MANAGE_HTTP: True})
@@ -86,6 +87,26 @@ async def test_the_move_is_not_offered_where_it_cannot_be_done(
 
     assert step["type"] is FlowResultType.CREATE_ENTRY
     assert step["data"][CONF_MANAGE_HTTP] is False
+
+
+async def test_a_loopback_bind_with_the_move_is_flagged_not_refused(
+    flow: RbacConfigFlow,
+) -> None:
+    """Loopback bind plus the move is the right setup behind a reverse proxy.
+
+    An earlier version refused it outright, which forbade the hardened
+    same-host reverse-proxy layout the README advertises. It warns instead, and
+    the move still goes through.
+    """
+    step = await flow.async_step_user({**PORTS, CONF_BIND_ADDRESS: "127.0.0.1"})
+    assert step["type"] is FlowResultType.FORM
+    assert step["step_id"] == "move"
+    assert step["description_placeholders"]["warning"]
+
+    step = await flow.async_step_move({CONF_MANAGE_HTTP: True})
+    assert step["type"] is FlowResultType.CREATE_ENTRY
+    assert step["data"][CONF_MANAGE_HTTP] is True
+    assert step["data"][CONF_BIND_ADDRESS] == "127.0.0.1"
 
 
 def _default(step: Any, field: str) -> Any:

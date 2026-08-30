@@ -24,6 +24,13 @@ CONF_MANAGE_HTTP: Final = "manage_http"
 # takes the instance off the network entirely.
 CONF_RESTORE_ON_REMOVAL: Final = "restore_network_on_removal"
 DEFAULT_RESTORE_ON_REMOVAL: Final = True
+
+LOOPBACK_BIND_WARNING: Final = (
+    "The proxy is set to answer only on this machine while also moving Home "
+    "Assistant here, so nothing on the network reaches either unless a reverse "
+    "proxy or tunnel on this host forwards to it. If there is no such thing in "
+    "front, use 0.0.0.0 to answer on every interface."
+)
 # What the HTTP config looked like before the move, recorded on the config entry
 # at the moment it is staged. Without it there is nothing to put back.
 DATA_PREVIOUS_HTTP: Final = "previous_http"

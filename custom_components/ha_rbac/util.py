@@ -5,6 +5,27 @@ from ipaddress import ip_address
 from homeassistant.core import HomeAssistant, callback
 
 
+def is_loopback_bind(address: str) -> bool:
+    """Return True if a bind address restricts the proxy to loopback only.
+
+    A loopback bind means only the local machine can connect, which strands the
+    instance when ``manage_http`` moves Home Assistant to loopback as well --
+    unless something else on the host bridges the network.
+
+    Resolved as an address rather than matched as a string, so the whole
+    ``127.0.0.0/8`` block, ``::1`` and IPv4-mapped forms like
+    ``::ffff:127.0.0.1`` all count, the same way ``.is_loopback`` is used for the
+    upstream check beside it. ``localhost`` is not an address and is spelled out.
+    """
+    stripped = address.strip()
+    if stripped == "localhost":
+        return True
+    try:
+        return ip_address(stripped).is_loopback
+    except ValueError:
+        return False
+
+
 @callback
 def async_upstream_is_loopback_only(hass: HomeAssistant) -> bool:
     """Return True if Home Assistant only listens on loopback.

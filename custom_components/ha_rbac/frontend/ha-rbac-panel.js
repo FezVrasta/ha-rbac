@@ -1926,13 +1926,17 @@ class HaRbacPanel extends HTMLElement {
     if (manageHttp) changes.manage_http = manageHttp.checked;
 
     try {
-      await this._call("settings/set", changes);
-      // The reload takes this connection with it, so there is no result worth
-      // waiting for beyond the acknowledgement.
-      this._notice = {
-        kind: "ok",
-        text: "Saved. The listener is restarting, so reload this page.",
-      };
+      const result = await this._call("settings/set", changes);
+      if (result && result.warning) {
+        this._notice = { kind: "warning", text: result.warning };
+      } else {
+        // The reload takes this connection with it, so there is no result worth
+        // waiting for beyond the acknowledgement.
+        this._notice = {
+          kind: "ok",
+          text: "Saved. The listener is restarting, so reload this page.",
+        };
+      }
     } catch (err) {
       this._notice = { kind: "error", text: err.message || String(err) };
     }
