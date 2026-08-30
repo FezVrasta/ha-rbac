@@ -1496,6 +1496,18 @@ class HaRbacPanel extends HTMLElement {
           the connection this page is using. Reload afterwards.</p>
         <div id="settings-fields"></div>
 
+        <h3>Network lockdown</h3>
+        <p class="hint">When enabled, Home Assistant is moved to answer only on
+          its own machine and restarted. The proxy becomes the only way in from
+          the network, which is what makes the roles enforceable. Without this,
+          anyone can bypass the proxy by connecting to the upstream port
+          directly.</p>
+        <div class="field">
+          <ha-formfield label="Manage HTTP configuration">
+            <ha-switch id="set-manage-http" ${s.manage_http ? "checked" : ""}></ha-switch>
+          </ha-formfield>
+        </div>
+
         <h3>Dashboards</h3>
         <p class="hint">A dashboard's contents decide what the roles holding it
           can reach, and they are re-read whenever Home Assistant says one
@@ -1910,6 +1922,8 @@ class HaRbacPanel extends HTMLElement {
     };
     const restore = root.getElementById("set-restore");
     if (restore) changes.restore_network_on_removal = restore.checked;
+    const manageHttp = root.getElementById("set-manage-http");
+    if (manageHttp) changes.manage_http = manageHttp.checked;
 
     try {
       await this._call("settings/set", changes);
