@@ -10,6 +10,7 @@ import logging
 import re
 from dataclasses import dataclass
 from fnmatch import fnmatch
+from functools import partial
 from typing import Any
 
 from homeassistant.components.websocket_api import const as ws_const
@@ -145,6 +146,80 @@ def _url_to_pattern(url: str) -> "re.Pattern[str]":
     return re.compile(f"^{''.join(parts)}/?$")
 
 
+# Home Assistant answers a static path off disk, to anyone at all: its auth
+# middleware only records whether a request was authenticated, and the
+# `requires_auth` check lives in `HomeAssistantView`, which a static resource is
+# not. GET and HEAD because that is all the router answers there.
+STATIC_METHODS = ("get", "head")
+
+
+@dataclass(slots=True)
+class StaticInfo:
+    """A path Home Assistant serves off disk rather than through a view."""
+
+    path: str
+    # A directory covers everything beneath it. A single file is only itself.
+    is_prefix: bool
+
+    def covers(self, path: str) -> bool:
+        """Return True if this static path answers for a request path."""
+        if not self.is_prefix:
+            return path == self.path
+        return path == self.path or path.startswith(f"{self.path}/")
+
+
+def build_statics(hass: HomeAssistant) -> list[StaticInfo]:
+    """Derive the paths Home Assistant serves straight off disk.
+
+    Read back off the running router rather than listed here, so an integration
+    registering a static path of its own is covered the moment it does.
+
+    Two registrations to recognise, because `async_register_static_paths` makes
+    both: a directory becomes an aiohttp `StaticResource`, and a single file
+    becomes an ordinary route bound to one of HA's own file-serving helpers.
+    """
+    from aiohttp.web_urldispatcher import StaticResource  # noqa: PLC0415
+
+    try:
+        from homeassistant.components.http.server import (  # noqa: PLC0415
+            _serve_file,
+            _serve_file_with_cache_headers,
+        )
+    except ImportError:
+        # Renamed upstream. Single-file paths then stay unknown, which resolves
+        # to admin: what happened before any of this, and the safe direction to
+        # fail in. Directories are unaffected, being a public aiohttp class.
+        servers: set[Any] = set()
+    else:
+        servers = {_serve_file, _serve_file_with_cache_headers}
+
+    if (app := getattr(getattr(hass, "http", None), "app", None)) is None:
+        return []
+
+    statics: list[StaticInfo] = []
+    for resource in app.router.resources():
+        url = resource.canonical
+        # A path built from placeholders belongs to a view, and a prefix of "/"
+        # would hand over the whole instance.
+        if not url or "{" in url or url == "/":
+            continue
+        if isinstance(resource, StaticResource):
+            statics.append(StaticInfo(url.rstrip("/"), True))
+            continue
+        # Not every resource is iterable -- the frontend's index is its own
+        # `AbstractResource` -- and one that is not registers no routes here.
+        try:
+            routes = list(resource)
+        except TypeError:
+            continue
+        if any(
+            isinstance(route.handler, partial) and route.handler.func in servers
+            for route in routes
+        ):
+            statics.append(StaticInfo(url, False))
+    return statics
+
+
 def _all_view_subclasses(base: Any) -> list[Any]:
     """Return every HomeAssistantView subclass, transitively."""
     found: list[Any] = []
@@ -207,6 +282,7 @@ class Catalog:
         self._hass = hass
         self._commands: dict[str, CommandInfo] = {}
         self._routes: list[RouteInfo] = []
+        self._statics: list[StaticInfo] = []
         self.degraded = False
 
     @property
@@ -233,6 +309,7 @@ class Catalog:
 
         self._commands = commands
         self._routes = build_routes()
+        self._statics = build_statics(self._hass)
         self._check_not_degraded()
 
     def _check_not_degraded(self) -> None:
@@ -347,13 +424,31 @@ class Catalog:
         return fallback
 
     @callback
+    def serves_a_file(self, method: str, path: str) -> bool:
+        """Return True if Home Assistant hands this path straight off disk."""
+        if method.lower() not in STATIC_METHODS:
+            return False
+        return any(static.covers(path) for static in self._statics)
+
+    @callback
     def tier_for_request(self, method: str, path: str) -> str:
         """Return the tier for a REST request.
 
         Unmatched paths resolve to admin: a route this build cannot see is one
-        it cannot reason about.
+        it cannot reason about. A static path is the exception, and views are
+        consulted first, so this can only answer for a path none of them claims.
         """
         if (route := self.route_for(method, path)) is None:
+            # A path with no view of its own may still be a file Home Assistant
+            # gives to anyone who asks: `/local`, the frontend bundles, an
+            # integration's own static path. Refusing one to a signed-in
+            # restricted user withholds nothing, because the same request
+            # carrying no token at all is forwarded and answered -- which is
+            # exactly what a dashboard's `<img>` sends. A camera snapshot
+            # written into `www/` was being refused to the people it was put
+            # there for, while a stranger could still fetch it.
+            if self.serves_a_file(method, path):
+                return TIER_OPEN
             return TIER_ADMIN
         return route.tier_for_method(method)
 

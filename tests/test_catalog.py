@@ -245,3 +245,67 @@ async def test_the_predefined_roles_name_real_capabilities() -> None:
     known = {capability["id"] for capability in CAPABILITIES}
     for role in default_roles().values():
         assert set(role.get("capabilities") or []) <= known, role["id"]
+
+
+async def test_a_static_path_derives_as_open(
+    hass: HomeAssistant, tmp_path: pathlib.Path
+) -> None:
+    """Home Assistant hands these to anyone, so a role must not gate them.
+
+    A static path is not a `HomeAssistantView`, so it is absent from the derived
+    route table and resolved to the fail-closed admin default. That refused a
+    camera snapshot under `/local` to the very people it was put there for,
+    while the same request carrying no token at all was forwarded and answered
+    -- which is what a dashboard's `<img>` sends.
+
+    Both shapes `async_register_static_paths` produces are covered, because it
+    registers a directory and a single file in different ways.
+    """
+    from homeassistant.components.http import StaticPathConfig  # noqa: PLC0415
+
+    await async_setup_component(hass, "http", {})
+    (tmp_path / "robots.txt").write_text("")
+    await hass.http.async_register_static_paths(
+        [
+            StaticPathConfig("/local", str(tmp_path), False),
+            StaticPathConfig("/robots.txt", str(tmp_path / "robots.txt"), False),
+        ]
+    )
+    catalog = Catalog(hass)
+    catalog.rebuild()
+
+    assert catalog.tier_for_request("GET", "/local") == TIER_OPEN
+    assert catalog.tier_for_request("GET", "/local/tmp/snapshot.jpg") == TIER_OPEN
+    assert catalog.tier_for_request("HEAD", "/local/tmp/snapshot.jpg") == TIER_OPEN
+    assert catalog.tier_for_request("GET", "/robots.txt") == TIER_OPEN
+
+
+async def test_the_admin_default_survives_the_static_exception(
+    hass: HomeAssistant, tmp_path: pathlib.Path
+) -> None:
+    """Only a path Home Assistant really serves off disk may take this way out.
+
+    The exception is narrow on purpose: the verbs the static router answers, the
+    file itself rather than a namespace under it, and never in front of a view.
+    A static path registered over `/api` must not downgrade the admin-only
+    endpoints beneath it, which is why views are consulted first.
+    """
+    import homeassistant.components.api  # noqa: F401, PLC0415
+    from homeassistant.components.http import StaticPathConfig  # noqa: PLC0415
+
+    await async_setup_component(hass, "http", {})
+    (tmp_path / "robots.txt").write_text("")
+    await hass.http.async_register_static_paths(
+        [
+            StaticPathConfig("/local", str(tmp_path), False),
+            StaticPathConfig("/robots.txt", str(tmp_path / "robots.txt"), False),
+            StaticPathConfig("/api", str(tmp_path), False),
+        ]
+    )
+    catalog = Catalog(hass)
+    catalog.rebuild()
+
+    assert catalog.tier_for_request("POST", "/local/tmp/snapshot.jpg") == TIER_ADMIN
+    assert catalog.tier_for_request("GET", "/robots.txt/anything") == TIER_ADMIN
+    assert catalog.tier_for_request("GET", "/nothing/registered") == TIER_ADMIN
+    assert catalog.tier_for_request("GET", "/api/error_log") == TIER_ADMIN

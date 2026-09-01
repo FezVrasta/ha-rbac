@@ -1331,3 +1331,42 @@ async def test_a_role_can_refuse_one_ordinary_service(
     assert _call(["notify.*"]).allowed is True, (
         "a rule for another domain must not bite"
     )
+
+
+async def test_a_snapshot_under_local_is_not_refused_to_its_own_audience(
+    hass: HomeAssistant, tmp_path: Any
+) -> None:
+    """`/local` is a static path, not a view, so it resolved to admin.
+
+    Reported by someone whose camera snapshot, written into `www/` by an
+    automation and fetched with a token, came back as "role does not permit
+    admin-tier request". The gate protected nothing: Home Assistant serves
+    everything under `/local` to anyone at all, and the proxy already forwards
+    the same request when it carries no token -- which is what a dashboard's
+    `<img>` sends. It only broke the clients that do send one.
+    """
+    from homeassistant.components.http import StaticPathConfig  # noqa: PLC0415
+
+    await async_setup_component(hass, "http", {})
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig("/local", str(tmp_path), False)]
+    )
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    decider = Decider(hass, catalog, REGISTRY)
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            tiers={"max": TIER_USER, "allow": [], "deny": []},
+        ),
+        _lookup(hass),
+    )
+    decision = decider.decide(
+        Permissions(roles=[role]),
+        KIND_HTTP,
+        "GET /local/tmp/snapshot_camera__1788254723.jpg",
+        {},
+    )
+    assert decision.allowed is True

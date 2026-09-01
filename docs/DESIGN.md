@@ -61,6 +61,15 @@ command surface without naming any of it. REST routes are derived separately,
 sorted by specificity rather than length so a catch-all cannot outrank a
 specific path; an unmatched route is treated as administrative.
 
+One exception to that default: a path Home Assistant serves straight off disk.
+Static paths are not views, so they match no route and used to resolve to
+administrative -- which refused a signed-in restricted user a file Home
+Assistant hands to anyone at all, the proxy included, since the same request
+without a token is forwarded and answered. `/local`, the frontend bundles and
+any integration's own static path are read back off the running router and
+count as open. Views are consulted first, so a static path cannot lower the
+tier of an endpoint underneath it.
+
 **3. App gate.** Hiding a dashboard, add-on or screen from the sidebar is
 cosmetic on its own, since the address bar still works, so the ways into a
 denied one are refused too. Three matches, in order of precision: the request
