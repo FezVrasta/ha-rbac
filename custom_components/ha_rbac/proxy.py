@@ -745,6 +745,18 @@ class _WsSession:
         """Return True if this connection needs no inspection at all."""
         return self._permissions.full_access
 
+    @property
+    def _unfiltered(self) -> bool:
+        """Return True if replies on this connection go back untouched.
+
+        Either because the role is unrestricted, or because it is being
+        recorded. A recording is a temporary grant of full access, so it has to
+        reach the responses too: the requests are already allowed, and
+        filtering what comes back against the very rules being suspended leaves
+        the person with an empty screen and the recording with nothing to see.
+        """
+        return self._full_access or self._decider.is_recording(self._permissions)
+
     async def pump_inbound(self) -> None:
         """Relay client -> Home Assistant, deciding on each command."""
         try:
@@ -975,7 +987,7 @@ class _WsSession:
 
         messages = parsed if isinstance(parsed, list) else [parsed]
 
-        if self._full_access:
+        if self._unfiltered:
             # Nothing is filtered here, but the ingress session still has to be
             # tied to its user: this connection is the only place the command
             # that mints one is visible, and an unrecorded session is refused

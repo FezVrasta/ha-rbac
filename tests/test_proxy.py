@@ -29,6 +29,7 @@ from custom_components.ha_rbac.filters import REGISTRY
 from custom_components.ha_rbac.ingress import SESSION_ENDPOINT
 from custom_components.ha_rbac.policy import Evaluator, Permissions
 from custom_components.ha_rbac.proxy import RbacProxy, _WsSession
+from custom_components.ha_rbac.record import Recorder
 from custom_components.ha_rbac.store import RbacStore
 
 
@@ -82,7 +83,8 @@ async def proxy_env_fixture(
     catalog.rebuild()
     evaluator = Evaluator(hass, store)
     denylog = DenyLog(hass)
-    decider = Decider(hass, catalog, REGISTRY)
+    recorder = Recorder()
+    decider = Decider(hass, catalog, REGISTRY, recorder)
 
     port = _free_port()
     proxy = RbacProxy(
@@ -102,6 +104,7 @@ async def proxy_env_fixture(
         "proxy": proxy,
         "store": store,
         "denylog": denylog,
+        "recorder": recorder,
         "base": f"http://127.0.0.1:{port}",
         "ws": f"http://127.0.0.1:{port}/api/websocket",
         "admin_token": hass_access_token,
@@ -165,6 +168,53 @@ async def test_get_states_is_filtered(proxy_env: dict[str, Any]) -> None:
     entity_ids = {state["entity_id"] for state in message["result"]}
     assert "light.kitchen" in entity_ids
     assert "lock.front" not in entity_ids
+
+
+async def test_a_recorded_role_sees_the_whole_instance(
+    proxy_env: dict[str, Any],
+) -> None:
+    """Recording suspends the response filter as well as the request gate.
+
+    Reported as "recording user activity doesn't seem to go anywhere": the
+    request side allowed everything and noted it, but the reply was still
+    filtered against the rules the recording is meant to be suspending. The
+    person being recorded saw an empty Home Assistant, could therefore touch
+    nothing, and the recording came back with nothing in it.
+    """
+    hass, store = proxy_env["hass"], proxy_env["store"]
+    hass.states.async_set("light.kitchen", "on")
+    hass.states.async_set("lock.front", "locked")
+
+    user, token = proxy_env["read_only_user"], proxy_env["read_only_token"]
+    role = await store.async_create_role({"name": "Guests", "allow": {}, "deny": {}})
+    await store.async_set_binding(user.id, [role["id"]])
+
+    async with aiohttp.ClientSession() as session:
+        ws = await _ws_login(session, proxy_env["ws"], token)
+        await ws.send_json({"id": 1, "type": "get_states"})
+        before = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        await ws.close()
+
+        proxy_env["recorder"].start(role["id"])
+
+        ws = await _ws_login(session, proxy_env["ws"], token)
+        await ws.send_json({"id": 1, "type": "get_states"})
+        during = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        await ws.close()
+
+        proxy_env["recorder"].stop(role["id"])
+
+        ws = await _ws_login(session, proxy_env["ws"], token)
+        await ws.send_json({"id": 1, "type": "get_states"})
+        after = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        await ws.close()
+
+    seen = {state["entity_id"] for state in during["result"]}
+    assert {"light.kitchen", "lock.front"} <= seen
+    # And it is the recording doing it, not the role: the same role sees
+    # nothing either side of it.
+    assert before["result"] == []
+    assert after["result"] == []
 
 
 async def test_a_templates_value_never_reaches_a_denied_reader(
