@@ -23,7 +23,9 @@ from .const import (
     DEFAULT_UPSTREAM_HOST,
     DEFAULT_UPSTREAM_PORT,
     DOMAIN,
+    LOOPBACK_BIND_WARNING,
 )
+from .util import is_loopback_bind
 
 COMMANDS = (
     "roles/list",
@@ -514,5 +516,23 @@ def handle_settings_set(
     if not changes:
         connection.send_error(msg["id"], "invalid_format", "Nothing to change")
         return
+    # Merge with current values: settings/set accepts partial updates, so the
+    # combination of old and new has to be checked, not just the incoming keys.
+    current = {**entry.data, **entry.options}
+    effective = {
+        **{
+            key: current.get(key, default) for key, default in _SETTING_DEFAULTS.items()
+        },
+        **changes,
+    }
+    warning = None
+    if effective.get(CONF_MANAGE_HTTP) and is_loopback_bind(
+        str(effective.get(CONF_BIND_ADDRESS, DEFAULT_BIND_ADDRESS))
+    ):
+        warning = LOOPBACK_BIND_WARNING
+
     hass.config_entries.async_update_entry(entry, options={**entry.options, **changes})
-    connection.send_result(msg["id"], {"changed": sorted(changes)})
+    result: dict[str, Any] = {"changed": sorted(changes)}
+    if warning is not None:
+        result["warning"] = warning
+    connection.send_result(msg["id"], result)
