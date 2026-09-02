@@ -249,6 +249,20 @@ class Decider:
         self._recorder = recorder
 
     @callback
+    def is_recording(self, permissions: Permissions) -> bool:
+        """Return True if a recording covers this user.
+
+        The proxy needs this on the way back as well as on the way in. A
+        recording allows every request and filters no response, and the two
+        halves have to agree: allowing the request and then filtering the reply
+        against rules the recording is meant to be suspending shows the person
+        an empty Home Assistant, which is nothing like the one they use.
+        """
+        if self._recorder is None:
+            return False
+        return self._recorder.for_permissions(permissions) is not None
+
+    @callback
     def _resource_message(
         self, permissions: Permissions, denied: list[str], key: str
     ) -> str:

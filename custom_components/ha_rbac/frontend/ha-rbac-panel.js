@@ -415,6 +415,7 @@ class HaRbacPanel extends HTMLElement {
     this._denials = [];
     this._catalog = null;
     this._recording = {};
+    this._recordTimer = null;
     // Which sections are open, kept across renders: saving a role should
     // not fold away the section you were working in.
     this._open = new Set();
@@ -475,6 +476,8 @@ class HaRbacPanel extends HTMLElement {
 
   disconnectedCallback() {
     if (this._onPopState) window.removeEventListener("popstate", this._onPopState);
+    if (this._recordTimer) clearInterval(this._recordTimer);
+    this._recordTimer = null;
   }
 
   /**
@@ -564,6 +567,7 @@ class HaRbacPanel extends HTMLElement {
     if (this._tab === "roles") this._mountEditor();
     else if (this._tab === "settings") this._mountSettings();
     this._wire();
+    this._syncRecordPoll();
   }
 
   _chrome() {
@@ -976,6 +980,61 @@ class HaRbacPanel extends HTMLElement {
           <ha-button id="record-discard" class="quiet">Discard</ha-button>
         </div>
       </div>`;
+  }
+
+  /**
+   * Keep the running total in step with what the recording has actually seen.
+   *
+   * A recording only fills up while somebody else is using Home Assistant, so
+   * the panel has nothing to re-render on: without this the count sits at
+   * whatever it was when the page loaded, and the only way to move it is to
+   * save the role, which reloads everything as a side effect. Only
+   * `record/status` is fetched, so an unsaved draft is never read back over.
+   */
+  _syncRecordPoll() {
+    const running = this._tab === "roles" && Object.keys(this._recording).length;
+    if (!running) {
+      if (this._recordTimer) clearInterval(this._recordTimer);
+      this._recordTimer = null;
+      return;
+    }
+    if (this._recordTimer) return;
+    this._recordTimer = setInterval(() => this._pollRecording(), 5000);
+  }
+
+  async _pollRecording() {
+    let status;
+    try {
+      status = await this._call("record/status");
+    } catch (err) {
+      // A dropped connection is the panel's problem, not the recording's;
+      // the next tick picks it up again.
+      return;
+    }
+    const was = Object.keys(this._recording).length;
+    this._recording = status || {};
+    // A restart ends every recording, and stopping one from another tab ends
+    // that one. Either way the editor is now out of date, so re-read it.
+    if (was && !Object.keys(this._recording).length) {
+      this._syncRecordPoll();
+      await this._refresh();
+      return;
+    }
+    this._mountRecordSection();
+  }
+
+  /** Redraw the recording block alone, leaving the rest of the form alone. */
+  _mountRecordSection() {
+    const host = this.shadowRoot && this.shadowRoot.getElementById("record-host");
+    if (!host || !this._draft) return;
+    host.innerHTML = this._recordSection(this._draft.system_generated);
+    const on = (id, handler) => {
+      const el = host.querySelector(`#${id}`);
+      if (el) el.addEventListener("click", handler);
+    };
+    on("record-start", () => this._record("start"));
+    on("record-stop", () => this._record("keep"));
+    on("record-discard", () => this._record("discard"));
   }
 
   async _record(action) {
