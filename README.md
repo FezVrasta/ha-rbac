@@ -129,7 +129,7 @@ If the button above doesn't work, you can add this repository manually to HACS:
 
 1. Open **HACS** in Home Assistant
 2. Click the menu (⋮) and select **Custom repositories**
-3. Add the repository URL: `https://github.com/jan-tdy/ha-rbac`
+3. Add the repository URL: `https://github.com/FezVrasta/ha-rbac`
 4. Select **Integration** as the category
 5. Click **Create**
 6. Click the new **Access Control** card
@@ -141,7 +141,7 @@ If the button above doesn't work, you can add this repository manually to HACS:
 
 If you prefer to install manually:
 
-1. Download the latest release from the [releases page](https://github.com/jan-tdy/ha-rbac/releases)
+1. Download the latest release from the [releases page](https://github.com/FezVrasta/ha-rbac/releases)
 2. Extract the `ha_rbac` folder
 3. Copy it to your Home Assistant `config/custom_components/` directory
 4. Restart Home Assistant
