@@ -1,0 +1,69 @@
+name: ✨ Feature Request
+description: Suggest an idea for improving ha-rbac
+labels: ["enhancement"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature! Please describe your feature request in detail below.
+  - type: input
+    id: title
+    attributes:
+      label: Title
+      description: A clear and concise title for the feature
+      placeholder: "e.g., Add support for time-based access restrictions"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Describe the problem or limitation you're trying to solve
+      placeholder: "Is your feature request related to a problem? Please describe it..."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution or feature you'd like to see
+      placeholder: "Describe what you'd like to happen..."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative Solutions
+      description: Have you considered any alternative solutions or features?
+      placeholder: "Describe any alternative solutions or features you've considered..."
+    validations:
+      required: false
+  - type: textarea
+    id: use-cases
+    attributes:
+      label: Use Cases
+      description: Describe specific use cases for this feature
+      placeholder: |
+        Example use cases:
+        1. As a parent, I want to...
+        2. As a guest, I need to...
+    validations:
+      required: false
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context, screenshots, or examples
+      placeholder: "Any additional information, screenshots, or examples..."
+    validations:
+      required: false
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues and discussions to avoid duplicates
+          required: true
+        - label: This feature aligns with the purpose of role-based access control
+          required: false
