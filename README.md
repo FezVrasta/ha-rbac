@@ -19,7 +19,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/how-it-works-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/how-it-works-light.svg">
-    <img src="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/how-it-works-light.svg" alt="Everyone's requests pass through Access Control on the way to Home Assistant. A guest asking to unlock the front door is refused; the same request from the owner goes through. Answers coming back are trimmed to what that person may see." width="880">
+    <img src="https://raw.githubusercontent.com/FezVrasta/ha-rbac/main/screenshots/how-it-works-light.svg" alt="Everyone's requests pass through Access Control on the way to Home Assistant. A guest only sees what they're allowed to see.">
   </picture>
 </p>
 
@@ -89,7 +89,9 @@ Four roles to start from: **Administrator**, **Editor**, **User** and
 
 ## Install
 
-<a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=FezVrasta&repository=ha-rbac&category=integration"><img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Open your Home Assistant instance and open this repository inside the Home Assistant Community Store."></a>
+### Quick install (HACS button)
+
+<a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=FezVrasta&repository=ha-rbac&category=integration"><img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Open your Home Assistant instance and open a repository inside the Home Assistant Community Store."></a>
 
 That button adds this to HACS. **Download**, restart, then add **Access
 Control** from Settings → Devices & Services and say yes when it offers to move
@@ -120,6 +122,30 @@ under Settings → System → Network, add **Access Control**, and finally set
 with a Home Assistant you can still reach.
 
 </details>
+
+### Install via custom HACS repository
+
+If the button above doesn't work, you can add this repository manually to HACS:
+
+1. Open **HACS** in Home Assistant
+2. Click the menu (⋮) and select **Custom repositories**
+3. Add the repository URL: `https://github.com/FezVrasta/ha-rbac`
+4. Select **Integration** as the category
+5. Click **Create**
+6. Click the new **Access Control** card
+7. Click **Download**
+8. Restart Home Assistant
+9. Go to Settings → Devices & Services and add **Access Control**
+
+### Manual installation
+
+If you prefer to install manually:
+
+1. Download the latest release from the [releases page](https://github.com/FezVrasta/ha-rbac/releases)
+2. Extract the `ha_rbac` folder
+3. Copy it to your Home Assistant `config/custom_components/` directory
+4. Restart Home Assistant
+5. Go to Settings → Devices & Services and add **Access Control**
 
 ## Your first role
 
