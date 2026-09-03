@@ -354,3 +354,33 @@ async def test_an_entity_a_denial_still_refuses_is_reported(
     recording.note_entity("light.bed", POLICY_READ)
 
     assert record.still_blocked(hass, role, recording) == ["lock.front"]
+
+
+async def test_a_recorded_script_press_writes_the_script_down(
+    hass: HomeAssistant,
+) -> None:
+    """A script button sends nothing the extractor can see but the service name.
+
+    `script.night_lights` is both the entity and the service that runs it, and
+    the call carries no target at all. The recording noted nothing, so the role
+    built from watching someone press the button could not press it again --
+    which is the one thing recording exists to prevent.
+    """
+    recorder = Recorder()
+    decider = await _decider(hass, recorder)
+    await async_setup_component(
+        hass, "script", {"script": {"night_lights": {"sequence": []}}}
+    )
+    await hass.async_block_till_done()
+
+    role = _role(hass)
+    recording = recorder.start(role["id"])
+    decision = decider.decide(
+        _permissions(hass, role),
+        KIND_WS,
+        "call_service",
+        {"type": "call_service", "domain": "script", "service": "night_lights"},
+    )
+
+    assert decision.allowed is True
+    assert recording.entities == {"script.night_lights": POLICY_CONTROL}

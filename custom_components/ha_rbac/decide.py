@@ -73,6 +73,12 @@ DASHBOARD_KIND = "lovelace"
 # that names no particular entity.
 DOMAIN_PROBE = "_rbac_probe"
 
+# Services that write a log line and touch nothing else. The frontend reports
+# its own unhandled errors through this one, so a role that cannot reach it
+# turns every JavaScript error into a permission denial -- filling the deny log
+# with entries that name no entity and describe nothing the person did.
+WRITES_ONLY_TO_THE_LOG = frozenset({"system_log.write"})
+
 # The Settings panel, whose url path is also the namespace every
 # registry command lives under.
 CONFIG_PANEL = "config"
@@ -410,7 +416,13 @@ class Decider:
             # `homeassistant.restart` all target nothing, and refusing the lot
             # left a role unable to make a notification.
             if (
-                service_decision := self._decide_service(permissions, payload)
+                service_decision := self._decide_service(
+                    permissions,
+                    payload,
+                    self._catalog.path_service(method, path)
+                    if kind == KIND_HTTP
+                    else None,
+                )
             ) is not None:
                 return service_decision
 
@@ -538,23 +550,43 @@ class Decider:
 
     @callback
     def _decide_service(
-        self, permissions: Permissions, payload: dict[str, Any]
+        self,
+        permissions: Permissions,
+        payload: dict[str, Any],
+        called: "tuple[str, str] | None" = None,
     ) -> Decision | None:
         """Judge a service call that named no entity, or None if not one.
 
         The service itself is the bound. Home Assistant already records which
         services it considers administrative, so that is read rather than
-        listed; anything else is allowed to a role that may control the domain.
+        listed; anything else is allowed to a role that may control the domain
+        -- unless the service names its own target, which is the script case
+        below and the more precise answer where it applies.
+
+        `called` carries the service a REST path names, since `POST
+        /api/services/script/night_lights` puts it in the URL rather than in the
+        body. Without it the same call was bounded over the websocket and
+        unbounded over REST, so an agent driving the HTTP API could not run a
+        script the person who set it up had granted.
         """
-        domain = payload.get("domain")
-        service = payload.get("service")
-        if not isinstance(domain, str) or not isinstance(service, str):
-            return None
-        service_data = payload.get("service_data")
-        if payload.get("target") or (
-            isinstance(service_data, dict) and service_data.get("entity_id")
-        ):
-            return None
+        if called is not None:
+            domain, service = called
+            # A REST body *is* the service data, so a resource named in it is
+            # named at the top level. One that names any is not this shape: the
+            # resource gate has already seen it, or -- for `entity_id: all` --
+            # has deliberately let it stand as unbounded.
+            if payload.get("target") or any(key in payload for key in RESOURCE_KEYS):
+                return None
+        else:
+            domain = payload.get("domain")
+            service = payload.get("service")
+            if not isinstance(domain, str) or not isinstance(service, str):
+                return None
+            service_data = payload.get("service_data")
+            if payload.get("target") or (
+                isinstance(service_data, dict) and service_data.get("entity_id")
+            ):
+                return None
 
         named = f"{domain}.{service}"
         if self._catalog.service_is_admin_only(domain, service):
@@ -578,6 +610,35 @@ class Decider:
                 detail=f"role does not permit the {named} action",
             )
 
+        # A service can name its own target instead of taking one. Home
+        # Assistant registers `script.night_lights` for the script entity of
+        # that name -- which is what a dashboard button and an automation both
+        # call -- and a notifier gets a service per notifier the same way. The
+        # call carries no target, but the entity is right there in the service
+        # name, so that entity is the bound and answers for the call.
+        #
+        # Without this the domain probe answered instead, and a role granted
+        # one script could not run it: granting a script meant granting every
+        # script, which is not what the person ticking one box asked for.
+        if (target := self._entity_behind(domain, service)) is not None:
+            if not permissions.check_entity(target, POLICY_CONTROL):
+                return Decision(
+                    allowed=False,
+                    reason=REASON_RESOURCE,
+                    detail=f"no {POLICY_CONTROL} access to {target}",
+                    message=self._resource_message(
+                        permissions, [target], POLICY_CONTROL
+                    ),
+                    resources=[target],
+                )
+            return Decision(allowed=True, resources=[target], filter_response=True)
+
+        # Writing to the log changes nothing in the house, and core lets any
+        # signed-in user do it. Checked after the tier gate, so a role that
+        # denies it outright still wins.
+        if named in WRITES_ONLY_TO_THE_LOG:
+            return Decision(allowed=True, filter_response=True)
+
         # The probe is never a real entity; it makes the domain-level rule in
         # the policy answer for a call that names no particular one.
         if not permissions.check_entity(f"{domain}.{DOMAIN_PROBE}", POLICY_CONTROL):
@@ -587,6 +648,20 @@ class Decider:
                 detail=f"no control access to the {domain} domain",
             )
         return Decision(allowed=True, filter_response=True)
+
+    @callback
+    def _entity_behind(self, domain: Any, service: Any) -> str | None:
+        """Return the entity a service is named after, if it is named after one.
+
+        Kept in one place because a recording needs the same answer for the
+        opposite purpose: to write the script down rather than to judge it. Two
+        copies that had to agree would leave a recorded role unable to press the
+        button it was recorded pressing.
+        """
+        if not isinstance(domain, str) or not isinstance(service, str):
+            return None
+        entity_id = f"{domain}.{service}"
+        return entity_id if self._entity_exists(entity_id) else None
 
     @callback
     def _observe(
@@ -614,6 +689,15 @@ class Decider:
 
         entities = expand_to_entities(self._hass, found)
         entities |= entity_ids_in(payload, self._entity_exists)
+        # A service named after an entity *is* that entity: someone pressing a
+        # script button sends nothing else the extractor can see, so without
+        # this the recording would not write the script down and the role built
+        # from it could not press the button it was recorded pressing.
+        called = self._catalog.path_service(method, path) if kind == KIND_HTTP else None
+        domain, service = called or (payload.get("domain"), payload.get("service"))
+        if (target := self._entity_behind(domain, service)) is not None:
+            entities.add(target)
+
         key = POLICY_CONTROL if self._is_mutation(kind, name, payload) else POLICY_READ
         for entity_id in entities:
             recording.note_entity(entity_id, key)

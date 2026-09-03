@@ -470,6 +470,26 @@ class Catalog:
         }
 
     @callback
+    def path_service(self, method: str, path: str) -> tuple[str, str] | None:
+        """Return the service a path calls, if it is the REST spelling of a call.
+
+        `POST /api/services/script/night_lights` is the same request as a
+        `call_service` command, with the two halves of the service name in the
+        URL where no schema reaches them. Home Assistant's own route names both
+        groups, so the pair is read off the registered pattern rather than by
+        matching a literal path here.
+        """
+        if (route := self.route_for(method, path)) is None:
+            return None
+        if (match := route.pattern.match(path)) is None:
+            return None
+        groups = match.groupdict() or {}
+        domain, service = groups.get("domain"), groups.get("service")
+        if not domain or not service:
+            return None
+        return domain, service
+
+    @callback
     def info_for(self, command: str) -> CommandInfo | None:
         """Return the derived information for a command, if known."""
         return self._commands.get(command)
