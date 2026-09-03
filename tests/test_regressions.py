@@ -46,7 +46,9 @@ from custom_components.ha_rbac.decide import (
     KIND_HTTP,
     KIND_WS,
     REASON_APP,
+    REASON_RESOURCE,
     REASON_TIER,
+    REASON_UNBOUNDED,
     Decider,
     Decision,
     _invokes_a_service,
@@ -1370,3 +1372,181 @@ async def test_a_snapshot_under_local_is_not_refused_to_its_own_audience(
         {},
     )
     assert decision.allowed is True
+
+
+async def _script_decider(hass: HomeAssistant) -> Decider:
+    """Return a decider on an instance with two scripts and the system log."""
+    for domain in ("websocket_api", "config", "api", "system_log"):
+        await async_setup_component(hass, domain, {})
+    await async_setup_component(
+        hass,
+        "script",
+        {
+            "script": {
+                "camera_ptz_left": {"sequence": []},
+                "unlock_everything": {"sequence": []},
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    return Decider(hass, catalog, REGISTRY)
+
+
+def _may_control(hass: HomeAssistant, *entity_ids: str) -> Permissions:
+    """Return permissions granting control of exactly these entities."""
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {
+                    "entity_ids": {
+                        entity_id: {POLICY_READ: True, POLICY_CONTROL: True}
+                        for entity_id in entity_ids
+                    }
+                }
+            },
+            tiers={"max": TIER_USER, "allow": [], "deny": []},
+        ),
+        _lookup(hass),
+    )
+    return Permissions(roles=[role])
+
+
+async def test_a_service_named_after_an_entity_is_judged_by_that_entity(
+    hass: HomeAssistant,
+) -> None:
+    """Granting one script did not let anyone run it (#12).
+
+    A script's own service is named after it -- `script.camera_ptz_left` -- and
+    that is what a dashboard button calls: no target, nothing in the payload but
+    a domain and a service name. The domain probe answered for it, so the call
+    needed control of *every* script, and the person who ticked one box was told
+    they had no permission for the thing they had just been given.
+    """
+    decider = await _script_decider(hass)
+    assert (
+        decider._catalog.service_is_admin_only("script", "camera_ptz_left") is False
+    ), "precondition: Home Assistant does not gate a script itself"
+
+    decision = decider.decide(
+        _may_control(hass, "script.camera_ptz_left"),
+        KIND_WS,
+        "call_service",
+        {"type": "call_service", "domain": "script", "service": "camera_ptz_left"},
+    )
+    assert decision.allowed is True
+    assert decision.resources == ["script.camera_ptz_left"]
+
+
+async def test_the_service_name_does_not_hand_over_the_other_scripts(
+    hass: HomeAssistant,
+) -> None:
+    """The entity in the name is the bound, so the rest stay refused."""
+    decider = await _script_decider(hass)
+
+    decision = decider.decide(
+        _may_control(hass, "script.camera_ptz_left"),
+        KIND_WS,
+        "call_service",
+        {"type": "call_service", "domain": "script", "service": "unlock_everything"},
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_RESOURCE
+    assert decision.resources == ["script.unlock_everything"]
+
+
+async def test_the_frontend_can_report_its_own_errors(hass: HomeAssistant) -> None:
+    """`system_log.write` is where the frontend puts unhandled JavaScript errors.
+
+    Every one of them arrived as a `call_service` naming no entity, was refused
+    for want of control over a domain that has no entities to grant, and landed
+    in the deny log -- which is the one place an administrator looks to find out
+    what actually broke. The reporter of #12 read a page of them and concluded
+    the problem was `system_log`.
+    """
+    decider = await _script_decider(hass)
+
+    decision = decider.decide(
+        _may_control(hass, "script.camera_ptz_left"),
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "system_log",
+            "service": "write",
+            "service_data": {"message": "boom", "level": "error"},
+        },
+    )
+    assert decision.allowed is True
+
+
+async def test_a_role_can_still_refuse_the_log(hass: HomeAssistant) -> None:
+    """The allowance is a default, not a hole: an explicit denial outranks it."""
+    decider = await _script_decider(hass)
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}}
+            },
+            tiers={"max": TIER_USER, "allow": [], "deny": ["system_log.*"]},
+        ),
+        _lookup(hass),
+    )
+    decision = decider.decide(
+        Permissions(roles=[role]),
+        KIND_WS,
+        "call_service",
+        {"type": "call_service", "domain": "system_log", "service": "write"},
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_TIER
+
+
+async def test_the_rest_spelling_of_a_call_is_judged_the_same_way(
+    hass: HomeAssistant,
+) -> None:
+    """`POST /api/services/script/x` is a `call_service` with the name in the URL.
+
+    Over the websocket the service is the bound. Over REST nothing looked at the
+    path, so every targetless call -- a script, a notification, anything an
+    agent driving the HTTP API asks for -- was refused as unbounded, and the
+    same request got opposite answers depending on how it arrived.
+    """
+    decider = await _script_decider(hass)
+    permissions = _may_control(hass, "script.camera_ptz_left")
+
+    allowed = decider.decide(
+        permissions, KIND_HTTP, "POST /api/services/script/camera_ptz_left", {}
+    )
+    assert allowed.allowed is True
+    assert allowed.resources == ["script.camera_ptz_left"]
+
+    refused = decider.decide(
+        permissions, KIND_HTTP, "POST /api/services/script/unlock_everything", {}
+    )
+    assert refused.allowed is False
+    assert refused.reason == REASON_RESOURCE
+
+
+async def test_a_rest_body_naming_a_resource_is_not_bound_by_its_service(
+    hass: HomeAssistant,
+) -> None:
+    """`entity_id: all` names a target the service must not answer for.
+
+    The body of a REST call is the service data, so the sentinel sits at the top
+    level rather than under `target`. Reading the path as the whole bound would
+    have let one through on the strength of the script beside it.
+    """
+    decider = await _script_decider(hass)
+
+    decision = decider.decide(
+        _may_control(hass, "script.camera_ptz_left"),
+        KIND_HTTP,
+        "POST /api/services/homeassistant/turn_off",
+        {"entity_id": "all"},
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_UNBOUNDED
