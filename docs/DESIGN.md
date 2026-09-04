@@ -195,6 +195,27 @@ permissions are cached on the user *and* on which of their roles are currently
 in force, and a websocket re-resolves them per frame. A connection stays open
 for hours, which is the same span a schedule covers.
 
+## Multiple roles
+
+A user can hold more than one role at once. Each of the user's active roles
+(active meaning bound and currently in force by its own schedule) is compiled
+and checked on its own; nothing about the roles themselves is merged. A check
+then asks each role in turn and grants access if **any** role says yes --
+`check_entity` is a plain `any(role.check(entity_id, key) for role in roles)`,
+and the same shape covers tiers and apps. So two roles with conflicting
+exceptions on the same entity resolve to the more permissive of the two: a
+role that hides an entity does not override another role that grants it, even
+though *within* a single role deny still beats allow.
+
+Roles are meant to be composed rather than layered: build the narrowest role
+that covers the common case, then add a second role for the extra access
+someone occasionally needs, rather than relying on one role's deny to trim
+another's allow.
+
+The one grant nothing can widen is the per-user global deny. It is checked
+before any role is consulted and vetoes a request outright, regardless of
+what any role would otherwise allow.
+
 ## Recording what a role needs
 
 Writing a role blind is the hard way round: restrict something, hand it over,
