@@ -214,6 +214,22 @@ every request exactly as before; this runs after that and can only say no.
 </details>
 
 <details>
+<summary><strong>What happens if I give a user more than one role?</strong></summary>
+
+<br>
+
+They get the union of what those roles allow. Each role is checked on its own,
+and access is granted if any one of them allows it, so if one role hides an
+entity and another grants it, the user can see and use it. Deny only beats
+allow *inside* the same role, not across two different roles.
+
+Build the narrowest role for the common case and layer a second role on top for
+the extra access someone occasionally needs, rather than relying on one role to
+trim another. [The precise rule is in DESIGN.md](https://github.com/FezVrasta/ha-rbac/blob/main/docs/DESIGN.md#multiple-roles).
+
+</details>
+
+<details>
 <summary><strong>Isn't this security by obscurity?</strong></summary>
 
 <br>
