@@ -1,0 +1,94 @@
+# Bug Report Labels
+- name: bug
+  color: d73a4a
+  description: Something isn't working
+
+# Enhancement Labels
+- name: enhancement
+  color: a2eeef
+  description: New feature or request
+
+# Priority Labels
+- name: priority-critical
+  color: ff0000
+  description: Critical issue that needs immediate attention
+
+- name: priority-high
+  color: ff6600
+  description: High priority issue
+
+- name: priority-medium
+  color: ffcc00
+  description: Medium priority issue
+
+- name: priority-low
+  color: cccccc
+  description: Low priority issue
+
+# Type Labels
+- name: documentation
+  color: 0075ca
+  description: Improvements or additions to documentation
+
+- name: testing
+  color: fbca04
+  description: Testing and test coverage improvements
+
+- name: dependencies
+  color: 0366d6
+  description: Updates to dependencies
+
+# Status Labels
+- name: status-investigating
+  color: 5319e7
+  description: Currently investigating this issue
+
+- name: status-in-progress
+  color: 7057ff
+  description: Currently being worked on
+
+- name: status-blocked
+  color: ffd600
+  description: Blocked by another issue or dependency
+
+- name: status-on-hold
+  color: cfd3d7
+  description: On hold, will be revisited later
+
+# Component Labels
+- name: component-rbac
+  color: 0e8a16
+  description: Related to role-based access control
+
+- name: component-dashboard
+  color: 0e8a16
+  description: Related to dashboard functionality
+
+- name: component-authentication
+  color: 0e8a16
+  description: Related to authentication and login
+
+- name: component-integration
+  color: 0e8a16
+  description: Related to Home Assistant integration
+
+# Other Labels
+- name: good-first-issue
+  color: 7057ff
+  description: Good for newcomers to work on
+
+- name: help-wanted
+  color: 33aa3f
+  description: We could use help with this
+
+- name: duplicate
+  color: cfd3d7
+  description: This issue or pull request already exists
+
+- name: invalid
+  color: e4e669
+  description: This doesn't seem right
+
+- name: wontfix
+  color: ffffff
+  description: This will not be worked on

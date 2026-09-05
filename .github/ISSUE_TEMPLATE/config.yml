@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Home Assistant Community
+    url: https://community.home-assistant.io
+    about: Get help and discuss with the Home Assistant community
+  - name: GitHub Discussions
+    url: https://github.com/jan-tdy/ha-rbac/discussions
+    about: Ask questions and start discussions about ha-rbac

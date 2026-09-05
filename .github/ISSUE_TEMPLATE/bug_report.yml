@@ -1,0 +1,106 @@
+name: 🐛 Bug Report
+description: Report a bug to help improve ha-rbac
+labels: ["bug"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report a bug! Please fill out the form below to help us understand and fix the issue.
+  - type: input
+    id: title
+    attributes:
+      label: Title
+      description: A clear and concise title for the bug
+      placeholder: "e.g., Users cannot log in with special characters in password"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of what the bug is
+      placeholder: "Describe the bug you're experiencing..."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. Scroll down to '...'
+        4. See error...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: A clear and concise description of what you expected to happen
+      placeholder: "Describe what should happen..."
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happens instead
+      placeholder: "Describe what actually happens..."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ha-rbac Version
+      description: What version of ha-rbac are you using?
+      placeholder: "e.g., 1.0.0 or commit hash"
+    validations:
+      required: true
+  - type: input
+    id: home-assistant-version
+    attributes:
+      label: Home Assistant Version
+      description: What version of Home Assistant are you running?
+      placeholder: "e.g., 2024.1.0"
+    validations:
+      required: false
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: If applicable, add screenshots or error messages to help explain your problem
+      placeholder: "Paste screenshots or error logs here..."
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Examples:
+        - OS: Ubuntu 20.04
+        - Browser: Chrome 91
+        - Python version: 3.9
+      placeholder: "Describe your environment..."
+    validations:
+      required: false
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context about the problem
+      placeholder: "Any additional information..."
+    validations:
+      required: false
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues to avoid duplicates
+          required: true
+        - label: I have provided sufficient information to reproduce the bug
+          required: true
