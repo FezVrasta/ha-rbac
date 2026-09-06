@@ -29,7 +29,7 @@ from homeassistant.helpers import (
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.loader import async_get_integration
 
-from . import http_config, websocket_api
+from . import discovery, http_config, websocket_api
 from .catalog import Catalog
 from .const import (
     CONF_BIND_ADDRESS,
@@ -281,6 +281,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await proxy.async_start()
         data.proxy = proxy
         await _confirm_move()
+        if manage_http:
+            await discovery.async_advertise_proxy_port(hass, upstream_port, proxy_port)
         # Dashboards can only be read once Home Assistant has loaded them.
         await dashboard_entities.async_start()
 
