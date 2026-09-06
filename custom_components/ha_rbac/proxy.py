@@ -22,11 +22,17 @@ from ipaddress import ip_address, ip_network
 from typing import Any
 
 import aiohttp
-from aiohttp import ClientTimeout, ClientWebSocketResponse, hdrs, web
+from aiohttp import (
+    ClientSession,
+    ClientTimeout,
+    ClientWebSocketResponse,
+    TCPConnector,
+    hdrs,
+    web,
+)
 from aiohttp.helpers import must_be_empty_body
 from homeassistant.auth.models import User
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util.async_ import create_eager_task
 from homeassistant.util.json import json_loads
 from multidict import CIMultiDict
@@ -196,11 +202,12 @@ class RbacProxy:
                     "Ignoring unparseable trusted proxy at position %d", position
                 )
         self._runner: web.AppRunner | None = None
-        self._websession = async_get_clientsession(hass)
+        self._websession: ClientSession | None = None
         self._ingress = IngressGuard(hass)
 
     async def async_start(self) -> None:
         """Bind the listener."""
+        self._websession = ClientSession(connector=TCPConnector(limit=0))
         app = web.Application(client_max_size=1024**3)
         # Mounted at "/" with no prefix: signed paths are an HMAC over the exact
         # path, so any rewriting breaks every camera snapshot and download link.
@@ -282,6 +289,9 @@ class RbacProxy:
                     "this proxy is most likely the one that asked it to stop",
                     SHUTDOWN_DRAIN,
                 )
+        if self._websession is not None:
+            session, self._websession = self._websession, None
+            await session.close()
 
     @callback
     def _upstream_url(self, request: web.Request) -> URL:
