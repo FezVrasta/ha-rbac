@@ -398,7 +398,10 @@ class RbacProxy:
             # holds it legitimately. Webhooks sit outside this boundary, in the
             # same place as automations and add-ons, and DESIGN.md says so.
             pass
-        elif not permissions.full_access:
+        elif not permissions.full_access or self._decider.is_recording(permissions):
+            # A full-access user is normally forwarded unjudged, but a recording
+            # has to see what an unrestricted user touches, so `decide` is still
+            # consulted: it notes the request and allows it rather than refusing.
             body = await self._peek_json(request)
             name = f"{request.method} {request.path}"
             decision = self._decider.decide(
@@ -923,7 +926,13 @@ class _WsSession:
                 self._coalesced = True
             return True
 
-        if self._full_access or not isinstance(msg_type, str):
+        # A full-access connection needs no inspection, unless one of its roles
+        # is being recorded: a recording has to see what an unrestricted user
+        # touches, so it is routed into `decide`, which notes the request and
+        # allows it rather than short-circuiting here.
+        if not isinstance(msg_type, str) or (
+            self._full_access and not self._decider.is_recording(self._permissions)
+        ):
             return True
 
         decision = self._decider.decide(self._permissions, KIND_WS, msg_type, message)

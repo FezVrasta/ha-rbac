@@ -1051,10 +1051,25 @@ class HaRbacPanel extends HTMLElement {
           apply: action === "keep",
         });
         const seen = result.seen || {};
-        const count = seen.entities ? Object.keys(seen.entities).length : 0;
-        message = result.applied
-          ? `Added ${count} ${count === 1 ? "entity" : "entities"} to this role.`
-          : "Recording discarded. The role is unchanged.";
+        if (!result.applied) {
+          message = "Recording discarded. The role is unchanged.";
+          return;
+        }
+        // A recording notes three kinds of thing, and only ever names an
+        // entity a request actually carried. Just viewing dashboards names
+        // none, so reporting entities alone reads as "nothing recorded" even
+        // when apps or capabilities were granted. Count all three.
+        const parts = [];
+        const entities = seen.entities ? Object.keys(seen.entities).length : 0;
+        const apps = seen.apps ? seen.apps.length : 0;
+        const caps = seen.capabilities ? seen.capabilities.length : 0;
+        if (entities) parts.push(`${entities} ${entities === 1 ? "entity" : "entities"}`);
+        if (apps) parts.push(`${apps} ${apps === 1 ? "app" : "apps"}`);
+        if (caps) parts.push(`${caps} ${caps === 1 ? "capability" : "capabilities"}`);
+        message = parts.length
+          ? `Added ${parts.join(", ")} to this role.`
+          : "Recording captured nothing: its holders did not open or touch " +
+            "anything a role controls while it ran.";
       },
       () => message
     );
