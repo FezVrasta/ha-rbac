@@ -4,5 +4,5 @@ contact_links:
     url: https://community.home-assistant.io
     about: Get help and discuss with the Home Assistant community
   - name: GitHub Discussions
-    url: https://github.com/jan-tdy/ha-rbac/discussions
+    url: https://github.com/FezVrasta/ha-rbac/discussions
     about: Ask questions and start discussions about ha-rbac
