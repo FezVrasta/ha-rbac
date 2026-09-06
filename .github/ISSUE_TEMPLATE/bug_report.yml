@@ -7,14 +7,6 @@ body:
     attributes:
       value: |
         Thank you for taking the time to report a bug! Please fill out the form below to help us understand and fix the issue.
-  - type: input
-    id: title
-    attributes:
-      label: Title
-      description: A clear and concise title for the bug
-      placeholder: "e.g., Users cannot log in with special characters in password"
-    validations:
-      required: true
   - type: textarea
     id: description
     attributes:
