@@ -72,6 +72,17 @@ def test_the_target_drops_what_home_assistant_records_about_a_config() -> None:
         ([], 8124, False),
         (None, 8124, False),
         (["127.0.0.1", "192.168.1.5"], 8124, False),
+        # Loopback-only, but not spelled exactly ["127.0.0.1"]. Each of these
+        # used to read as unaligned, so a reload moved an already-moved instance
+        # and restarted it -- every time, with nothing on the public port in
+        # between. They are aligned, and reload must treat them as such.
+        ("127.0.0.1", 8124, True),
+        (["::1"], 8124, True),
+        (["127.0.0.1", "::1"], 8124, True),
+        # A loopback-only instance is still not aligned on the wrong port.
+        ("127.0.0.1", 8123, False),
+        # Not loopback at all, whatever the spelling.
+        ("0.0.0.0", 8124, False),
     ],
     ids=[
         "where-we-want-it",
@@ -80,6 +91,11 @@ def test_the_target_drops_what_home_assistant_records_about_a_config() -> None:
         "listening-everywhere",
         "unset",
         "loopback-and-something-else",
+        "loopback-as-a-bare-string",
+        "ipv6-loopback",
+        "both-loopbacks",
+        "bare-string-wrong-port",
+        "bare-string-on-the-network",
     ],
 )
 async def test_alignment_is_read_from_the_running_server(
@@ -89,6 +105,11 @@ async def test_alignment_is_read_from_the_running_server(
 
     A staged config that failed its trial and reverted still sits in the store,
     so believing it would have the proxy report a boundary that is not there.
+
+    Alignment is "loopback only", not one exact spelling: Home Assistant can be
+    off the network on `::1`, and can hold the setting as a bare string or with
+    a second loopback entry. Reading any of those as unaligned made a reload
+    move and restart an instance that was already where it should be.
     """
     server = SimpleNamespace(server_host=host, server_port=port)
     with patch.object(hass, "http", server, create=True):
