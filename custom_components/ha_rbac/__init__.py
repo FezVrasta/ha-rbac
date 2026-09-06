@@ -226,7 +226,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await hass.services.async_call(HA_DOMAIN, SERVICE_RESTART, blocking=False)
         return True
 
-    async def _confirm_move() -> None:
+    async def _confirm_move() -> bool:
         """Make the move permanent, but only once the proxy really serves.
 
         This is the interlock the whole thing rests on. Until it runs, Home
@@ -234,9 +234,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         that binds but cannot forward still leaves a way back in. Promoting on
         `async_start` alone would throw that away, since binding a port says
         nothing about whether anything answers on it.
+
+        Returns True if the move was confirmed and made permanent.
         """
         if not manage_http:
-            return
+            return False
         bind = config.get(CONF_BIND_ADDRESS, DEFAULT_BIND_ADDRESS)
         reachable = "127.0.0.1" if bind in ("0.0.0.0", "::", "") else bind
         try:
@@ -253,9 +255,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 proxy_port,
                 err,
             )
-            return
+            return False
         if served:
             await http_config.async_promote(hass)
+        return served
 
     async def _start_proxy(_event: Event | None = None) -> None:
         """Start the listener once Home Assistant is serving."""
@@ -280,8 +283,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         await proxy.async_start()
         data.proxy = proxy
-        await _confirm_move()
-        if manage_http:
+        if await _confirm_move():
+            # Only once the move is permanent. Until then Home Assistant may
+            # still return to the port it came from, and an advertisement
+            # pointing at the proxy would be the wrong one to leave behind.
             await discovery.async_advertise_proxy_port(hass, upstream_port, proxy_port)
         # Dashboards can only be read once Home Assistant has loaded them.
         await dashboard_entities.async_start()
