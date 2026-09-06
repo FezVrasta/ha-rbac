@@ -3,7 +3,8 @@
   "name": "RBAC Access Control",
   "after_dependencies": [
     "hassio",
-    "lovelace"
+    "lovelace",
+    "zeroconf"
   ],
   "codeowners": [
     "@FezVrasta"
