@@ -218,6 +218,82 @@ async def test_a_recorded_role_sees_the_whole_instance(
     assert after["result"] == []
 
 
+async def test_recording_notes_a_toggle_on_an_already_open_connection(
+    proxy_env: dict[str, Any],
+) -> None:
+    """The reporter's scenario for issue #13, exactly.
+
+    A restricted role -- not admin -- is put into recording while its holder is
+    already connected, and they toggle an entity. This is the case the
+    direct-decide tests never covered: the frame has to travel the real inbound
+    path (`_intercept`, `_refresh_permissions`, the id-reuse guard) rather than
+    reaching `decide` directly, and the connection was open before recording
+    started, so it has to pick the recording up per frame rather than at auth.
+    """
+    hass, store = proxy_env["hass"], proxy_env["store"]
+    hass.states.async_set("light.kitchen", "on")
+    hass.states.async_set("script.night_lights", "off")
+
+    user, token = proxy_env["read_only_user"], proxy_env["read_only_token"]
+    role = await store.async_create_role({"name": "Guests", "allow": {}, "deny": {}})
+    await store.async_set_binding(user.id, [role["id"]])
+
+    async def _drain(ws: Any) -> None:
+        """Read the reply if it comes; the recording is noted on the way in."""
+        try:
+            await asyncio.wait_for(ws.receive_json(), timeout=5)
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+
+    async with aiohttp.ClientSession() as session:
+        # Connect first: the browser is already open when recording begins.
+        ws = await _ws_login(session, proxy_env["ws"], token)
+
+        proxy_env["recorder"].start(role["id"])
+
+        # A toggle from a dashboard: entity under target.
+        await ws.send_json(
+            {
+                "id": 1,
+                "type": "call_service",
+                "domain": "light",
+                "service": "toggle",
+                "target": {"entity_id": "light.kitchen"},
+            }
+        )
+        await _drain(ws)
+
+        # Running a script: the service is named after the entity, so the
+        # payload carries no entity at all -- only `script` / `night_lights`.
+        await ws.send_json(
+            {
+                "id": 2,
+                "type": "call_service",
+                "domain": "script",
+                "service": "night_lights",
+            }
+        )
+        await _drain(ws)
+        await ws.close()
+
+        # And the same toggle over REST, in case the frontend uses that path.
+        async with session.post(
+            f"{proxy_env['base']}/api/services/light/toggle",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"entity_id": "light.kitchen"},
+        ):
+            pass
+
+    recording = proxy_env["recorder"].get(role["id"])
+    assert recording is not None
+    assert recording.entities.get("light.kitchen") == "control", (
+        f"toggle was not recorded; saw {recording.entities}"
+    )
+    assert recording.entities.get("script.night_lights") == "control", (
+        f"script run was not recorded; saw {recording.entities}"
+    )
+
+
 async def test_a_templates_value_never_reaches_a_denied_reader(
     proxy_env: dict[str, Any],
 ) -> None:
