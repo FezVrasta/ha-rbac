@@ -5,6 +5,7 @@ a plain aiohttp client exercises the same path a frontend would.
 """
 
 import asyncio
+import contextlib
 import json
 import socket
 from collections import OrderedDict
@@ -240,10 +241,8 @@ async def test_recording_notes_a_toggle_on_an_already_open_connection(
 
     async def _drain(ws: Any) -> None:
         """Read the reply if it comes; the recording is noted on the way in."""
-        try:
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(ws.receive_json(), timeout=5)
-        except (TimeoutError, asyncio.TimeoutError):
-            pass
 
     async with aiohttp.ClientSession() as session:
         # Connect first: the browser is already open when recording begins.
