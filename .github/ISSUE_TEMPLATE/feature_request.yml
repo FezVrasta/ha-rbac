@@ -7,14 +7,6 @@ body:
     attributes:
       value: |
         Thank you for suggesting a feature! Please describe your feature request in detail below.
-  - type: input
-    id: title
-    attributes:
-      label: Title
-      description: A clear and concise title for the feature
-      placeholder: "e.g., Add support for time-based access restrictions"
-    validations:
-      required: true
   - type: textarea
     id: problem
     attributes:
