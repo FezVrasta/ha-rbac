@@ -287,7 +287,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Only once the move is permanent. Until then Home Assistant may
             # still return to the port it came from, and an advertisement
             # pointing at the proxy would be the wrong one to leave behind.
-            await discovery.async_advertise_proxy_port(hass, upstream_port, proxy_port)
+            await discovery.async_advertise_proxy_port(hass, proxy_port)
         # Dashboards can only be read once Home Assistant has loaded them.
         await dashboard_entities.async_start()
 
