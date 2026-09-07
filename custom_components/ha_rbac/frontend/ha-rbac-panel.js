@@ -1051,10 +1051,40 @@ class HaRbacPanel extends HTMLElement {
           apply: action === "keep",
         });
         const seen = result.seen || {};
-        const count = seen.entities ? Object.keys(seen.entities).length : 0;
-        message = result.applied
-          ? `Added ${count} ${count === 1 ? "entity" : "entities"} to this role.`
-          : "Recording discarded. The role is unchanged.";
+        if (!result.applied) {
+          message = "Recording discarded. The role is unchanged.";
+          return;
+        }
+        // A recording notes three kinds of thing, and only ever names an
+        // entity a request actually carried. Just viewing dashboards names
+        // none, so reporting entities alone reads as "nothing recorded" even
+        // when apps or capabilities were granted. Count all three.
+        const parts = [];
+        const entities = seen.entities ? Object.keys(seen.entities).length : 0;
+        const apps = seen.apps ? seen.apps.length : 0;
+        const caps = seen.capabilities ? seen.capabilities.length : 0;
+        if (entities) parts.push(`${entities} ${entities === 1 ? "entity" : "entities"}`);
+        if (apps) parts.push(`${apps} ${apps === 1 ? "app" : "apps"}`);
+        if (caps) parts.push(`${caps} ${caps === 1 ? "capability" : "capabilities"}`);
+        message = parts.length
+          ? `Added ${parts.join(", ")} to this role.`
+          : "Recording captured nothing: its holders did not open or touch " +
+            "anything a role controls while it ran.";
+        // Within a role a denial vetoes, so an entity recorded under a `deny`
+        // rule is added and then immediately overruled. The server works out
+        // which ones and says so rather than dropping the denial on somebody's
+        // behalf; saying nothing here would leave them to find out from a
+        // dashboard that is still empty after a recording that looked fine.
+        const blocked = result.blocked || [];
+        if (blocked.length) {
+          const one = blocked.length === 1;
+          const named = blocked.slice(0, 5).join(", ");
+          const rest = blocked.length - 5;
+          message +=
+            ` ${one ? "One entity was" : `${blocked.length} entities were`} added,` +
+            ` but a deny rule on this role still overrules ${one ? "it" : "them"}:` +
+            ` ${named}${rest > 0 ? ` and ${rest} more` : ""}.`;
+        }
       },
       () => message
     );

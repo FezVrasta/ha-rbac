@@ -79,6 +79,10 @@ class _AllowAll:
     def decide(*args: Any, **kwargs: Any) -> Decision:
         return Decision(allowed=True)
 
+    @staticmethod
+    def is_recording(*args: Any, **kwargs: Any) -> bool:
+        return False
+
 
 class _SentinelClient:
     """Collects the frames a session writes back to its client."""
@@ -505,6 +509,7 @@ async def test_reusing_an_id_after_eviction_is_still_refused() -> None:
     session._user = None
     session._permissions = Permissions(pass_through=True)
     session._client = _SentinelClient(sent)
+    session._decider = _AllowAll()
 
     assert await session._intercept({"id": 5, "type": "get_states"}) is True
     for filler in range(6, 6 + MAX_PENDING_IDS + 10):
