@@ -1942,6 +1942,16 @@ class HaRbacPanel extends HTMLElement {
   }
 
   _deleteRole() {
+    const role = this._roles.find((r) => r.id === this._selected);
+    const name = role ? role.name : this._selected;
+    if (
+      !window.confirm(
+        `Delete the role "${name}"? Anyone who had it falls back to their ` +
+          `Home Assistant group. This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
     this._guard(async () => {
       await this._call("roles/delete", { role_id: this._selected });
       this._selected = null;
