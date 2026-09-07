@@ -312,13 +312,12 @@ class Decider:
     ) -> Decision:
         """Return the verdict for one request."""
         # A role being recorded is unrestricted while the recording runs, and
-        # every request is noted instead of judged. It sits above the gates
-        # deliberately: a recording that only saw what the role already allows
-        # would tell nobody anything. It sits above the full-access short-circuit
-        # too, because the role most worth recording is a full-access one -- a
-        # recording is itself a temporary grant of full access, so skipping it
-        # for a role that already has full access would note nothing at all,
-        # which is exactly the "recording logged nothing" this exists to avoid.
+        # every request is noted instead of judged. It sits above every gate
+        # deliberately, the pass-through below included: a recording that only
+        # saw what the role already allows would tell nobody anything, and a
+        # recording is itself a temporary grant of full access -- so the role
+        # most worth recording is one that already has it, and short-circuiting
+        # first is how a recording came to note nothing at all.
         if self._recorder is not None and (
             recording := self._recorder.for_permissions(permissions)
         ):

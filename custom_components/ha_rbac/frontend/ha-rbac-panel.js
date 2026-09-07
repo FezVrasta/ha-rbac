@@ -1070,6 +1070,21 @@ class HaRbacPanel extends HTMLElement {
           ? `Added ${parts.join(", ")} to this role.`
           : "Recording captured nothing: its holders did not open or touch " +
             "anything a role controls while it ran.";
+        // Within a role a denial vetoes, so an entity recorded under a `deny`
+        // rule is added and then immediately overruled. The server works out
+        // which ones and says so rather than dropping the denial on somebody's
+        // behalf; saying nothing here would leave them to find out from a
+        // dashboard that is still empty after a recording that looked fine.
+        const blocked = result.blocked || [];
+        if (blocked.length) {
+          const one = blocked.length === 1;
+          const named = blocked.slice(0, 5).join(", ");
+          const rest = blocked.length - 5;
+          message +=
+            ` ${one ? "One entity was" : `${blocked.length} entities were`} added,` +
+            ` but a deny rule on this role still overrules ${one ? "it" : "them"}:` +
+            ` ${named}${rest > 0 ? ` and ${rest} more` : ""}.`;
+        }
       },
       () => message
     );

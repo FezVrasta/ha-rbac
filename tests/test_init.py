@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.auth.permissions.const import CAT_ENTITIES, POLICY_READ
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.setup import async_setup_component
@@ -167,6 +168,63 @@ async def test_catalog_is_exposed_for_the_editor(
     assert len(result["commands"]) > 20
     assert result["degraded"] is False
     assert any(entry["tier"] == "admin" for entry in result["commands"])
+
+
+async def test_stopping_a_recording_reports_everything_it_saw(
+    hass: HomeAssistant, entry: MockConfigEntry, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The panel writes its confirmation from this result, so it is pinned here.
+
+    A recording notes entities, apps and capabilities, and the confirmation has
+    to name all three -- reporting entities alone read as "recorded nothing" to
+    anyone whose recording only opened a screen. `blocked` matters as much: an
+    entity recorded under a `deny` rule is added and then overruled by it, and
+    saying so is the only warning before a dashboard that is still empty.
+    """
+    data = hass.data[DATA_RBAC]
+    role = await data.store.async_create_role(
+        {"name": "Guests", "deny": {CAT_ENTITIES: {"domains": {"lock": True}}}}
+    )
+    recording = data.recorder.start(role["id"])
+    recording.note_entity("light.kitchen", POLICY_READ)
+    recording.note_entity("lock.front", POLICY_READ)
+    recording.apps.add("lovelace")
+    recording.capabilities.add("automations")
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": f"{DOMAIN}/record/stop", "role_id": role["id"]}
+    )
+    result = (await client.receive_json())["result"]
+
+    assert result["applied"] is True
+    assert result["seen"]["entities"] == {
+        "light.kitchen": POLICY_READ,
+        "lock.front": POLICY_READ,
+    }
+    assert result["seen"]["apps"] == ["lovelace"]
+    assert result["seen"]["capabilities"] == ["automations"]
+    # Added to the allow side, and vetoed by the role's own denial.
+    assert result["blocked"] == ["lock.front"]
+
+
+async def test_discarding_a_recording_leaves_the_role_alone(
+    hass: HomeAssistant, entry: MockConfigEntry, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Discarding is how a recording is abandoned, and it must write nothing."""
+    data = hass.data[DATA_RBAC]
+    role = await data.store.async_create_role({"name": "Guests"})
+    data.recorder.start(role["id"]).note_entity("light.kitchen", POLICY_READ)
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": f"{DOMAIN}/record/stop", "role_id": role["id"], "apply": False}
+    )
+    result = (await client.receive_json())["result"]
+
+    assert result["applied"] is False
+    assert result["seen"]["entities"] == {"light.kitchen": POLICY_READ}
+    assert data.store.roles[role["id"]] == role
 
 
 async def test_simulate_explains_a_denial(
