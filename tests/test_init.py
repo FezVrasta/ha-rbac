@@ -1,5 +1,7 @@
 """Tests for integration setup and the admin websocket API."""
 
+import asyncio
+import contextlib
 import socket
 from types import SimpleNamespace
 from typing import Any
@@ -14,6 +16,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.ha_rbac import async_setup_entry, async_unload_entry
+from custom_components.ha_rbac.catalog import Catalog
 from custom_components.ha_rbac.const import (
     CONF_BIND_ADDRESS,
     CONF_MANAGE_HTTP,
@@ -26,6 +29,12 @@ from custom_components.ha_rbac.const import (
     ROLE_EDITOR,
     ROLE_READ_ONLY,
 )
+from custom_components.ha_rbac.decide import Decider
+from custom_components.ha_rbac.denylog import DenyLog
+from custom_components.ha_rbac.filters import REGISTRY
+from custom_components.ha_rbac.policy import Evaluator
+from custom_components.ha_rbac.proxy import RbacProxy
+from custom_components.ha_rbac.store import RbacStore
 
 
 def _free_port() -> int:
@@ -89,6 +98,83 @@ async def test_unload_releases_everything(
     assert await async_unload_entry(hass, entry)
     await hass.async_block_till_done()
     assert DATA_RBAC not in hass.data
+
+
+async def test_a_reload_rebinds_the_port(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """A reload is unload-then-setup, and the proxy must bind its port again.
+
+    If the re-bind cannot take the port straight back, setup raises
+    ConfigEntryNotReady and the instance is left with nothing on the public
+    port -- the reported reload lockout (#23). Holding a connection open across
+    the unload mimics the reload request, which itself arrives through the
+    proxy and so is in flight when it is told to stop.
+    """
+    port = entry.data[CONF_PROXY_PORT]
+
+    _, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    await writer.drain()
+
+    assert await async_unload_entry(hass, entry)
+    await hass.async_block_till_done()
+
+    writer.close()
+    with contextlib.suppress(OSError):
+        await writer.wait_closed()
+
+    assert await async_setup_entry(hass, entry)
+    await hass.async_block_till_done()
+    assert hass.data[DATA_RBAC].proxy is not None
+
+
+async def test_the_proxy_can_restart_on_the_same_port(
+    hass: HomeAssistant, socket_enabled: None
+) -> None:
+    """Stop then immediately start on the same port, which is what a reload does.
+
+    The listener binds with reuse_address so the just-released socket does not
+    block the next bind, and stopping releases the socket up front rather than
+    only after draining. Together those are what let a reload take its port
+    back instead of failing to bind.
+    """
+    for domain in ("http", "websocket_api"):
+        await async_setup_component(hass, domain, {"http": {}})
+    await hass.async_block_till_done()
+
+    store = RbacStore(hass)
+    await store.async_load()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    decider = Decider(hass, catalog, REGISTRY)
+    evaluator = Evaluator(hass, store)
+    denylog = DenyLog(hass)
+    port = _free_port()
+
+    def _make() -> RbacProxy:
+        return RbacProxy(
+            hass,
+            evaluator,
+            decider,
+            denylog,
+            upstream_host="127.0.0.1",
+            upstream_port=8123,
+            bind_address="127.0.0.1",
+            port=port,
+        )
+
+    first = _make()
+    await first.async_start()
+    assert first._site is not None
+    assert first._site._reuse_address is True
+    await first.async_stop()
+
+    second = _make()
+    try:
+        await second.async_start()
+    finally:
+        await second.async_stop()
 
 
 async def test_roles_list_requires_admin(

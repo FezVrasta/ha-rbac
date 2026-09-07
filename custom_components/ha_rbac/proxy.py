@@ -59,6 +59,11 @@ _LOGGER = logging.getLogger(__name__)
 # because the request that stops it is usually one of them.
 SHUTDOWN_DRAIN = 5
 
+# Retries for binding the listening port, to ride out the brief window on a
+# reload where the previous socket is still closing.
+BIND_RETRIES = 6
+BIND_RETRY_DELAY = 0.5
+
 INIT_HEADERS_FILTER = {
     hdrs.CONTENT_LENGTH,
     hdrs.CONTENT_ENCODING,
@@ -202,6 +207,7 @@ class RbacProxy:
                     "Ignoring unparseable trusted proxy at position %d", position
                 )
         self._runner: web.AppRunner | None = None
+        self._site: web.TCPSite | None = None
         self._websession: ClientSession | None = None
         self._ingress = IngressGuard(hass)
 
@@ -219,8 +225,7 @@ class RbacProxy:
             app, handler_cancellation=True, shutdown_timeout=SHUTDOWN_DRAIN
         )
         await self._runner.setup()
-        site = web.TCPSite(self._runner, self._bind_address, self._port)
-        await site.start()
+        await self._bind_with_retry()
         _LOGGER.info(
             "RBAC proxy listening on %s:%s, forwarding to %s",
             self._bind_address,
@@ -229,6 +234,34 @@ class RbacProxy:
         )
         if self._forward_client_ip:
             await self._confirm_forwarding()
+
+    async def _bind_with_retry(self) -> None:
+        """Bind the listener, retrying briefly if the port is momentarily held.
+
+        A reload is unload-then-setup in one process, and the request that asked
+        for it arrives through this proxy, so the old socket can still be closing
+        when the new listener binds. reuse_address lets it take a port in
+        TIME_WAIT, and a few short retries ride out the rest -- turning a race
+        that would fail setup and strand the instance into a second of waiting.
+
+        A fresh site each attempt: a TCPSite can only be started once, and the
+        runner refuses to re-register the same one.
+        """
+        assert self._runner is not None
+        last: OSError | None = None
+        for attempt in range(BIND_RETRIES):
+            self._site = web.TCPSite(
+                self._runner, self._bind_address, self._port, reuse_address=True
+            )
+            try:
+                await self._site.start()
+            except OSError as err:
+                last = err
+                if attempt + 1 < BIND_RETRIES:
+                    await asyncio.sleep(BIND_RETRY_DELAY)
+            else:
+                return
+        raise last if last is not None else OSError("could not bind the proxy")
 
     async def _confirm_forwarding(self) -> None:
         """Prove Home Assistant accepts a forwarded header before sending any.
@@ -278,6 +311,17 @@ class RbacProxy:
         where in-flight requests belong to somebody and should land. It is not
         worth the instance.
         """
+        # Stop the site first so the listening socket is released straight away.
+        # runner.cleanup() would do this too, but only once it returns, and it
+        # drains in-flight requests first -- so when the request that asked for
+        # the stop is itself in flight, the drain times out and the port is left
+        # held, which then fails the re-bind on the setup half of a reload.
+        if self._site is not None:
+            site, self._site = self._site, None
+            try:
+                await site.stop()
+            except (RuntimeError, OSError) as err:
+                _LOGGER.debug("Could not stop the proxy site cleanly: %s", err)
         if self._runner is not None:
             runner, self._runner = self._runner, None
             try:
