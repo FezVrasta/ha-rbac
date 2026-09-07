@@ -854,12 +854,17 @@ async def test_the_proxy_does_not_relay_through_home_assistants_shared_session(
 async def test_stopping_the_proxy_closes_its_session(
     proxy_env: dict[str, Any],
 ) -> None:
-    """The session is the proxy's own, so nothing else will close it."""
+    """The session is the proxy's own, so nothing else will close it.
+
+    Closed by the drain rather than by `async_stop` itself, because a request
+    still being drained is still using it.
+    """
     proxy = proxy_env["proxy"]
     session = proxy._websession
     assert session is not None
 
     await proxy.async_stop()
+    await proxy_env["hass"].async_block_till_done(wait_background_tasks=True)
 
     assert session.closed
     assert proxy._websession is None
