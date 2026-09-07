@@ -115,7 +115,7 @@ async def proxy_env_fixture(
         "query_strings": query_strings,
     }
 
-    await proxy.async_stop()
+    await proxy.async_stop(close_connections=True)
 
 
 async def _bind(store: RbacStore, user: MockUser, role_id: str) -> None:
@@ -859,7 +859,7 @@ async def test_stopping_the_proxy_closes_its_session(
     session = proxy._websession
     assert session is not None
 
-    await proxy.async_stop()
+    await proxy.async_stop(close_connections=True)
 
     assert session.closed
     assert proxy._websession is None

@@ -297,31 +297,30 @@ class RbacProxy:
             LOOPBACK,
         )
 
-    async def async_stop(self) -> None:
-        """Release the listener, without waiting on a request that cannot finish.
+    async def async_stop(self, *, close_connections: bool = False) -> None:
+        """Release the listening port.
 
-        Removing or disabling this integration is itself a request, and it
-        arrives through this proxy. So the connection asking for the removal is
-        one of the ones `cleanup()` drains before returning, and it cannot
-        complete until the unload that is awaiting `cleanup()` returns. That is
-        a cycle, and it hangs: Home Assistant stops serving its own address
-        while the removal never finishes and nothing is put back.
+        A reload is unload-then-setup, and the reload request itself arrives
+        through this proxy. Closing that connection cancels the reload before
+        its setup half runs, so the proxy never comes back and the instance is
+        left on loopback with nothing on the public port.
 
-        Draining is still worth a moment for the ordinary case of a reload,
-        where in-flight requests belong to somebody and should land. It is not
-        worth the instance.
+        So the default only stops the site: aiohttp closes the listening socket
+        -- freeing the port for the setup half to re-bind -- while every
+        in-flight connection, the reload's own included, is left to finish.
+        `close_connections` is for teardown (disable or remove), where the
+        connections are going away regardless and the full cleanup is right.
         """
-        # Stop the site first so the listening socket is released straight away.
-        # runner.cleanup() would do this too, but only once it returns, and it
-        # drains in-flight requests first -- so when the request that asked for
-        # the stop is itself in flight, the drain times out and the port is left
-        # held, which then fails the re-bind on the setup half of a reload.
         if self._site is not None:
             site, self._site = self._site, None
             try:
                 await site.stop()
             except (RuntimeError, OSError) as err:
                 _LOGGER.debug("Could not stop the proxy site cleanly: %s", err)
+
+        if not close_connections:
+            return
+
         if self._runner is not None:
             runner, self._runner = self._runner, None
             try:

@@ -174,7 +174,52 @@ async def test_the_proxy_can_restart_on_the_same_port(
     try:
         await second.async_start()
     finally:
-        await second.async_stop()
+        await second.async_stop(close_connections=True)
+
+
+async def test_stopping_for_a_reload_does_not_close_connections(
+    hass: HomeAssistant, socket_enabled: None
+) -> None:
+    """The reload request arrives through the proxy, so stopping must spare it.
+
+    Closing connections on a reload cancels the request that drives it, and the
+    setup half never runs -- the proxy stays down and the instance is stranded.
+    The default stop only releases the listening socket; the runner and its
+    open connections are left alone. close_connections=True is the teardown
+    path, where draining is right.
+    """
+    for domain in ("http", "websocket_api"):
+        await async_setup_component(hass, domain, {"http": {}})
+    await hass.async_block_till_done()
+
+    store = RbacStore(hass)
+    await store.async_load()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    proxy = RbacProxy(
+        hass,
+        Evaluator(hass, store),
+        Decider(hass, catalog, REGISTRY),
+        DenyLog(hass),
+        upstream_host="127.0.0.1",
+        upstream_port=8123,
+        bind_address="127.0.0.1",
+        port=_free_port(),
+    )
+    await proxy.async_start()
+    runner = proxy._runner
+    session = proxy._websession
+
+    # Reload-mode stop: site released, runner and session left intact.
+    await proxy.async_stop()
+    assert proxy._site is None
+    assert proxy._runner is runner
+    assert proxy._websession is session
+
+    # Teardown stop: the runner is cleaned up and the session closed.
+    await proxy.async_stop(close_connections=True)
+    assert proxy._runner is None
+    assert proxy._websession is None
 
 
 async def test_roles_list_requires_admin(
@@ -561,8 +606,10 @@ async def test_a_loopback_only_instance_is_not_moved_again_on_reload(
         await hass.async_block_till_done()
 
     assert not restarts, "an already-moved instance must not be moved again"
-    assert hass.data[DATA_RBAC].proxy is not None, "the proxy should just start"
+    proxy = hass.data[DATA_RBAC].proxy
+    assert proxy is not None, "the proxy should just start"
 
+    await proxy.async_stop(close_connections=True)
     await async_unload_entry(hass, entry)
 
 
