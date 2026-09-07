@@ -14,7 +14,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
 
       - name: Set version from the tag
         run: |
@@ -26,15 +27,27 @@ jobs:
           manifest = json.loads(path.read_text())
           manifest["version"] = sys.argv[1]
           path.write_text(json.dumps(manifest, indent=2) + "\n")
-          print(f"manifest version -> {sys.argv[1]}")
           PY
 
-      - name: Commit if it changed
+      - name: Commit, move the tag onto the bump, and fast-forward main
         run: |
+          TAG="${{ github.event.release.tag_name }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add custom_components/ha_rbac/manifest.json
-          git diff --staged --quiet || {
-            git commit -m "Set version to ${{ github.event.release.tag_name }}"
-            git push
-          }
+
+          if git diff --staged --quiet; then
+            exit 0
+          fi
+
+          git commit -m "Set version to ${TAG}"
+
+          # The tag is what HACS installs and reads the version from, so it has
+          # to point at the bump rather than the commit before it.
+          git tag -f "${TAG}"
+          git push --force origin "refs/tags/${TAG}"
+
+          git fetch origin main
+          if git merge-base --is-ancestor origin/main HEAD; then
+            git push origin "HEAD:main"
+          fi
