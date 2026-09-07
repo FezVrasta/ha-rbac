@@ -118,7 +118,14 @@ class Recorder:
         One recording role is enough. A user holding a recorded role alongside
         an ordinary one is unrestricted for the duration, which is the point:
         the recording has to see what they would have been refused.
+
+        This is asked on every request, ahead of the full-access short-circuit
+        that keeps the proxy cheap for administrators, so the answer when
+        nothing is recording -- which is almost always -- costs one empty-dict
+        check rather than a walk over the user's roles.
         """
+        if not self._recordings:
+            return None
         for role in permissions.roles:
             if (recording := self._recordings.get(role.role_id)) is not None:
                 return recording

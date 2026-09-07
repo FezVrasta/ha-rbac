@@ -56,3 +56,18 @@ def test_every_element_the_panel_looks_up_is_one_it_renders() -> None:
     assert looked_up <= rendered, (
         f"looked up but never rendered: {looked_up - rendered}"
     )
+
+
+def test_deleting_a_role_asks_first() -> None:
+    """Delete is the one button in the panel that cannot be taken back.
+
+    Its holders fall back to their Home Assistant group the moment it lands, so
+    a misplaced click hands someone the whole instance. Every other action here
+    is editable afterwards, which is why this is the only one pinned: the
+    confirmation is easy to drop in a refactor and nothing else would notice.
+    """
+    source = PANEL.read_text()
+    start = source.index("  _deleteRole() {")
+    body = source[start : source.index('"roles/delete"', start)]
+
+    assert "confirm(" in body, "_deleteRole must confirm before it calls the API"

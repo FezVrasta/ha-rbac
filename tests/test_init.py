@@ -1,11 +1,14 @@
 """Tests for integration setup and the admin websocket API."""
 
+import asyncio
+import contextlib
 import socket
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.auth.permissions.const import CAT_ENTITIES, POLICY_READ
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.setup import async_setup_component
@@ -13,6 +16,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.ha_rbac import async_setup_entry, async_unload_entry
+from custom_components.ha_rbac.catalog import Catalog
 from custom_components.ha_rbac.const import (
     CONF_BIND_ADDRESS,
     CONF_MANAGE_HTTP,
@@ -25,6 +29,12 @@ from custom_components.ha_rbac.const import (
     ROLE_EDITOR,
     ROLE_READ_ONLY,
 )
+from custom_components.ha_rbac.decide import Decider
+from custom_components.ha_rbac.denylog import DenyLog
+from custom_components.ha_rbac.filters import REGISTRY
+from custom_components.ha_rbac.policy import Evaluator
+from custom_components.ha_rbac.proxy import RbacProxy
+from custom_components.ha_rbac.store import RbacStore
 
 
 def _free_port() -> int:
@@ -88,6 +98,134 @@ async def test_unload_releases_everything(
     assert await async_unload_entry(hass, entry)
     await hass.async_block_till_done()
     assert DATA_RBAC not in hass.data
+
+
+async def test_a_reload_rebinds_the_port(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """A reload is unload-then-setup, and the proxy must bind its port again.
+
+    If the re-bind cannot take the port straight back, setup raises
+    ConfigEntryNotReady and the instance is left with nothing on the public
+    port -- the reported reload lockout (#23). Holding a connection open across
+    the unload mimics the reload request, which itself arrives through the
+    proxy and so is in flight when it is told to stop.
+    """
+    port = entry.data[CONF_PROXY_PORT]
+
+    _, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    await writer.drain()
+
+    assert await async_unload_entry(hass, entry)
+    await hass.async_block_till_done()
+
+    writer.close()
+    with contextlib.suppress(OSError):
+        await writer.wait_closed()
+
+    assert await async_setup_entry(hass, entry)
+    await hass.async_block_till_done()
+    assert hass.data[DATA_RBAC].proxy is not None
+
+
+async def test_the_proxy_can_restart_on_the_same_port(
+    hass: HomeAssistant, socket_enabled: None
+) -> None:
+    """Stop then immediately start on the same port, which is what a reload does.
+
+    The listener binds with reuse_address so the just-released socket does not
+    block the next bind, and stopping releases the socket up front rather than
+    only after draining. Together those are what let a reload take its port
+    back instead of failing to bind.
+    """
+    for domain in ("http", "websocket_api"):
+        await async_setup_component(hass, domain, {"http": {}})
+    await hass.async_block_till_done()
+
+    store = RbacStore(hass)
+    await store.async_load()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    decider = Decider(hass, catalog, REGISTRY)
+    evaluator = Evaluator(hass, store)
+    denylog = DenyLog(hass)
+    port = _free_port()
+
+    def _make() -> RbacProxy:
+        return RbacProxy(
+            hass,
+            evaluator,
+            decider,
+            denylog,
+            upstream_host="127.0.0.1",
+            upstream_port=8123,
+            bind_address="127.0.0.1",
+            port=port,
+        )
+
+    first = _make()
+    await first.async_start()
+    await first.async_stop()
+
+    # No settling in between: the port has to be free the moment `async_stop`
+    # returns, because on a reload the setup half follows immediately.
+    second = _make()
+    try:
+        await second.async_start()
+    finally:
+        await second.async_stop()
+        await hass.async_block_till_done()
+
+
+async def test_stopping_frees_the_port_first_and_drains_afterwards(
+    hass: HomeAssistant, socket_enabled: None
+) -> None:
+    """The request driving an unload arrives through the proxy being unloaded.
+
+    Waiting for it to drain is a cycle -- it cannot finish until the unload
+    does. So the site is stopped and awaited, which frees the port and nothing
+    else, and the drain is handed to a background task. Both halves are pinned:
+    without the first, a reload cannot re-bind and the instance is stranded;
+    without the second, every reload leaves a runner and an open client session
+    behind for the life of the process.
+    """
+    for domain in ("http", "websocket_api"):
+        await async_setup_component(hass, domain, {"http": {}})
+    await hass.async_block_till_done()
+
+    store = RbacStore(hass)
+    await store.async_load()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    proxy = RbacProxy(
+        hass,
+        Evaluator(hass, store),
+        Decider(hass, catalog, REGISTRY),
+        DenyLog(hass),
+        upstream_host="127.0.0.1",
+        upstream_port=8123,
+        bind_address="127.0.0.1",
+        port=_free_port(),
+    )
+    port = proxy._port
+    await proxy.async_start()
+    session = proxy._websession
+    assert session is not None
+
+    await proxy.async_stop()
+
+    # The port is free straight away, before anything has been drained: this is
+    # the state the setup half of a reload runs in.
+    assert proxy._site is None
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", port))
+
+    # The drain is still outstanding, so nothing has been dropped on the floor.
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert proxy._runner is None
+    assert proxy._websession is None
+    assert session.closed, "the client session outlived the proxy that opened it"
 
 
 async def test_roles_list_requires_admin(
@@ -167,6 +305,63 @@ async def test_catalog_is_exposed_for_the_editor(
     assert len(result["commands"]) > 20
     assert result["degraded"] is False
     assert any(entry["tier"] == "admin" for entry in result["commands"])
+
+
+async def test_stopping_a_recording_reports_everything_it_saw(
+    hass: HomeAssistant, entry: MockConfigEntry, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The panel writes its confirmation from this result, so it is pinned here.
+
+    A recording notes entities, apps and capabilities, and the confirmation has
+    to name all three -- reporting entities alone read as "recorded nothing" to
+    anyone whose recording only opened a screen. `blocked` matters as much: an
+    entity recorded under a `deny` rule is added and then overruled by it, and
+    saying so is the only warning before a dashboard that is still empty.
+    """
+    data = hass.data[DATA_RBAC]
+    role = await data.store.async_create_role(
+        {"name": "Guests", "deny": {CAT_ENTITIES: {"domains": {"lock": True}}}}
+    )
+    recording = data.recorder.start(role["id"])
+    recording.note_entity("light.kitchen", POLICY_READ)
+    recording.note_entity("lock.front", POLICY_READ)
+    recording.apps.add("lovelace")
+    recording.capabilities.add("automations")
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": f"{DOMAIN}/record/stop", "role_id": role["id"]}
+    )
+    result = (await client.receive_json())["result"]
+
+    assert result["applied"] is True
+    assert result["seen"]["entities"] == {
+        "light.kitchen": POLICY_READ,
+        "lock.front": POLICY_READ,
+    }
+    assert result["seen"]["apps"] == ["lovelace"]
+    assert result["seen"]["capabilities"] == ["automations"]
+    # Added to the allow side, and vetoed by the role's own denial.
+    assert result["blocked"] == ["lock.front"]
+
+
+async def test_discarding_a_recording_leaves_the_role_alone(
+    hass: HomeAssistant, entry: MockConfigEntry, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Discarding is how a recording is abandoned, and it must write nothing."""
+    data = hass.data[DATA_RBAC]
+    role = await data.store.async_create_role({"name": "Guests"})
+    data.recorder.start(role["id"]).note_entity("light.kitchen", POLICY_READ)
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": f"{DOMAIN}/record/stop", "role_id": role["id"], "apply": False}
+    )
+    result = (await client.receive_json())["result"]
+
+    assert result["applied"] is False
+    assert result["seen"]["entities"] == {"light.kitchen": POLICY_READ}
+    assert data.store.roles[role["id"]] == role
 
 
 async def test_simulate_explains_a_denial(
@@ -417,8 +612,10 @@ async def test_a_loopback_only_instance_is_not_moved_again_on_reload(
         await hass.async_block_till_done()
 
     assert not restarts, "an already-moved instance must not be moved again"
-    assert hass.data[DATA_RBAC].proxy is not None, "the proxy should just start"
+    proxy = hass.data[DATA_RBAC].proxy
+    assert proxy is not None, "the proxy should just start"
 
+    await proxy.async_stop()
     await async_unload_entry(hass, entry)
 
 

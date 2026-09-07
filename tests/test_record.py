@@ -233,36 +233,60 @@ async def test_a_second_role_does_not_hide_a_recording(hass: HomeAssistant) -> N
     assert recording.role_id == "guests"
 
 
-async def test_an_unrestricted_user_is_never_recorded(hass: HomeAssistant) -> None:
-    """The owner skips every gate, so there is nothing of theirs to record.
+async def test_the_owner_holds_no_roles_so_is_never_recorded(
+    hass: HomeAssistant,
+) -> None:
+    """The owner is pass-through and holds no roles, so nothing matches them.
 
-    Recording their traffic would fill the role with everything an
-    administrator does, which is the opposite of what it is for.
+    A recording is keyed on a role, and the owner carries none: there is no
+    role of theirs to fill, so their traffic is never noted.
     """
     recorder = Recorder()
     decider = await _decider(hass, recorder)
     recorder.start("guests")
 
-    full = Permissions(
-        roles=[
-            compile_role(
-                hass,
-                {
-                    "id": "guests",
-                    "name": "Guests",
-                    "allow": {CAT_ENTITIES: True},
-                    "tiers": {"max": "admin", "allow": ["*"], "deny": []},
-                },
-                PermissionLookup(er.async_get(hass), dr.async_get(hass)),
-            )
-        ]
-    )
-    assert full.full_access is True
+    owner = Permissions(pass_through=True)
+    assert owner.full_access is True
 
-    decider.decide(full, KIND_WS, "get_states", {"type": "get_states"})
+    decider.decide(owner, KIND_WS, "get_states", {"type": "get_states"})
     seen = recorder.stop("guests")
     assert seen is not None
     assert seen.entities == {}
+
+
+async def test_a_full_access_role_is_still_recorded(hass: HomeAssistant) -> None:
+    """Recording a role that already grants everything must still note things.
+
+    This is the case issue #13 hit: a recording is itself a temporary grant of
+    full access, so the natural role to record is a full-access one. The gate
+    order used to short-circuit on full access before ever consulting the
+    recorder, so the recording saw nothing. It has to sit above that check.
+    """
+    hass.states.async_set("lock.front", "locked")
+    recorder = Recorder()
+    decider = await _decider(hass, recorder)
+    recorder.start("guests")
+
+    full = _permissions(
+        hass,
+        {
+            "id": "guests",
+            "name": "Guests",
+            "allow": {CAT_ENTITIES: True},
+            "tiers": {"max": "admin", "allow": ["*"], "deny": []},
+        },
+    )
+    assert full.full_access is True
+
+    name = "config/entity_registry/get"
+    decided = decider.decide(
+        full, KIND_WS, name, {"type": name, "entity_id": "lock.front"}
+    )
+    assert decided.allowed is True
+
+    seen = recorder.stop("guests")
+    assert seen is not None
+    assert seen.entities == {"lock.front": POLICY_READ}
 
 
 async def test_an_admin_command_records_the_capability_it_belongs_to(
