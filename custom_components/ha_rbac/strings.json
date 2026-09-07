@@ -36,6 +36,9 @@
     }
   },
   "options": {
+    "error": {
+      "port_conflict": "The proxy cannot listen on the same port as Home Assistant."
+    },
     "step": {
       "init": {
         "title": "RBAC access control",

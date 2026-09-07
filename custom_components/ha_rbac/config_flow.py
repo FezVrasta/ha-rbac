@@ -227,21 +227,30 @@ class RbacOptionsFlow(OptionsFlow):
         the case where nothing bridges the network is shown in the panel, which
         is the surface this integration is actually administered from.
         """
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(
-                data={
-                    CONF_PROXY_PORT: int(user_input[CONF_PROXY_PORT]),
-                    CONF_BIND_ADDRESS: user_input[CONF_BIND_ADDRESS],
-                    CONF_UPSTREAM_HOST: user_input[CONF_UPSTREAM_HOST],
-                    CONF_UPSTREAM_PORT: int(user_input[CONF_UPSTREAM_PORT]),
-                    CONF_MANAGE_HTTP: user_input.get(CONF_MANAGE_HTTP, False),
-                    CONF_RESTORE_ON_REMOVAL: user_input.get(
-                        CONF_RESTORE_ON_REMOVAL, DEFAULT_RESTORE_ON_REMOVAL
-                    ),
-                }
-            )
+            proxy_port = int(user_input[CONF_PROXY_PORT])
+            upstream_port = int(user_input[CONF_UPSTREAM_PORT])
+            if proxy_port == upstream_port:
+                # The initial setup refuses this combination outright; letting
+                # it back in here would bind the proxy where Home Assistant
+                # already answers.
+                errors[CONF_PROXY_PORT] = "port_conflict"
+            else:
+                return self.async_create_entry(
+                    data={
+                        CONF_PROXY_PORT: proxy_port,
+                        CONF_BIND_ADDRESS: user_input[CONF_BIND_ADDRESS],
+                        CONF_UPSTREAM_HOST: user_input[CONF_UPSTREAM_HOST],
+                        CONF_UPSTREAM_PORT: upstream_port,
+                        CONF_MANAGE_HTTP: user_input.get(CONF_MANAGE_HTTP, False),
+                        CONF_RESTORE_ON_REMOVAL: user_input.get(
+                            CONF_RESTORE_ON_REMOVAL, DEFAULT_RESTORE_ON_REMOVAL
+                        ),
+                    }
+                )
 
-        current = {**self.config_entry.data, **self.config_entry.options}
+        current = {**self.config_entry.data, **self.config_entry.options, **(user_input or {})}
         return self.async_show_form(
             step_id="init",
             data_schema=_schema(
@@ -250,4 +259,5 @@ class RbacOptionsFlow(OptionsFlow):
                 # Only worth asking where there is something to put back.
                 moved=bool(self.config_entry.data.get(DATA_PREVIOUS_HTTP)),
             ),
+            errors=errors,
         )
