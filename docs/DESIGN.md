@@ -394,6 +394,16 @@ rather than ingress alone.
   for one does not match the other, and denying only the command left the
   service open until v0.15.1. [ASSIST.md](ASSIST.md) is what enforcing it rather
   than refusing it would take.
+- **A schedule bounds when, not when-from.** `active_at` asks whether a role is
+  in force *now*; nothing consults it about the period a request asks about. So
+  a role scheduled for Tuesday mornings is unrestricted in time while it is
+  active, and can read the whole recorded history of every entity it may see.
+  History is filtered by *what* the role reaches, through the same walk as any
+  other response, so a hidden entity is absent from it — but a visible one is
+  visible for all of its past. Scoping history to a role's windows would mean
+  filtering individual samples by timestamp on the largest responses Home
+  Assistant sends, and deciding what "its windows" means for a recurring
+  schedule; neither is settled. Raised as #37.
 - **Timing and existence oracles.** A denied entity is distinguishable from one
   that does not exist.
 - **Out-of-band capability URLs.** A signed path minted for the read-only
