@@ -18,6 +18,7 @@ import pytest
 from aiohttp import web
 from homeassistant.components.http.auth import async_sign_path
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockUser
 
@@ -755,3 +756,35 @@ async def test_the_login_flow_still_reaches_home_assistant(
         ) as response,
     ):
         assert response.status != HTTPStatus.UNAUTHORIZED
+
+
+async def test_the_proxy_does_not_relay_through_home_assistants_shared_session(
+    proxy_env: dict[str, Any],
+) -> None:
+    """A relayed websocket holds its upstream connection for the whole session.
+
+    Drawing those from Home Assistant's shared pool let a burst of clients
+    exhaust it, and a forwarded request with no timeout then waited on a free
+    connection forever, so the proxy stopped answering while still bound. The
+    proxy keeps its own connector instead.
+    """
+    proxy = proxy_env["proxy"]
+    shared = async_get_clientsession(proxy_env["hass"])
+
+    assert proxy._websession is not None
+    assert proxy._websession is not shared
+    assert proxy._websession._connector.limit == 0
+
+
+async def test_stopping_the_proxy_closes_its_session(
+    proxy_env: dict[str, Any],
+) -> None:
+    """The session is the proxy's own, so nothing else will close it."""
+    proxy = proxy_env["proxy"]
+    session = proxy._websession
+    assert session is not None
+
+    await proxy.async_stop()
+
+    assert session.closed
+    assert proxy._websession is None

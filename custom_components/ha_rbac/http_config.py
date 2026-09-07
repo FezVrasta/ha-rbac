@@ -138,18 +138,52 @@ def target_config(current: dict[str, Any], upstream_port: int) -> dict[str, Any]
     return moved
 
 
+def _host_entries(server_host: object) -> list[str]:
+    """Return the bound hosts as a list, tolerating a bare string.
+
+    Home Assistant normally holds `server_host` as a list, but a config edited
+    by hand or migrated from older YAML can leave it a plain string. Treating a
+    string as an iterable would split it into characters, so `"127.0.0.1"` would
+    read as eight one-character hosts -- none of them loopback -- and alignment
+    would never be recognised.
+    """
+    if server_host is None:
+        return []
+    if isinstance(server_host, str):
+        return [server_host]
+    return [str(entry) for entry in server_host]
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return True if a bound host is a loopback address (IPv4 or IPv6)."""
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def is_aligned(hass: HomeAssistant, upstream_port: int) -> bool:
     """Return True if Home Assistant already answers where the proxy expects.
 
     Read from the running server rather than the store: the store says what
     Home Assistant was asked to do, and this has to be true of what it is
     actually doing.
+
+    "Loopback only" is the question, not "exactly `["127.0.0.1"]`". Home
+    Assistant can be off the network on `::1` as well, and can hold the same
+    setting as a bare string or alongside a second loopback entry. Demanding one
+    exact spelling meant a reload saw an aligned instance as unaligned, moved it
+    again, and restarted -- every reload, which on a loopback-only instance is a
+    restart with nothing serving the public port in between.
     """
     http = getattr(hass, "http", None)
     if http is None:
         return False
-    return list(getattr(http, "server_host", None) or []) == [LOOPBACK] and (
-        getattr(http, "server_port", None) == upstream_port
+    hosts = _host_entries(getattr(http, "server_host", None))
+    return (
+        bool(hosts)
+        and all(_is_loopback_host(host) for host in hosts)
+        and getattr(http, "server_port", None) == upstream_port
     )
 
 
