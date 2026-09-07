@@ -1,0 +1,39 @@
+name: ✨ Feature request
+description: Something a role should be able to decide, but can't yet
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Who in your house needs this
+      description: |
+        The situation, not the feature. Who are you trying to give access to,
+        what should they get, and what stops you today?
+      placeholder: |
+        My cleaner comes Tuesday mornings. I can give her the lights on a
+        schedule, but I can't stop her seeing the camera history from the
+        rest of the week.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: What you'd like it to do
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: |
+        Which roles, exceptions or dashboard grants you got closest with, and
+        where they fell short.
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Before you post
+      options:
+        - label: I searched the existing issues, open and closed
+          required: true
+        - label: This is about deciding what someone may see or do, not about Home Assistant itself
+          required: true

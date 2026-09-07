@@ -1,0 +1,85 @@
+name: 🐛 Bug report
+description: Something is allowed that shouldn't be, denied that should be, or broken
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If someone can get past a role they shouldn't**, please don't post it
+        here. Report it privately through the
+        [Security tab](https://github.com/FezVrasta/ha-rbac/security/advisories/new)
+        — a working bypass in a public issue is a bypass handed to every install
+        running it.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+      placeholder: |
+        My guest role should only see the living room lights, but the
+        dashboard came up completely empty.
+    validations:
+      required: true
+  - type: textarea
+    id: role
+    attributes:
+      label: The role involved
+      description: |
+        What the role is allowed to see and do — a screenshot of its page is
+        ideal. If it started from one of the four built-ins, say which.
+    validations:
+      required: true
+  - type: textarea
+    id: denials
+    attributes:
+      label: What the Denials tab said
+      description: |
+        Access Control → **Denials**, right after reproducing it. This is
+        usually the single most useful thing in the report. Paste the rows, or
+        say "nothing appeared" — that's an answer too, and a telling one.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: The ha-rbac version, and the Home Assistant version.
+      placeholder: "ha-rbac 0.20.0, Home Assistant 2026.8.3"
+    validations:
+      required: true
+  - type: dropdown
+    id: reached-by
+    attributes:
+      label: How the person reaching it connects
+      description: Everything the traffic passes through on its way in.
+      multiple: true
+      options:
+        - A browser, directly on the local network
+        - The Companion app (iOS or Android)
+        - A reverse proxy — NGINX, Traefik, Caddy
+        - Nabu Casa Cloud
+        - Cloudflare Tunnel
+        - An AI assistant or agent with its own login
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Anything from `custom_components.ha_rbac` in Settings → System → Logs.
+        Turn on debug logging for it first if there's nothing there.
+      render: text
+  - type: textarea
+    id: additional
+    attributes:
+      label: Anything else
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Before you post
+      options:
+        - label: I searched the existing issues, open and closed
+          required: true
+        - label: I'm on the latest release — only that one gets fixes
+          required: true
