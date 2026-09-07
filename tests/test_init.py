@@ -1,6 +1,7 @@
 """Tests for integration setup and the admin websocket API."""
 
 import socket
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -373,6 +374,50 @@ async def test_the_move_is_confirmed_only_once_the_proxy_serves(
         assert await async_setup_entry(hass, entry)
         await hass.async_block_till_done()
         assert promote.called, "a proxy that answers must confirm the move"
+
+    await async_unload_entry(hass, entry)
+
+
+async def test_a_loopback_only_instance_is_not_moved_again_on_reload(
+    hass: HomeAssistant, socket_enabled: None
+) -> None:
+    """A reload of an already-moved instance must not move and restart it.
+
+    Home Assistant can report its loopback bind as a bare string rather than a
+    one-item list. That used to read as unaligned, so setting up again -- which
+    is half of a reload -- staged another move and restarted. After the restart
+    it still read as unaligned, so it restarted again: a loop that leaves the
+    instance unreachable until the box is power-cycled. Alignment now recognises
+    a loopback-only bind however it is spelled, so no move is staged.
+    """
+    for domain in ("http", "websocket_api", "api"):
+        await async_setup_component(hass, domain, {"http": {}})
+    await hass.async_block_till_done()
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_PROXY_PORT: _free_port(),
+            CONF_BIND_ADDRESS: "127.0.0.1",
+            CONF_UPSTREAM_HOST: "127.0.0.1",
+            CONF_UPSTREAM_PORT: 8123,
+            CONF_MANAGE_HTTP: True,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    restarts: list[ServiceCall] = []
+    hass.services.async_register("homeassistant", "restart", restarts.append)
+
+    # Home Assistant is already loopback-only, but spelled as a bare string,
+    # which is exactly the representation that used to defeat alignment.
+    server = SimpleNamespace(server_host="127.0.0.1", server_port=8123)
+    with patch.object(hass, "http", server, create=True):
+        assert await async_setup_entry(hass, entry)
+        await hass.async_block_till_done()
+
+    assert not restarts, "an already-moved instance must not be moved again"
+    assert hass.data[DATA_RBAC].proxy is not None, "the proxy should just start"
 
     await async_unload_entry(hass, entry)
 
