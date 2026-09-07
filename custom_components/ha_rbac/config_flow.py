@@ -104,6 +104,14 @@ class RbacConfigFlow(ConfigFlow, domain=DOMAIN):
         """Configure the proxy."""
         self._async_abort_entries_match()
 
+        # Refused here rather than warned about, because there is no
+        # configuration of this form that works against an instance holding its
+        # own certificate -- the proxy is plaintext on both sides. Letting the
+        # flow finish would offer the move on the next step, and accepting that
+        # takes the HTTPS port to answer plaintext on it.
+        if http_config.terminates_tls(self.hass):
+            return self.async_abort(reason="tls_terminated")
+
         errors: dict[str, str] = {}
         if user_input is not None:
             data = {

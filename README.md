@@ -330,6 +330,26 @@ hop, because it appends to the `X-Forwarded-For` chain rather than replacing it.
 
 </details>
 
+<details>
+<summary><strong>What if Home Assistant holds the HTTPS certificate itself?</strong></summary>
+
+<br>
+
+Then this can't be installed, and it says so rather than trying. If you've set
+**SSL certificate** and **SSL key** under Settings > System > Network, Home
+Assistant is the thing terminating TLS. This proxy speaks plain HTTP on both
+sides, so taking over that port would mean answering plaintext on it.
+
+To use this, move the certificate to a reverse proxy in front of Home
+Assistant — NGINX, Traefik and Caddy all do it in a few lines — and clear those
+two fields. That's the arrangement in the question above, and it needs nothing
+else.
+
+This only applies when Home Assistant itself holds the certificate. If TLS is
+already terminated somewhere else, there's nothing to change.
+
+</details>
+
 ## Contributing
 
 Bug reports from real houses are the most useful thing right now, especially
