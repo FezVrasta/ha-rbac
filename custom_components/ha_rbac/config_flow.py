@@ -250,7 +250,11 @@ class RbacOptionsFlow(OptionsFlow):
                     }
                 )
 
-        current = {**self.config_entry.data, **self.config_entry.options, **(user_input or {})}
+        current = {
+            **self.config_entry.data,
+            **self.config_entry.options,
+            **(user_input or {}),
+        }
         return self.async_show_form(
             step_id="init",
             data_schema=_schema(
