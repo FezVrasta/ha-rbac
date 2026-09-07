@@ -1,98 +1,85 @@
-name: 🐛 Bug Report
-description: Report a bug to help improve ha-rbac
+name: 🐛 Bug report
+description: Something is allowed that shouldn't be, denied that should be, or broken
 labels: ["bug"]
-assignees: []
 body:
   - type: markdown
     attributes:
       value: |
-        Thank you for taking the time to report a bug! Please fill out the form below to help us understand and fix the issue.
+        **If someone can get past a role they shouldn't**, please don't post it
+        here. Report it privately through the
+        [Security tab](https://github.com/FezVrasta/ha-rbac/security/advisories/new)
+        — a working bypass in a public issue is a bypass handed to every install
+        running it.
   - type: textarea
-    id: description
+    id: what-happened
     attributes:
-      label: Description
-      description: A clear and concise description of what the bug is
-      placeholder: "Describe the bug you're experiencing..."
-    validations:
-      required: true
-  - type: textarea
-    id: steps
-    attributes:
-      label: Steps to Reproduce
-      description: Steps to reproduce the behavior
+      label: What happened
+      description: What you expected, and what you got instead.
       placeholder: |
-        1. Go to '...'
-        2. Click on '...'
-        3. Scroll down to '...'
-        4. See error...
+        My guest role should only see the living room lights, but the
+        dashboard came up completely empty.
     validations:
       required: true
   - type: textarea
-    id: expected
+    id: role
     attributes:
-      label: Expected Behavior
-      description: A clear and concise description of what you expected to happen
-      placeholder: "Describe what should happen..."
-    validations:
-      required: true
-  - type: textarea
-    id: actual
-    attributes:
-      label: Actual Behavior
-      description: What actually happens instead
-      placeholder: "Describe what actually happens..."
-    validations:
-      required: true
-  - type: input
-    id: version
-    attributes:
-      label: ha-rbac Version
-      description: What version of ha-rbac are you using?
-      placeholder: "e.g., 1.0.0 or commit hash"
-    validations:
-      required: true
-  - type: input
-    id: home-assistant-version
-    attributes:
-      label: Home Assistant Version
-      description: What version of Home Assistant are you running?
-      placeholder: "e.g., 2024.1.0"
-    validations:
-      required: false
-  - type: textarea
-    id: screenshots
-    attributes:
-      label: Screenshots
-      description: If applicable, add screenshots or error messages to help explain your problem
-      placeholder: "Paste screenshots or error logs here..."
-    validations:
-      required: false
-  - type: textarea
-    id: environment
-    attributes:
-      label: Environment
+      label: The role involved
       description: |
-        Examples:
-        - OS: Ubuntu 20.04
-        - Browser: Chrome 91
-        - Python version: 3.9
-      placeholder: "Describe your environment..."
+        What the role is allowed to see and do — a screenshot of its page is
+        ideal. If it started from one of the four built-ins, say which.
     validations:
-      required: false
+      required: true
+  - type: textarea
+    id: denials
+    attributes:
+      label: What the Denials tab said
+      description: |
+        Access Control → **Denials**, right after reproducing it. This is
+        usually the single most useful thing in the report. Paste the rows, or
+        say "nothing appeared" — that's an answer too, and a telling one.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: The ha-rbac version, and the Home Assistant version.
+      placeholder: "ha-rbac 0.20.0, Home Assistant 2026.8.3"
+    validations:
+      required: true
+  - type: dropdown
+    id: reached-by
+    attributes:
+      label: How the person reaching it connects
+      description: Everything the traffic passes through on its way in.
+      multiple: true
+      options:
+        - A browser, directly on the local network
+        - The Companion app (iOS or Android)
+        - A reverse proxy — NGINX, Traefik, Caddy
+        - Nabu Casa Cloud
+        - Cloudflare Tunnel
+        - An AI assistant or agent with its own login
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Anything from `custom_components.ha_rbac` in Settings → System → Logs.
+        Turn on debug logging for it first if there's nothing there.
+      render: text
   - type: textarea
     id: additional
     attributes:
-      label: Additional Context
-      description: Add any other context about the problem
-      placeholder: "Any additional information..."
-    validations:
-      required: false
+      label: Anything else
   - type: checkboxes
     id: terms
     attributes:
-      label: Checklist
+      label: Before you post
       options:
-        - label: I have searched existing issues to avoid duplicates
+        - label: I searched the existing issues, open and closed
           required: true
-        - label: I have provided sufficient information to reproduce the bug
+        - label: I'm on the latest release — only that one gets fixes
           required: true

@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Home Assistant Community
+  - name: 🔒 A way past a role
+    url: https://github.com/FezVrasta/ha-rbac/security/advisories/new
+    about: Report privately. A working bypass in a public issue is one handed to every install running it.
+  - name: 💬 Home Assistant Community
     url: https://community.home-assistant.io
-    about: Get help and discuss with the Home Assistant community
-  - name: GitHub Discussions
-    url: https://github.com/FezVrasta/ha-rbac/discussions
-    about: Ask questions and start discussions about ha-rbac
+    about: Questions about Home Assistant itself, rather than about this integration.
