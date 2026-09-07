@@ -95,13 +95,14 @@ class RbacStore:
         role.setdefault("id", uuid.uuid4().hex)
         role["system_generated"] = False
         validated = ROLE_SCHEMA(role)
-        existing = self.roles.get(validated["id"])
-        if existing is not None and existing.get("system_generated"):
-            # It would replace the predefined role in memory but is never
-            # persisted, so a restart would silently undo it.
-            raise ValueError(
-                f"{validated['id']} is a predefined role and cannot be replaced"
-            )
+        if validated["id"] in self.roles:
+            # A client-supplied id colliding with an existing role -- system
+            # or custom -- is not a create, it is a replace: every allow/deny
+            # rule the existing role had, and every user bound to it, would
+            # change out from under them with no confirmation. Editing an
+            # existing role goes through async_update_role instead, which the
+            # caller has to reach deliberately.
+            raise ValueError(f"a role with id {validated['id']!r} already exists")
         self.roles[validated["id"]] = validated
         await self._async_save()
         return validated
