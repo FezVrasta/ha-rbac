@@ -238,28 +238,34 @@ class RbacProxy:
     async def _bind_with_retry(self) -> None:
         """Bind the listener, retrying briefly if the port is momentarily held.
 
-        A reload is unload-then-setup in one process, and the request that asked
-        for it arrives through this proxy, so the old socket can still be closing
-        when the new listener binds. reuse_address lets it take a port in
-        TIME_WAIT, and a few short retries ride out the rest -- turning a race
-        that would fail setup and strand the instance into a second of waiting.
+        A reload is unload-then-setup in one process, so this runs moments after
+        the previous listener let the port go. `async_stop` makes that ordering
+        deterministic and these retries are not what fixes the reload lockout --
+        they cover what it cannot: something outside this integration, an
+        external health check or the previous process, still holding the port as
+        Home Assistant comes up. Failing setup there strands the instance with
+        nothing on its public port, which is worth a few seconds of waiting to
+        avoid. `reuse_address` is what asyncio already defaults to on POSIX,
+        said out loud because binding straight back depends on it.
 
         A fresh site each attempt: a TCPSite can only be started once, and the
-        runner refuses to re-register the same one.
+        runner refuses to re-register the same one. `self._site` is only set on
+        success, so a failed attempt leaves nothing for `async_stop` to find.
         """
         assert self._runner is not None
         last: OSError | None = None
         for attempt in range(BIND_RETRIES):
-            self._site = web.TCPSite(
+            site = web.TCPSite(
                 self._runner, self._bind_address, self._port, reuse_address=True
             )
             try:
-                await self._site.start()
+                await site.start()
             except OSError as err:
                 last = err
                 if attempt + 1 < BIND_RETRIES:
                     await asyncio.sleep(BIND_RETRY_DELAY)
             else:
+                self._site = site
                 return
         raise last if last is not None else OSError("could not bind the proxy")
 
@@ -297,19 +303,31 @@ class RbacProxy:
             LOOPBACK,
         )
 
-    async def async_stop(self, *, close_connections: bool = False) -> None:
-        """Release the listening port.
+    async def async_stop(self) -> None:
+        """Release the listening port, and drain what is left without waiting.
 
-        A reload is unload-then-setup, and the reload request itself arrives
-        through this proxy. Closing that connection cancels the reload before
-        its setup half runs, so the proxy never comes back and the instance is
-        left on loopback with nothing on the public port.
+        Removing, disabling or reloading this integration is itself a request,
+        and it arrives through this proxy. So the connection asking for it is
+        one of the ones `cleanup()` drains before returning, and it cannot
+        complete until the unload awaiting `cleanup()` returns. That is a cycle.
+        Worse, the drain was being cancelled at the timeout partway through
+        aiohttp's shutdown, which left the listening socket open: a reload's
+        setup half then could not re-bind, setup raised ConfigEntryNotReady, and
+        the instance was left with nothing on the public port -- the reported
+        reload lockout, which needed a power cycle to clear.
 
-        So the default only stops the site: aiohttp closes the listening socket
-        -- freeing the port for the setup half to re-bind -- while every
-        in-flight connection, the reload's own included, is left to finish.
-        `close_connections` is for teardown (disable or remove), where the
-        connections are going away regardless and the full cleanup is right.
+        So the two halves are separated. The site is stopped here and awaited,
+        which closes the listening socket and nothing else: by the time this
+        returns the port is free, and a reload's setup half can take it straight
+        back. The drain is then handed to a background task, so the request
+        driving the unload is free to finish -- breaking the cycle rather than
+        timing out of it -- and the runner and its session are still closed
+        once it has, instead of being left behind for the life of the process.
+
+        Backgrounding matters for correctness too, not just for tidiness. The
+        handlers on that runner close over the policy objects from before the
+        reload, so a connection left on it indefinitely would go on being
+        judged against the configuration that has just been replaced.
         """
         if self._site is not None:
             site, self._site = self._site, None
@@ -318,23 +336,34 @@ class RbacProxy:
             except (RuntimeError, OSError) as err:
                 _LOGGER.debug("Could not stop the proxy site cleanly: %s", err)
 
-        if not close_connections:
+        runner, self._runner = self._runner, None
+        session, self._websession = self._websession, None
+        if runner is None and session is None:
             return
+        self._hass.async_create_background_task(
+            self._drain(runner, session), "ha_rbac proxy drain", eager_start=False
+        )
 
-        if self._runner is not None:
-            runner, self._runner = self._runner, None
-            try:
+    async def _drain(
+        self, runner: web.AppRunner | None, session: ClientSession | None
+    ) -> None:
+        """Finish the requests still in flight, then close what served them.
+
+        The session goes last: a request being drained is still using it.
+        """
+        try:
+            if runner is not None:
                 async with asyncio.timeout(SHUTDOWN_DRAIN):
                     await runner.cleanup()
-            except TimeoutError:
-                _LOGGER.debug(
-                    "Gave up draining connections after %ss; a request through "
-                    "this proxy is most likely the one that asked it to stop",
-                    SHUTDOWN_DRAIN,
-                )
-        if self._websession is not None:
-            session, self._websession = self._websession, None
-            await session.close()
+        except TimeoutError:
+            _LOGGER.debug(
+                "Gave up draining connections after %ss; a request through "
+                "this proxy is most likely the one that asked it to stop",
+                SHUTDOWN_DRAIN,
+            )
+        finally:
+            if session is not None:
+                await session.close()
 
     @callback
     def _upstream_url(self, request: web.Request) -> URL:

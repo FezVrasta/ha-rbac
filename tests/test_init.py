@@ -166,27 +166,29 @@ async def test_the_proxy_can_restart_on_the_same_port(
 
     first = _make()
     await first.async_start()
-    assert first._site is not None
-    assert first._site._reuse_address is True
     await first.async_stop()
 
+    # No settling in between: the port has to be free the moment `async_stop`
+    # returns, because on a reload the setup half follows immediately.
     second = _make()
     try:
         await second.async_start()
     finally:
-        await second.async_stop(close_connections=True)
+        await second.async_stop()
+        await hass.async_block_till_done()
 
 
-async def test_stopping_for_a_reload_does_not_close_connections(
+async def test_stopping_frees_the_port_first_and_drains_afterwards(
     hass: HomeAssistant, socket_enabled: None
 ) -> None:
-    """The reload request arrives through the proxy, so stopping must spare it.
+    """The request driving an unload arrives through the proxy being unloaded.
 
-    Closing connections on a reload cancels the request that drives it, and the
-    setup half never runs -- the proxy stays down and the instance is stranded.
-    The default stop only releases the listening socket; the runner and its
-    open connections are left alone. close_connections=True is the teardown
-    path, where draining is right.
+    Waiting for it to drain is a cycle -- it cannot finish until the unload
+    does. So the site is stopped and awaited, which frees the port and nothing
+    else, and the drain is handed to a background task. Both halves are pinned:
+    without the first, a reload cannot re-bind and the instance is stranded;
+    without the second, every reload leaves a runner and an open client session
+    behind for the life of the process.
     """
     for domain in ("http", "websocket_api"):
         await async_setup_component(hass, domain, {"http": {}})
@@ -206,20 +208,24 @@ async def test_stopping_for_a_reload_does_not_close_connections(
         bind_address="127.0.0.1",
         port=_free_port(),
     )
+    port = proxy._port
     await proxy.async_start()
-    runner = proxy._runner
     session = proxy._websession
+    assert session is not None
 
-    # Reload-mode stop: site released, runner and session left intact.
     await proxy.async_stop()
-    assert proxy._site is None
-    assert proxy._runner is runner
-    assert proxy._websession is session
 
-    # Teardown stop: the runner is cleaned up and the session closed.
-    await proxy.async_stop(close_connections=True)
+    # The port is free straight away, before anything has been drained: this is
+    # the state the setup half of a reload runs in.
+    assert proxy._site is None
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", port))
+
+    # The drain is still outstanding, so nothing has been dropped on the floor.
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert proxy._runner is None
     assert proxy._websession is None
+    assert session.closed, "the client session outlived the proxy that opened it"
 
 
 async def test_roles_list_requires_admin(
@@ -609,7 +615,7 @@ async def test_a_loopback_only_instance_is_not_moved_again_on_reload(
     proxy = hass.data[DATA_RBAC].proxy
     assert proxy is not None, "the proxy should just start"
 
-    await proxy.async_stop(close_connections=True)
+    await proxy.async_stop()
     await async_unload_entry(hass, entry)
 
 

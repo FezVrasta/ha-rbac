@@ -431,11 +431,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     for unsubscribe in data.unsubscribes:
         unsubscribe()
     if data.proxy is not None:
-        # On a plain reload the request driving it arrives through the proxy, so
-        # closing connections here would cancel the reload before its setup half
-        # runs. Only a teardown (disable, which restores the network below) may
-        # take the connections down with it.
-        await data.proxy.async_stop(close_connections=entry.disabled_by is not None)
+        # Returns once the port is free; the connections still on it are drained
+        # in the background, because the request driving this unload is one of
+        # them and waiting on it here would deadlock.
+        await data.proxy.async_stop()
     if data.dashboard_entities is not None:
         data.dashboard_entities.async_stop()
 
