@@ -46,7 +46,15 @@ class DenyLog:
 
     @callback
     def async_recent(self, limit: int = 100) -> list[dict[str, Any]]:
-        """Return the most recent denials, newest first."""
+        """Return the most recent denials, newest first.
+
+        `[-limit:]` means "the whole list" when `limit` is 0, not "none of
+        it" -- Python's slice syntax has no way to ask for zero from the end
+        the way it can ask for zero from the start. Guarded explicitly so a
+        caller asking for zero denials gets zero rather than all of them.
+        """
+        if limit <= 0:
+            return []
         return [asdict(entry) for entry in list(self._entries)[-limit:][::-1]]
 
     @callback
