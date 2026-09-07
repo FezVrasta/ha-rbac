@@ -1,6 +1,14 @@
 [tool.ruff]
 target-version = "py313"
 line-length = 88
+# Newer ruff releases also format JSON, and do so with a trailing comma
+# before the closing brace/bracket -- valid JSON5, not valid JSON. Home
+# Assistant loads `strings.json`/`translations/*.json` with a strict parser,
+# so letting `ruff format` anywhere near them would produce a file the
+# integration can no longer load. Nothing here is meant to be linted or
+# formatted by ruff at all, only by whatever the JSON files themselves are
+# validated with (`hassfest`, the JSON module in the test suite).
+extend-exclude = ["*.json"]
 
 # Mirrors the Home Assistant core ruff configuration, so the component matches
 # the conventions of the codebase it plugs into.
