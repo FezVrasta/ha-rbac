@@ -22,11 +22,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockUser
+from yarl import URL
 
 from custom_components.ha_rbac.catalog import Catalog
 from custom_components.ha_rbac.const import ROLE_READ_ONLY, TIER_ADMIN
 from custom_components.ha_rbac.decide import Decider
-from custom_components.ha_rbac.denylog import DenyLog
+from custom_components.ha_rbac.denylog import Denial, DenyLog
 from custom_components.ha_rbac.filters import REGISTRY
 from custom_components.ha_rbac.ingress import SESSION_ENDPOINT
 from custom_components.ha_rbac.policy import Evaluator, Permissions
@@ -868,3 +869,120 @@ async def test_stopping_the_proxy_closes_its_session(
 
     assert session.closed
     assert proxy._websession is None
+
+
+async def test_a_denial_never_reaches_a_restricted_subscriber(
+    proxy_env: dict[str, Any], hass_admin_user: MockUser
+) -> None:
+    """GHSA-h97w-7gj8-g423: the deny log was being broadcast to everyone.
+
+    Every refusal is fired onto Home Assistant's own bus as `rbac_denied`,
+    carrying `detail` -- which names commands, tiers and entity ids, and which
+    `decide.py` documents as a diagnostic that must never reach the person
+    refused -- along with the id and name of whoever was refused. Neither the
+    state-changed filter nor the generic walk touched it: `resources` is not a
+    key either of them recognises, and `detail` is free text.
+
+    The subscriber here is a Home Assistant administrator scoped down by a
+    role, which is the case this whole integration exists for -- and the case
+    that can reach `subscribe_events` with no filter, since Home Assistant
+    refuses that to a genuinely non-admin account. Their role denies every
+    lock, and the denial they must not see is about one.
+    """
+    hass, store = proxy_env["hass"], proxy_env["store"]
+    hass.states.async_set("lock.front", "locked")
+    hass.states.async_set("light.kitchen", "on")
+
+    role = await store.async_create_role(
+        {
+            "name": "Scoped down",
+            "allow": {"entities": {"all": {"read": True}}},
+            "deny": {"entities": {"domains": {"lock": True}}},
+        }
+    )
+    await store.async_set_binding(hass_admin_user.id, [role["id"]])
+
+    async with aiohttp.ClientSession() as session:
+        ws = await _ws_login(session, proxy_env["ws"], proxy_env["admin_token"])
+        await ws.send_json({"id": 1, "type": "subscribe_events"})
+        first = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        assert first["success"], first
+
+        proxy_env["denylog"].async_record(
+            Denial(
+                user_id="someone-else",
+                user_name="Bystander",
+                kind="ws",
+                name="call_service",
+                reason="resource",
+                resources=["lock.front"],
+                detail="no control access to lock.front",
+            )
+        )
+        # Something they may see, fired afterwards: it proves the subscription
+        # is live, so an empty result cannot pass this test by accident.
+        hass.states.async_set("light.kitchen", "off")
+        await hass.async_block_till_done()
+
+        seen = []
+        with contextlib.suppress(TimeoutError):
+            while len(seen) < 8:
+                seen.append(await asyncio.wait_for(ws.receive_json(), timeout=2))
+        await ws.close()
+
+    raw = json.dumps(seen)
+    assert "rbac_denied" not in raw, f"the denial reached a restricted user: {raw}"
+    assert "Bystander" not in raw, "and named who was refused"
+    assert "no control access" not in raw, "and what they were refused"
+    assert any(
+        frame.get("event", {}).get("event_type") == "state_changed" for frame in seen
+    ), "precondition: the subscription really was streaming"
+
+
+async def test_a_protocol_relative_path_cannot_redirect_the_upstream(
+    proxy_env: dict[str, Any],
+) -> None:
+    """The proxy must only ever fetch from the host it was configured with.
+
+    `join` resolves its argument the way a browser resolves a link, so a
+    request path beginning with two slashes is a protocol-relative URL naming
+    a host: `//example.com/x` replaced the upstream outright. The proxy then
+    fetched `http://example.com/x` from the Home Assistant machine and relayed
+    the answer -- reaching anything that machine can reach, the rest of the
+    home network and a cloud instance's metadata endpoint included.
+
+    It happens in `_upstream_url`, before any user is resolved, so it needs no
+    login at all. Driven through a real socket rather than a mocked request,
+    because aiohttp's test helper parses `//example.com/x` into a host and a
+    path of `/x` and so cannot reproduce what the server actually receives.
+    """
+    proxy = proxy_env["proxy"]
+    upstream = proxy._base.host
+    seen: list[str] = []
+    original = proxy._upstream_url
+
+    def _record(request: Any) -> Any:
+        url = original(request)
+        seen.append(str(url))
+        return url
+
+    proxy._upstream_url = _record
+    base = proxy_env["base"].rsplit(":", 1)[0].removeprefix("http://")
+    port = int(proxy_env["base"].rsplit(":", 1)[1])
+
+    for target in ("//example.com/x", "///example.com/x", "//example.com:80/y?a=b"):
+        reader, writer = await asyncio.open_connection(base, port)
+        writer.write(
+            f"GET {target} HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        with contextlib.suppress(TimeoutError, OSError):
+            await asyncio.wait_for(reader.read(64), timeout=3)
+        writer.close()
+        with contextlib.suppress(OSError):
+            await writer.wait_closed()
+
+    proxy._upstream_url = original
+    assert seen, "precondition: the requests reached the proxy"
+    for url in seen:
+        assert URL(url).host == upstream, f"upstream was redirected to {url}"
