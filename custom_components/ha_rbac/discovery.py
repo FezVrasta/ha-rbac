@@ -17,6 +17,8 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 
+from .const import DATA_SET_INTERNAL_URL
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -125,26 +127,61 @@ def async_correct_internal_url(hass: HomeAssistant, proxy_port: int) -> bool:
     exactly this: the reply is generated, the proxy is never asked for it, and
     the satellite gets nothing.
 
-    Left alone if an internal URL is already configured. That is what the
-    fallback exists for, and a URL entered under Settings > System > Network on
-    purpose already names a port this integration keeps free to answer on, so
-    it is not ours to second-guess.
+    Left alone if an internal URL is already configured, unless this module is
+    the one that configured it. A URL entered under Settings > System > Network
+    on purpose is not ours to second-guess; the one we wrote last time is, and
+    has to be rewritten or a reconfigured proxy port would keep naming the old
+    one -- the entry reloads in place, so "it is reapplied on every start" is
+    not true of a port changed while Home Assistant is running.
 
-    Set directly on `hass.config` rather than through `async_update`, so
-    nothing is written to storage. Reapplying this on every start is what keeps
-    a changed proxy port in step, and it means removing this integration, or
-    setting an internal URL by hand later, needs nothing undone here.
+    Always `http`. The proxy listens without an SSL context, and setup refuses
+    an instance holding its own certificate, so `api.use_ssl` is false whenever
+    this runs -- and following it would be wrong in the one case it were not,
+    since the scheme has to describe the proxy rather than what is behind it.
+
+    Set directly on `hass.config` rather than through `async_update`, so nothing
+    is written to storage: a person who never chose an internal URL should not
+    find one saved in theirs.
     """
-    if hass.config.internal_url:
+    current = hass.config.internal_url
+    if current and current != hass.data.get(DATA_SET_INTERNAL_URL):
         return False
     api = hass.config.api
     if api is None or not api.local_ip:
         return False
-    scheme = "https" if api.use_ssl else "http"
-    hass.config.internal_url = f"{scheme}://{api.local_ip}:{proxy_port}"
+
+    corrected = f"http://{api.local_ip}:{proxy_port}"
+    if corrected == current:
+        return False
+    hass.config.internal_url = corrected
+    hass.data[DATA_SET_INTERNAL_URL] = corrected
     _LOGGER.info(
         "Setting Home Assistant's internal URL to %s, so devices such as "
         "ESPHome voice satellites can reach media the proxy serves",
-        hass.config.internal_url,
+        corrected,
     )
+    return True
+
+
+@callback
+def async_restore_internal_url(hass: HomeAssistant) -> bool:
+    """Clear the internal URL this module set, if it is still the one set.
+
+    The correction describes a proxy that is answering. Once it is not -- the
+    entry disabled or removed -- a URL naming its port is worse than none at
+    all, because the fallback it replaced would name the port Home Assistant is
+    being put back on. Nothing was written to storage, so this only has to undo
+    the attribute.
+
+    A URL a person set since is left alone, which is the same rule the
+    correction follows.
+    """
+    ours = hass.data.pop(DATA_SET_INTERNAL_URL, None)
+    if ours is None:
+        return False
+    if hass.config.internal_url != ours:
+        # Somebody set their own since, which outranks ours.
+        return False
+    hass.config.internal_url = None
+    _LOGGER.info("Cleared the internal URL this integration set")
     return True

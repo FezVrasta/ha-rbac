@@ -471,5 +471,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Home Assistant sets `disabled_by` before it unloads, which is what tells
     # the two apart.
     if entry.disabled_by is not None:
+        # The corrected internal URL names the proxy's port, which nothing is
+        # about to answer on. Cleared here rather than in the network restore,
+        # because it is set whether or not this integration moved Home
+        # Assistant and has to come back for the same reason.
+        discovery.async_restore_internal_url(hass)
         await _async_restore_network(hass, entry)
     return True
