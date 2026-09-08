@@ -31,7 +31,12 @@ from custom_components.ha_rbac.const import (
     TIER_OPEN,
     TIER_USER,
 )
-from custom_components.ha_rbac.decide import KIND_WS, REASON_RESOURCE, Decider
+from custom_components.ha_rbac.decide import (
+    KIND_HTTP,
+    KIND_WS,
+    REASON_RESOURCE,
+    Decider,
+)
 from custom_components.ha_rbac.filters import REGISTRY
 from custom_components.ha_rbac.policy import (
     ROLE_SCHEMA,
@@ -449,6 +454,51 @@ async def test_a_role_may_be_given_only_some_of_a_selects_options(
     assert refused.reason == REASON_RESOURCE
     assert refused.message == "You can only choose certain options there."
     assert "Federico" not in refused.message, "the option is a diagnostic, not a reply"
+
+
+async def test_the_rest_spelling_of_a_choice_is_judged_the_same_way(
+    hass: HomeAssistant,
+) -> None:
+    """The service is in the URL there, where walking the body cannot reach it.
+
+    The gate read the payload for the call it was judging, which is where the
+    websocket puts it. Over REST the two halves of the name are path segments
+    and the body carries only the option -- so the walk found no call, the gate
+    returned early, and one curl chose any option the role was refused. The
+    same request has to get the same answer whichever way it arrives.
+    """
+    decider = await _select_decider(hass)
+    permissions = _may_announce_as(hass, "Jan")
+    path = "POST /api/services/input_select/select_option"
+
+    allowed = decider.decide(
+        permissions,
+        KIND_HTTP,
+        path,
+        {"entity_id": "input_select.announcing", "option": "Jan"},
+    )
+    assert allowed.allowed is True
+
+    refused = decider.decide(
+        permissions,
+        KIND_HTTP,
+        path,
+        {"entity_id": "input_select.announcing", "option": "Federico"},
+    )
+    assert refused.allowed is False
+    assert refused.reason == REASON_RESOURCE
+    assert refused.message == "You can only choose certain options there."
+
+    # And the two that reach an option without naming one are refused over REST
+    # for the same reason they are over the websocket.
+    for service in ("select_next", "set_options"):
+        decision = decider.decide(
+            permissions,
+            KIND_HTTP,
+            f"POST /api/services/input_select/{service}",
+            {"entity_id": "input_select.announcing"},
+        )
+        assert decision.allowed is False, service
 
 
 async def test_cycling_a_select_cannot_walk_past_the_rule(hass: HomeAssistant) -> None:

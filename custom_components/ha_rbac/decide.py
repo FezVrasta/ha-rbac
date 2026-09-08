@@ -481,7 +481,12 @@ class Decider:
         #     being allowed to choose every option on it -- "these people may
         #     put their own name on the announcer, and nobody else's".
         if (
-            choice_decision := self._decide_choices(permissions, payload, entities)
+            choice_decision := self._decide_choices(
+                permissions,
+                payload,
+                entities,
+                self._catalog.path_service(method, path) if kind == KIND_HTTP else None,
+            )
         ) is not None:
             return choice_decision
 
@@ -742,7 +747,11 @@ class Decider:
 
     @callback
     def _decide_choices(
-        self, permissions: Permissions, payload: dict[str, Any], entities: set[str]
+        self,
+        permissions: Permissions,
+        payload: dict[str, Any],
+        entities: set[str],
+        called: "tuple[str, str] | None" = None,
     ) -> "Decision | None":
         """Refuse a select the role may work but may not set to this option.
 
@@ -764,10 +773,18 @@ class Decider:
         matching each call to its own target: a payload naming two selects and
         one option is asking for that option on both as far as anything here
         can tell, and refusing is the direction to be wrong in.
+
+        `called` is the service a REST path names. `POST
+        /api/services/input_select/select_option` is the same request as a
+        `call_service` command with the two halves of the name in the URL,
+        where walking the body cannot reach them -- and a gate that read only
+        the body let one curl choose any option a role was refused.
         """
         if not permissions.restricts_options:
             return None
         calls = _select_services(payload)
+        if called is not None and called[0] in SELECT_DOMAINS:
+            calls.append(called)
         if not calls:
             return None
 
