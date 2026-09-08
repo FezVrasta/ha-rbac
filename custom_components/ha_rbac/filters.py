@@ -13,6 +13,7 @@ from typing import Any
 from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.core import HomeAssistant
 
+from .const import EVENT_RBAC_DENIED
 from .extract import entity_candidate
 
 # Keys of the compressed state-diff protocol used by subscribe_entities.
@@ -166,7 +167,33 @@ class FilterRegistry:
         return prune(ctx, payload)
 
     def filter_event(self, command: str, ctx: FilterContext, payload: Any) -> Any:
-        """Filter one streamed event, falling back to the generic walk."""
+        """Filter one streamed event, falling back to the generic walk.
+
+        Every event frame the proxy relays passes through here, whatever the
+        subscription was called, so this is where an event that must not reach
+        a filtered connection at all is dropped -- ahead of any per-command
+        filter and of the generic walk.
+
+        There is exactly one: this integration's own denial event. It carries
+        `detail`, which names commands, tiers and entity ids and is documented
+        in `decide.py` as a diagnostic that must not reach an end user, plus
+        the id and name of whoever was refused. It was reaching every
+        restricted user on the instance -- `subscribe_events` with no filter is
+        an ordinary command that every frontend session issues on load -- and
+        neither the state-changed filter nor `prune` touched it, because
+        `resources` is not a key either of them recognises and `detail` is free
+        text. So a guest could watch every refusal in the house, learn the
+        entity ids of things their own role hides entirely, and see which
+        household member attempted what.
+
+        Dropped rather than redacted: nothing a filtered connection does needs
+        it. A refused request already carries its own `message` in the reply,
+        and the deny log itself is behind an admin-only websocket command. A
+        connection that is not being filtered never reaches this code, so
+        automations and the panel are unaffected.
+        """
+        if isinstance(payload, dict) and payload.get("event_type") == EVENT_RBAC_DENIED:
+            return None
         if (func := self._event.get(command)) is not None:
             return func(ctx, payload)
         return prune(ctx, payload)
