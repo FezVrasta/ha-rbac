@@ -102,6 +102,14 @@ class RbacStore:
             raise ValueError(
                 f"{validated['id']} is a predefined role and cannot be replaced"
             )
+        if existing is not None:
+            # A client-supplied id colliding with an existing *custom* role is
+            # not a create, it is a replace: every allow/deny rule the
+            # existing role had, and every user bound to it, would change out
+            # from under them with no confirmation. Editing an existing role
+            # goes through async_update_role instead, which the caller has to
+            # reach deliberately.
+            raise ValueError(f"a role with id {validated['id']!r} already exists")
         self.roles[validated["id"]] = validated
         await self._async_save()
         return validated

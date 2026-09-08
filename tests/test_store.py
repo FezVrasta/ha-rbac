@@ -87,6 +87,34 @@ async def test_only_custom_roles_are_persisted(
     assert reloaded.roles[ROLE_ADMIN]["name"] == "Administrator"
 
 
+async def test_creating_a_role_never_replaces_an_existing_one(
+    store: RbacStore,
+) -> None:
+    """`roles/create` takes an unconstrained dict, so the id is the caller's.
+
+    An id matching an existing custom role used to be accepted and overwrite
+    that role outright -- allow, deny, tiers, apps -- with no error and nothing
+    to say a replace had happened instead of a create. Everyone bound to it
+    would get whatever the new definition said, wider or narrower. A retried
+    request or two admin tabs are enough to do it by accident.
+
+    Editing has its own deliberate path in `async_update_role`, so this one
+    only ever creates. The existing role is left exactly as it was.
+    """
+    original = await store.async_create_role(
+        {
+            "id": "guests",
+            "name": "Guests",
+            "deny": {"entities": {"domains": {"lock": True}}},
+        }
+    )
+
+    with pytest.raises(ValueError, match="already exists"):
+        await store.async_create_role({"id": "guests", "name": "Impostor"})
+
+    assert store.roles["guests"] == original
+
+
 async def test_store_notifies_listeners_on_write(store: RbacStore) -> None:
     """Compiled policies must be dropped when stored data changes."""
     calls: list[int] = []
