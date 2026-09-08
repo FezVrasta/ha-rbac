@@ -130,3 +130,23 @@ async def test_denylog_returns_newest_first(hass: HomeAssistant) -> None:
         "cmd1",
         "cmd0",
     ]
+
+
+@pytest.mark.parametrize("limit", [0, -1], ids=["zero", "negative"])
+async def test_asking_for_no_denials_returns_none_of_them(
+    hass: HomeAssistant, limit: int
+) -> None:
+    """`[-limit:]` reads as the whole list when limit is 0, not as none of it.
+
+    Python's slice syntax has no way to ask for zero from the end the way
+    `[:0]` asks for zero from the start, so the guard has to be explicit. The
+    websocket schema takes `limit` as a plain int with no range, so zero is a
+    value that reaches this. A negative goes the same way: `[5:]` would drop
+    the oldest five and return everything after them.
+    """
+    log = DenyLog(hass)
+    for index in range(3):
+        log.async_record(Denial("u1", "Guest", "ws", f"cmd{index}", "tier", []))
+    assert log.async_recent() != [], "precondition: there are denials to withhold"
+
+    assert log.async_recent(limit) == []
