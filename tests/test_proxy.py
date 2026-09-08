@@ -17,6 +17,7 @@ from typing import Any
 import aiohttp
 import pytest
 from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 from homeassistant.components.http.auth import async_sign_path
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -868,3 +869,40 @@ async def test_stopping_the_proxy_closes_its_session(
 
     assert session.closed
     assert proxy._websession is None
+
+
+async def test_a_protocol_relative_path_cannot_redirect_the_upstream(
+    proxy_env: dict[str, Any],
+) -> None:
+    """The proxy must only ever fetch from the host it was configured with.
+
+    `join` resolves its argument the way a browser resolves a link, so a
+    request path beginning with two slashes is a protocol-relative URL naming
+    a host: `//example.com/x` replaced the upstream outright. The proxy then
+    fetched `http://example.com/x` from the Home Assistant machine and relayed
+    the answer -- reaching anything that machine can reach, the rest of the
+    home network and a cloud instance's metadata endpoint included.
+
+    It happens in `_upstream_url`, before any user is resolved, so it needed no
+    login at all. Checked here at the URL rather than by standing up a second
+    server, because the assertion is exactly "the host never changes".
+    """
+    proxy = proxy_env["proxy"]
+    upstream = proxy._base.host
+
+    for target in (
+        "//example.com/x",
+        "///example.com/x",
+        "//example.com:8123/x?a=b",
+        "/api/states",
+        "/api/camera_proxy/camera.front?token=abc&authSig=xyz",
+    ):
+        request = make_mocked_request("GET", target)
+        assert proxy._upstream_url(request).host == upstream, target
+
+    # The path and query still arrive byte for byte, which the signed-path
+    # HMAC depends on: it is computed over the exact path and query.
+    signed = make_mocked_request("GET", "/api/camera_proxy/camera.front?authSig=xyz")
+    assert proxy._upstream_url(signed).raw_path_qs == (
+        "/api/camera_proxy/camera.front?authSig=xyz"
+    )
