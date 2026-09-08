@@ -367,8 +367,26 @@ class RbacProxy:
 
     @callback
     def _upstream_url(self, request: web.Request) -> URL:
-        """Return the upstream URL, preserving path and query byte for byte."""
-        return self._base.join(URL(request.rel_url.raw_path_qs, encoded=True))
+        """Return the upstream URL, preserving path and query byte for byte.
+
+        The path is anchored to a single leading slash first. `join` resolves
+        its argument against the base the way a browser resolves a link, so a
+        request path beginning with two slashes is a *protocol-relative URL*:
+        `//example.com/x` names a host, and joining it replaced the upstream
+        entirely. The proxy would then fetch `http://example.com/x` from the
+        Home Assistant machine and relay the answer -- reaching anything that
+        host can reach, including the rest of the home network and a cloud
+        instance's metadata endpoint, and doing it before any user is resolved,
+        so no login was needed.
+
+        Collapsing the slashes is what `join` already does to three or more of
+        them (`///x` resolves to `/x`), so this only makes the two-slash case
+        agree with the rest rather than changing any path Home Assistant
+        serves. Everything after the first segment is left byte for byte, which
+        the signed-path HMAC depends on.
+        """
+        raw = request.rel_url.raw_path_qs
+        return self._base.join(URL("/" + raw.lstrip("/"), encoded=True))
 
     @callback
     def _request_headers(self, request: web.Request) -> CIMultiDict[str]:

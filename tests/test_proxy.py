@@ -22,6 +22,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockUser
+from yarl import URL
 
 from custom_components.ha_rbac.catalog import Catalog
 from custom_components.ha_rbac.const import ROLE_READ_ONLY, TIER_ADMIN
@@ -936,3 +937,52 @@ async def test_a_denial_never_reaches_a_restricted_subscriber(
     assert any(
         frame.get("event", {}).get("event_type") == "state_changed" for frame in seen
     ), "precondition: the subscription really was streaming"
+
+
+async def test_a_protocol_relative_path_cannot_redirect_the_upstream(
+    proxy_env: dict[str, Any],
+) -> None:
+    """The proxy must only ever fetch from the host it was configured with.
+
+    `join` resolves its argument the way a browser resolves a link, so a
+    request path beginning with two slashes is a protocol-relative URL naming
+    a host: `//example.com/x` replaced the upstream outright. The proxy then
+    fetched `http://example.com/x` from the Home Assistant machine and relayed
+    the answer -- reaching anything that machine can reach, the rest of the
+    home network and a cloud instance's metadata endpoint included.
+
+    It happens in `_upstream_url`, before any user is resolved, so it needs no
+    login at all. Driven through a real socket rather than a mocked request,
+    because aiohttp's test helper parses `//example.com/x` into a host and a
+    path of `/x` and so cannot reproduce what the server actually receives.
+    """
+    proxy = proxy_env["proxy"]
+    upstream = proxy._base.host
+    seen: list[str] = []
+    original = proxy._upstream_url
+
+    def _record(request: Any) -> Any:
+        url = original(request)
+        seen.append(str(url))
+        return url
+
+    proxy._upstream_url = _record
+    base = proxy_env["base"].rsplit(":", 1)[0].removeprefix("http://")
+    port = int(proxy_env["base"].rsplit(":", 1)[1])
+
+    for target in ("//example.com/x", "///example.com/x", "//example.com:80/y?a=b"):
+        reader, writer = await asyncio.open_connection(base, port)
+        writer.write(
+            f"GET {target} HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        with contextlib.suppress(TimeoutError, OSError):
+            await asyncio.wait_for(reader.read(64), timeout=3)
+        writer.close()
+        with contextlib.suppress(OSError):
+            await writer.wait_closed()
+
+    proxy._upstream_url = original
+    assert seen, "precondition: the requests reached the proxy"
+    for url in seen:
+        assert URL(url).host == upstream, f"upstream was redirected to {url}"
