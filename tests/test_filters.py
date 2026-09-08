@@ -1,5 +1,7 @@
 """Tests for response filtering."""
 
+import json
+
 from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.core import HomeAssistant
 
@@ -605,3 +607,112 @@ async def test_media_that_is_not_an_entity_is_left_alone(
         },
     )
     assert [child["title"] for child in result["children"]] == ["song.mp3"]
+
+
+def _hiding(hass: HomeAssistant, hidden: dict[str, set[str]]) -> FilterContext:
+    """Return a context hiding named attributes on specific entities.
+
+    Targeted the way a real rule is -- "hide latitude on person.jane" -- so a
+    filter that loses the entity id cannot match it, which is the bug.
+    """
+    return FilterContext(
+        hass,
+        lambda entity_id, key: True,
+        None,
+        lambda entity_id, name: name in hidden.get(entity_id, set()),
+    )
+
+
+async def test_history_hides_attributes_a_targeted_rule_names(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-px8f-g9qh-j6vc: history is where the entity is not in the sample.
+
+    A compressed history sample carries only `s`, `a`, `lu` and `lc`, keyed by
+    entity id one level up, so the generic walk recovered no entity id and
+    stripped attributes with `None`. Only a rule written against no entity or
+    domain in particular matches that, so "hide latitude and longitude on
+    person.jane" was silently skipped for history while working correctly for
+    `get_states` and `subscribe_entities` -- the location a role was written to
+    withhold came back in full through a different command.
+    """
+    ctx = _hiding(hass, {"person.jane": {"latitude", "longitude"}})
+    states = {
+        "person.jane": [
+            {
+                "s": "home",
+                "a": {"latitude": 51.5, "longitude": -0.1, "icon": "x"},
+                "lu": 1,
+            }
+        ],
+        "light.kitchen": [{"s": "on", "a": {"brightness": 5}, "lu": 2}],
+    }
+
+    result = REGISTRY.filter_result("history/history_during_period", ctx, states)
+    assert result["person.jane"][0]["a"] == {"icon": "x"}
+    assert result["light.kitchen"][0]["a"] == {"brightness": 5}, "untouched"
+
+    event = REGISTRY.filter_event(
+        "history/stream", ctx, {"states": states, "start_time": 1, "end_time": 2}
+    )
+    assert event["states"]["person.jane"][0]["a"] == {"icon": "x"}
+    assert event["start_time"] == 1, "the frame around it survives"
+
+
+async def test_history_drops_an_entity_the_role_cannot_read(
+    hass: HomeAssistant,
+) -> None:
+    """An entity id with an empty history still says the entity exists."""
+    result = REGISTRY.filter_result(
+        "history/history_during_period",
+        _ctx(hass, {"lock.front"}),
+        {
+            "lock.front": [{"s": "locked", "a": {}, "lu": 1}],
+            "light.kitchen": [{"s": "on", "a": {}, "lu": 1}],
+        },
+    )
+    assert set(result) == {"light.kitchen"}
+
+
+async def test_an_event_naming_only_an_area_is_judged_by_it(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-px8f-g9qh-j6vc: the walk knew entity ids and nothing else.
+
+    Home Assistant fires `call_service` with the call's *original* target,
+    before it is resolved, so the payload names an area rather than any entity.
+    `device_id`, `area_id`, `label_id` and `floor_id` are first-class on the
+    request side and were not recognised here at all, so a role subscribed to
+    events could watch a service being invoked against an area containing
+    nothing it may see.
+    """
+    from homeassistant.helpers import area_registry as ar  # noqa: PLC0415
+    from homeassistant.helpers import entity_registry as er  # noqa: PLC0415
+
+    areas = ar.async_get(hass)
+    bedroom = areas.async_get_or_create("Bedroom")
+    entities = er.async_get(hass)
+    entry = entities.async_get_or_create("lock", "demo", "bed1")
+    entities.async_update_entity(entry.entity_id, area_id=bedroom.id)
+
+    ctx = _ctx(hass, {entry.entity_id})
+    event = {
+        "event_type": "call_service",
+        "data": {"domain": "lock", "service": "unlock", "service_data": {}},
+        "target": {"area_id": bedroom.id},
+    }
+
+    # The object naming the area goes, the same way one naming a denied entity
+    # does: the walk drops the object that carries the reference, not the frame
+    # around it. What is left no longer says which area, or that it exists.
+    filtered = prune(ctx, event)
+    assert "target" not in filtered
+    assert bedroom.id not in json.dumps(filtered)
+
+    # An area holding something readable is not hidden, and neither is a
+    # reference that resolves to no Home Assistant resource at all -- a
+    # `device_id` in a Z-Wave payload is a Z-Wave node id, not an HA device.
+    assert "target" in prune(_ctx(hass, set()), event)
+    assert prune(ctx, {"device_id": "a-zwave-node-id"}) == {
+        "device_id": "a-zwave-node-id"
+    }
