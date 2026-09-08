@@ -283,6 +283,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         await proxy.async_start()
         data.proxy = proxy
+        # The proxy is the real entry point on `proxy_port` from here on,
+        # whether this integration moved Home Assistant's own listener or the
+        # person running it did that by hand -- either way the auto-detected
+        # internal URL, if nothing overrides it, would otherwise still name
+        # Home Assistant's own port.
+        discovery.async_correct_internal_url(hass, proxy_port)
         if await _confirm_move():
             # Only once the move is permanent. Until then Home Assistant may
             # still return to the port it came from, and an advertisement
