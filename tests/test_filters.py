@@ -609,7 +609,6 @@ async def test_media_that_is_not_an_entity_is_left_alone(
     assert [child["title"] for child in result["children"]] == ["song.mp3"]
 
 
-<<<<<<< HEAD
 def _hiding(hass: HomeAssistant, hidden: dict[str, set[str]]) -> FilterContext:
     """Return a context hiding named attributes on specific entities.
 
@@ -717,7 +716,8 @@ async def test_an_event_naming_only_an_area_is_judged_by_it(
     assert prune(ctx, {"device_id": "a-zwave-node-id"}) == {
         "device_id": "a-zwave-node-id"
     }
-=======
+
+
 async def test_a_custom_card_key_naming_an_entity_is_scrubbed(
     hass: HomeAssistant,
 ) -> None:
@@ -752,4 +752,3 @@ async def test_a_custom_card_key_naming_an_entity_is_scrubbed(
 
     assert "camera.bedroom" not in json.dumps(result)
     assert "camera.hall" in json.dumps(result), "a camera they may see stays"
->>>>>>> origin/security/bind-camera-references
