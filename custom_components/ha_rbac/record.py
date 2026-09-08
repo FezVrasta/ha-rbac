@@ -146,12 +146,20 @@ def apply(role: dict[str, object], recording: Recording) -> dict[str, object]:
 
     if recording.apps:
         apps = dict(role.get("apps") or {})
-        # Apps are held as a denial list, so granting one is removing it.
+        # Apps are held as a denial list, so granting one is usually just
+        # removing it. But once a role also holds an allow whitelist,
+        # app_allowed() requires an explicit match against *that* list --
+        # removing a denial does nothing for an app the whitelist never
+        # named. An empty allow list means "everything not denied" and has
+        # to stay empty rather than being narrowed to only what was seen.
         apps["deny"] = [
             url_path
             for url_path in (apps.get("deny") or [])
             if url_path not in recording.apps
         ]
+        existing_allow = apps.get("allow") or []
+        if existing_allow:
+            apps["allow"] = sorted(set(existing_allow) | recording.apps)
         changes["apps"] = apps
 
     if recording.capabilities:
@@ -188,6 +196,14 @@ def _merged_entities(role: dict[str, object], recording: Recording) -> dict[str,
     return allow
 
 
+def _permissions_for(hass: HomeAssistant, role: dict[str, object]) -> Permissions:
+    """Compile a role the way still_blocked/blocked_apps need to check it."""
+    compiled = compile_role(
+        hass, role, PermissionLookup(er.async_get(hass), dr.async_get(hass))
+    )
+    return Permissions(roles=[compiled])
+
+
 @callback
 def still_blocked(
     hass: HomeAssistant, role: dict[str, object], recording: Recording
@@ -200,12 +216,26 @@ def still_blocked(
     quietly undoing a decision somebody made on purpose, which is worse -- so
     it is reported and left to them.
     """
-    compiled = compile_role(
-        hass, role, PermissionLookup(er.async_get(hass), dr.async_get(hass))
-    )
-    permissions = Permissions(roles=[compiled])
+    permissions = _permissions_for(hass, role)
     return sorted(
         entity_id
         for entity_id, key in recording.entities.items()
         if not permissions.check_entity(entity_id, key)
+    )
+
+
+@callback
+def blocked_apps(
+    hass: HomeAssistant, role: dict[str, object], recording: Recording
+) -> list[str]:
+    """Return the recorded apps the role still cannot open, after applying.
+
+    Same reasoning as still_blocked, and for the same reason it cannot be
+    folded into that check: apply() only ever grows a role's own apps.allow,
+    so a deny elsewhere in the role, or an allow list left empty on purpose,
+    can still refuse an app that was just recorded.
+    """
+    permissions = _permissions_for(hass, role)
+    return sorted(
+        url_path for url_path in recording.apps if not permissions.app_allowed(url_path)
     )

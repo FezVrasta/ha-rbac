@@ -47,6 +47,7 @@ what an LLM can do in your home.
 | **How much** | Look only, or look and touch. |
 | **What stays private** | Hide details: where someone is, a door code, a serial number. |
 | **Where they can go** | Which dashboards, add-ons and screens are in their sidebar. |
+| **Which options** | On a dropdown of people or modes, the ones they may choose. *The kids can announce as themselves, not as you.* |
 | **When** | Days and hours. *A cleaner, weekdays 9 to 5. A babysitter, Friday evenings.* |
 | **What they can change** | Nothing, everything, or one part of the settings: automations, dashboards, helpers, users, backups. |
 
@@ -230,6 +231,23 @@ trim another. [The precise rule is in DESIGN.md](https://github.com/FezVrasta/ha
 </details>
 
 <details>
+<summary><strong>Does a schedule limit how far back someone can look?</strong></summary>
+
+<br>
+
+No. A schedule decides **when the role is in force**, not which slice of the
+past it can read. Give a cleaner weekday mornings and, during those mornings,
+they can pull the full history of every entity the role lets them see —
+including the evenings and weekends they were never here for.
+
+So a schedule is the right tool for "only while they're working" and the wrong
+one for "only what happened while they were working". If someone shouldn't see
+an entity's past, don't grant the entity: history is filtered by *what* the
+role can reach, and hidden entities are absent from it entirely.
+
+</details>
+
+<details>
 <summary><strong>Isn't this security by obscurity?</strong></summary>
 
 <br>
@@ -310,6 +328,26 @@ integration behaves the same way as removing it.
 Yes, with nothing to reconfigure: your reverse proxy already points at `8123`,
 and that's still where this answers. Real client addresses survive the extra
 hop, because it appends to the `X-Forwarded-For` chain rather than replacing it.
+
+</details>
+
+<details>
+<summary><strong>What if Home Assistant holds the HTTPS certificate itself?</strong></summary>
+
+<br>
+
+Then this can't be installed, and it says so rather than trying. If you've set
+**SSL certificate** and **SSL key** under Settings > System > Network, Home
+Assistant is the thing terminating TLS. This proxy speaks plain HTTP on both
+sides, so taking over that port would mean answering plaintext on it.
+
+To use this, move the certificate to a reverse proxy in front of Home
+Assistant — NGINX, Traefik and Caddy all do it in a few lines — and clear those
+two fields. That's the arrangement in the question above, and it needs nothing
+else.
+
+This only applies when Home Assistant itself holds the certificate. If TLS is
+already terminated somewhere else, there's nothing to change.
 
 </details>
 

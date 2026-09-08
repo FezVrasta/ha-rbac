@@ -86,6 +86,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # port was accepted, redisplayed, and silently ignored.
     config = {**entry.data, **entry.options}
 
+    # Before anything is built, and long before anything is staged. The config
+    # flow refuses this too, but a certificate can be added to an instance that
+    # was set up without one, and the move is what turns that into an outage:
+    # it would take the port Home Assistant answers HTTPS on and start
+    # answering plaintext there. Refusing setup is the fail-closed direction --
+    # a proxy that came up here would forward plaintext to a TLS listener and
+    # serve nothing but errors, while looking installed.
+    if http_config.terminates_tls(hass):
+        raise ConfigEntryNotReady(
+            "Home Assistant is serving HTTPS itself, and this proxy speaks "
+            "plain HTTP on both sides, so it cannot sit in front of it. Either "
+            "move the certificate to a reverse proxy in front of Home "
+            "Assistant and clear SSL certificate under Settings > System > "
+            "Network, or remove this integration. This is not the same as "
+            "NGINX, Traefik or Cloudflare terminating TLS for you, which needs "
+            "no change and keeps working"
+        )
+
     store = RbacStore(hass)
     await store.async_load()
 

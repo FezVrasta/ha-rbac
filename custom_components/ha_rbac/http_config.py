@@ -22,7 +22,7 @@ import logging
 from ipaddress import ip_address, ip_network
 from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 
 _LOGGER = logging.getLogger(__name__)
@@ -185,6 +185,33 @@ def is_aligned(hass: HomeAssistant, upstream_port: int) -> bool:
         and all(_is_loopback_host(host) for host in hosts)
         and getattr(http, "server_port", None) == upstream_port
     )
+
+
+@callback
+def terminates_tls(hass: HomeAssistant) -> bool:
+    """Return True if Home Assistant is serving HTTPS itself.
+
+    The proxy speaks plain HTTP on both sides: it listens without an SSL context
+    and builds its upstream URL with `scheme="http"`. So an instance holding its
+    own certificate cannot be sat in front of. Moving it would take the port it
+    answers HTTPS on and start answering plaintext there, while forwarding
+    plaintext to a listener that expects TLS -- a mismatch at both ends, and an
+    outage until Home Assistant's own five-minute revert undoes it.
+
+    Read from the running server rather than from the store, for the same reason
+    `is_aligned` is: the store holds what was set under Settings > System >
+    Network, and `ssl_certificate` is just as often set in `configuration.yaml`,
+    where the store never sees it. What the server is actually doing is the
+    question.
+
+    This is not the reverse-proxy case. NGINX, Traefik or Cloudflare terminating
+    TLS and forwarding to Home Assistant over HTTP leaves `ssl_certificate`
+    unset here, which is why that setup keeps working unchanged.
+    """
+    http = getattr(hass, "http", None)
+    if http is None:
+        return False
+    return bool(getattr(http, "ssl_certificate", None))
 
 
 async def async_can_manage(hass: HomeAssistant) -> bool:

@@ -47,6 +47,10 @@ const LOCATION_MODES = [
 ];
 
 // Where each kind of exception lives in a stored policy.
+// The domains whose entities carry a list of options a rule can narrow. Kept
+// in step with SELECT_DOMAINS in decide.py.
+const SELECT_DOMAINS = ["input_select", "select"];
+
 const TARGETS = [
   { value: "area_ids", label: "Areas", block: "entities", selector: { area: { multiple: true } } },
   { value: "domains", label: "Domains", block: "entities", selector: null },
@@ -317,6 +321,15 @@ function readSchedule(role) {
   return rules;
 }
 
+/** Read a role's choices section into editable rows. */
+function readChoiceRules(role) {
+  return ((role.choices || {}).rules || []).map((rule) => ({
+    target: rule.target || "domains",
+    ids: [...(rule.ids || [])],
+    options: [...(rule.options || [])],
+  }));
+}
+
 /** Read a role's attribute section into editable rows. */
 function readAttributeRules(role) {
   const attributes = role.attributes || {};
@@ -555,6 +568,7 @@ class HaRbacPanel extends HTMLElement {
           tierAllow: [...((role.tiers || {}).allow || [])],
           tierDeny: [...((role.tiers || {}).deny || [])],
           attrRules: readAttributeRules(role),
+          choiceRules: readChoiceRules(role),
         }
       : null;
   }
@@ -749,6 +763,23 @@ class HaRbacPanel extends HTMLElement {
         </div>
       </ha-expansion-panel>
 
+      <ha-expansion-panel data-section="choices" data-title="Choices on a select"
+        header="Choices on a select">
+        <div class="card-content">      <p class="hint">Being allowed to work a
+        dropdown is being allowed to pick anything on it. Where the options are
+        people &mdash; who is announcing, whose room this is &mdash; that is
+        usually too much. Pick the options this role may choose and the rest are
+        refused, while the entity itself stays as permitted as you left it
+        above. The list offered is what those selects say they hold; an option
+        is matched exactly, so pick rather than type wherever you can. Leave a
+        select unnamed here and nothing about it changes.</p>
+      <div id="choice-rules"></div>
+      <div class="actions">
+        <ha-button id="add-choice" ${locked ? "disabled" : ""}>Limit a select</ha-button>
+      </div>
+        </div>
+      </ha-expansion-panel>
+
       <ha-expansion-panel data-section="admin" data-title="Administration: what this role can change"
         header="Administration: what this role can change">
         <div class="card-content">      <p class="hint">Everything in this section is an administrator's job.
@@ -913,6 +944,7 @@ class HaRbacPanel extends HTMLElement {
     this._mountLocation(host.querySelector("#location"), locked);
     this._mountRules(host.querySelector("#rules"), locked);
     this._mountAttrRules(host.querySelector("#attr-rules"), locked);
+    this._mountChoiceRules(host.querySelector("#choice-rules"), locked);
   }
 
   /**
@@ -1085,6 +1117,18 @@ class HaRbacPanel extends HTMLElement {
             ` but a deny rule on this role still overrules ${one ? "it" : "them"}:` +
             ` ${named}${rest > 0 ? ` and ${rest} more` : ""}.`;
         }
+        // The same for screens. Granting an app only ever grows this role's own
+        // allow list, so a denial on it still wins, and a sidebar that is still
+        // missing the screen is a worse way to find that out.
+        const blockedApps = result.blocked_apps || [];
+        if (blockedApps.length) {
+          const one = blockedApps.length === 1;
+          message +=
+            ` ${one ? "One screen is" : `${blockedApps.length} screens are`}` +
+            ` still denied by a rule on this role:` +
+            ` ${blockedApps.slice(0, 5).join(", ")}` +
+            `${blockedApps.length > 5 ? ` and ${blockedApps.length - 5} more` : ""}.`;
+        }
       },
       () => message
     );
@@ -1136,6 +1180,10 @@ class HaRbacPanel extends HTMLElement {
       case "details": {
         const rules = draft.attrRules.filter((r) => r.names.length).length;
         return rules ? `${rules} rule${rules === 1 ? "" : "s"}` : "Nothing hidden";
+      }
+      case "choices": {
+        const rules = draft.choiceRules.filter((r) => r.options.length).length;
+        return rules ? `${rules} select${rules === 1 ? "" : "s"}` : "Anything on any";
       }
       case "admin": {
         if ((draft.tiers || {}).max === "admin") return "A full administrator";
@@ -1418,6 +1466,113 @@ class HaRbacPanel extends HTMLElement {
     return button;
   }
 
+  _mountChoiceRules(host, locked) {
+    if (!host) return;
+    host.innerHTML = "";
+    host.appendChild(
+      this._fallbackRow(
+        "Every option",
+        "Free to choose",
+        "Unless a rule below narrows it"
+      )
+    );
+    this._draft.choiceRules.forEach((rule, index) => {
+      host.appendChild(this._choiceRow(rule, index, locked));
+    });
+  }
+
+  /**
+   * The options the selects a choice rule targets actually offer.
+   *
+   * Read off the entities rather than typed, because a rule is matched
+   * exactly: "jan" where the select says "Jan" is a rule that reads as
+   * restricting one option and in fact permits none, and neither saving it nor
+   * being refused by it says so. The options are the shortest list in the
+   * house and the panel already has them.
+   *
+   * Kept in the order each select declares, which is the order its dropdown
+   * shows. A target the panel cannot resolve to entities on its own -- an
+   * area, a label, a floor -- offers every select's options instead, and the
+   * field takes a value that is on no list either way.
+   */
+  _optionsOffered(rule) {
+    const states = (this._hass || {}).states || {};
+    const isSelect = (id) => SELECT_DOMAINS.includes(id.split(".")[0]);
+
+    let ids;
+    if (rule.target === "entity_ids") {
+      ids = rule.ids;
+    } else if (rule.target === "domains") {
+      ids = Object.keys(states).filter((id) => rule.ids.includes(id.split(".")[0]));
+    } else {
+      ids = Object.keys(states).filter(isSelect);
+    }
+
+    const offered = [];
+    const add = (option) => {
+      if (typeof option === "string" && option && !offered.includes(option)) {
+        offered.push(option);
+      }
+    };
+    ids.forEach((id) => (((states[id] || {}).attributes || {}).options || []).forEach(add));
+    // Whatever the rule already says stays on the list even if no select
+    // offers it now, or opening the editor would quietly drop it.
+    rule.options.forEach(add);
+    return offered;
+  }
+
+  _choiceRow(rule, index, locked) {
+    const row = document.createElement("div");
+    row.className = "rule deny";
+
+    const target = this._select(TARGETS, rule.target, locked, "Applies to", (value) => {
+      rule.target = value;
+      rule.ids = [];
+      this._mountChoiceRules(this.shadowRoot.getElementById("choice-rules"), locked);
+    });
+
+    const remount = () =>
+      this._mountChoiceRules(this.shadowRoot.getElementById("choice-rules"), locked);
+
+    const picker = document.createElement("div");
+    picker.className = "picker";
+    // Which selects the rule covers decides what there is to choose from, so
+    // the option field is rebuilt whenever that changes.
+    picker.appendChild(this._pickerFor(rule, locked, remount));
+
+    const options = document.createElement("ha-selector");
+    options.hass = this._hass;
+    options.selector = {
+      select: {
+        multiple: true,
+        // A target the panel cannot resolve to entities still has to be
+        // expressible, and so does an option a select does not offer yet.
+        custom_value: true,
+        options: this._optionsOffered(rule).map((o) => ({ value: o, label: o })),
+      },
+    };
+    options.label = "Options they may choose";
+    options.required = false;
+    options.value = rule.options.slice();
+    options.disabled = locked;
+    options.addEventListener("value-changed", (event) => {
+      event.stopPropagation();
+      const value = event.detail.value;
+      rule.options = Array.isArray(value) ? value : value ? [value] : [];
+    });
+
+    const remove = this._removeButton(locked, () => {
+      this._draft.choiceRules.splice(index, 1);
+      this._mountChoiceRules(this.shadowRoot.getElementById("choice-rules"), locked);
+    });
+
+    target.classList.add("f-target");
+    options.classList.add("f-detail");
+    remove.classList.add("f-remove");
+    row.append(target, picker, options, remove);
+    return row;
+  }
+
   _attrRow(rule, index, locked) {
     const row = document.createElement("div");
     row.className = "rule deny";
@@ -1488,7 +1643,7 @@ class HaRbacPanel extends HTMLElement {
     return row;
   }
 
-  _pickerFor(rule, locked) {
+  _pickerFor(rule, locked, onChange) {
     const target = TARGETS.find((t) => t.value === rule.target);
 
     // Domains have no Home Assistant picker, so one is built from the domains
@@ -1513,6 +1668,7 @@ class HaRbacPanel extends HTMLElement {
       rule.ids = Array.isArray(value) ? value : value ? [value] : [];
       this._refreshSeesNothing();
       this._syncRaw();
+      if (onChange) onChange();
     });
     return el;
   }
@@ -1790,6 +1946,10 @@ class HaRbacPanel extends HTMLElement {
       this._draft.schedule.push({ days: [], start: "", end: "" });
       this._mountSchedule(root.getElementById("schedule"), false);
     });
+    on("add-choice", () => {
+      this._draft.choiceRules.push({ target: "entity_ids", ids: [], options: [] });
+      this._mountChoiceRules(root.getElementById("choice-rules"), false);
+    });
     on("add-attr", () => {
       this._draft.attrRules.push({ target: "domains", ids: [], names: [] });
       this._mountAttrRules(root.getElementById("attr-rules"), false);
@@ -1880,6 +2040,17 @@ class HaRbacPanel extends HTMLElement {
             names: rule.names,
           })),
       },
+      choices: {
+        // A rule naming no option would read as "nothing may be chosen", which
+        // the deny side says more clearly, so it is not written at all.
+        rules: this._draft.choiceRules
+          .filter((rule) => rule.options.length)
+          .map((rule) => ({
+            target: rule.target,
+            ids: rule.ids,
+            options: rule.options,
+          })),
+      },
       schedule: {
         // Written as a list, and the older inline window is cleared so a role
         // saved after an upgrade does not carry both shapes at once.
@@ -1964,6 +2135,7 @@ class HaRbacPanel extends HTMLElement {
           capabilities: source.capabilities,
           apps: source.apps,
           attributes: source.attributes,
+          choices: source.choices,
           schedule: source.schedule,
         },
       });

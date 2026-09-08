@@ -195,6 +195,33 @@ permissions are cached on the user *and* on which of their roles are currently
 in force, and a websocket re-resolves them per frame. A connection stays open
 for hours, which is the same span a schedule covers.
 
+## Choices on a select
+
+Entity permission is the wrong granularity for a select whose options are
+people. Control of `input_select.announcing` is control of every name on it, so
+a role that may announce for one person can announce as another. A role can
+therefore narrow the *options* on the selects it names, leaving the entity
+grant alone.
+
+Three ways to reach an option, and the gate judges all three:
+
+- `select_option` names the one it wants, which is checked against the rule.
+- `select_next`, `select_previous`, `select_first` and `select_last` name none.
+  Where they land depends on where the select already is, so there is no way to
+  judge them without tracking its position, and guessing would guess in the
+  permissive direction. They are refused outright on a covered entity.
+- `set_options` rewrites the list itself, which would let a forbidden option be
+  made permitted first. Also refused.
+
+The payload is walked rather than read at the top level, because
+`execute_script` carries its calls in a sequence. A payload naming two covered
+selects and one option is judged as asking for that option on both: matching
+each call to its own target is more precision than the walk has, and refusing
+is the direction to be wrong in.
+
+An entity no rule covers is untouched, and a role with no rules never enters
+the gate.
+
 ## Multiple roles
 
 A user can hold more than one role at once. Each of the user's active roles
@@ -394,6 +421,16 @@ rather than ingress alone.
   for one does not match the other, and denying only the command left the
   service open until v0.15.1. [ASSIST.md](ASSIST.md) is what enforcing it rather
   than refusing it would take.
+- **A schedule bounds when, not when-from.** `active_at` asks whether a role is
+  in force *now*; nothing consults it about the period a request asks about. So
+  a role scheduled for Tuesday mornings is unrestricted in time while it is
+  active, and can read the whole recorded history of every entity it may see.
+  History is filtered by *what* the role reaches, through the same walk as any
+  other response, so a hidden entity is absent from it — but a visible one is
+  visible for all of its past. Scoping history to a role's windows would mean
+  filtering individual samples by timestamp on the largest responses Home
+  Assistant sends, and deciding what "its windows" means for a recurring
+  schedule; neither is settled. Raised as #37.
 - **Timing and existence oracles.** A denied entity is distinguishable from one
   that does not exist.
 - **Out-of-band capability URLs.** A signed path minted for the read-only

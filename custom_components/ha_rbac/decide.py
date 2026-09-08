@@ -148,6 +148,64 @@ USER_MESSAGES = {
 DEFAULT_USER_MESSAGE = "You do not have permission to do that."
 
 
+# Selects, and the services that move them. `select_option` names the option it
+# wants; the cycling four do not name one at all and would walk to any option in
+# the list, which is the same reach by another route.
+SELECT_DOMAINS = frozenset({"input_select", "select"})
+CHOOSE_SERVICE = "select_option"
+CYCLE_SERVICES = frozenset(
+    {"select_next", "select_previous", "select_first", "select_last"}
+)
+# Rewrites the list of options itself, so a rule naming permitted options could
+# be satisfied by first making the forbidden one permitted.
+REWRITE_SERVICE = "set_options"
+
+
+def _select_services(node: Any, depth: int = 0) -> "list[tuple[str, str]]":
+    """Return every (domain, service) on a select that a payload invokes.
+
+    Walked rather than read off the top level, because `execute_script` carries
+    its calls in a sequence and a role allowed to run one could otherwise put
+    the call it wanted inside it.
+    """
+    if depth > MAX_WALK_DEPTH:
+        return [("", "")]
+    found: list[tuple[str, str]] = []
+    if isinstance(node, dict):
+        for key in SERVICE_KEYS:
+            value = node.get(key)
+            if not isinstance(value, str):
+                continue
+            domain, _, service = value.partition(".")
+            if not service:
+                domain, service = str(node.get("domain") or ""), value
+            if domain in SELECT_DOMAINS:
+                found.append((domain, service))
+        for value in node.values():
+            found.extend(_select_services(value, depth + 1))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(_select_services(item, depth + 1))
+    return found
+
+
+def _requested_options(node: Any, depth: int = 0) -> set[str]:
+    """Return every value a payload offers as the option to select."""
+    if depth > MAX_WALK_DEPTH:
+        return set()
+    found: set[str] = set()
+    if isinstance(node, dict):
+        option = node.get("option")
+        if isinstance(option, str):
+            found.add(option)
+        for value in node.values():
+            found |= _requested_options(value, depth + 1)
+    elif isinstance(node, list):
+        for item in node:
+            found |= _requested_options(item, depth + 1)
+    return found
+
+
 @dataclass(slots=True)
 class Decision:
     """The verdict on one request, and why."""
@@ -169,6 +227,60 @@ class Decision:
             self.resources = []
         if not self.allowed and not self.message:
             self.message = USER_MESSAGES.get(self.reason, DEFAULT_USER_MESSAGE)
+
+
+# How an entity says which other entities it acts on. Every group platform
+# publishes its members as `entity_id`, and so does a stored scene -- the list
+# of what it puts back. `group_members` is the same thing for a speaker group.
+MEMBER_ATTRIBUTES = ("entity_id", "group_members")
+
+
+@callback
+def _expand_members(hass: HomeAssistant, entities: set[str]) -> set[str]:
+    """Add the entities that working a group or a scene reaches through it.
+
+    Home Assistant expands an old-style `group.` entity before the service runs,
+    which is why `expand_entity_ids` is enough for those. Nothing expands the
+    rest: a group helper is an ordinary `light.` or `media_player.` entity whose
+    own handler forwards the call to its members, and `scene.turn_on` puts back
+    whatever the scene stored. Both happen inside Home Assistant, after this
+    layer has already answered, so a member reachable that way was never judged
+    -- and a light denied outright went off when the group it sits in was
+    switched, a read-only select took a new value from a scene, and a read-only
+    speaker took a new volume from the group above it.
+
+    Read off the state rather than the registry because that is where every
+    group platform, the old ones and the helpers alike, publishes its members,
+    and a member that is not in the state machine is not something the call can
+    reach. Followed transitively, since a group can hold a group.
+    """
+    reached = set(entities)
+    pending = list(entities)
+    seen: set[str] = set()
+
+    while pending:
+        entity_id = pending.pop()
+        if entity_id in seen:
+            continue
+        seen.add(entity_id)
+        if (state := hass.states.get(entity_id)) is None:
+            continue
+        for attribute in MEMBER_ATTRIBUTES:
+            value = state.attributes.get(attribute)
+            if isinstance(value, str):
+                value = [value]
+            if not isinstance(value, (list, tuple, set)):
+                continue
+            for member in value:
+                if (
+                    isinstance(member, str)
+                    and member not in reached
+                    and hass.states.get(member) is not None
+                ):
+                    reached.add(member)
+                    pending.append(member)
+
+    return reached
 
 
 @callback
@@ -235,7 +347,9 @@ def expand_to_entities(hass: HomeAssistant, found: Extracted) -> set[str]:
     # is the same helper the service framework uses, so the expansion matches.
     entities.update(group_helper.expand_entity_ids(hass, entities))
 
-    return entities
+    # And the ones Home Assistant does not expand, which it reaches from inside
+    # the entity instead. Last, and over the whole set, for the same reason.
+    return _expand_members(hass, entities)
 
 
 class Decider:
@@ -394,6 +508,14 @@ class Decider:
         # check without counting as a bound, so a payload that names nothing a
         # schema recognises stays unbounded.
         entities |= entity_ids_in(payload, self._entity_exists)
+        if kind == KIND_HTTP:
+            # And an integration's own route names its own things: Frigate asks
+            # for `/recording/{camera}/...`, which is `camera.bedroom` spelled
+            # the way that integration spells it. Same resolution, same registry
+            # confirmation, so a segment naming nothing costs a failed lookup.
+            entities |= entity_ids_in(
+                self._catalog.path_variables(method, path), self._entity_exists
+            )
         key = POLICY_CONTROL if self._is_mutation(kind, name, payload) else POLICY_READ
 
         # 3. Resource gate. Every entity the request names must be permitted.
@@ -410,6 +532,19 @@ class Decider:
                 message=self._resource_message(permissions, denied, key),
                 resources=denied,
             )
+
+        # 3b. Choice gate. A role may be allowed to work a select without
+        #     being allowed to choose every option on it -- "these people may
+        #     put their own name on the announcer, and nobody else's".
+        if (
+            choice_decision := self._decide_choices(
+                permissions,
+                payload,
+                entities,
+                self._catalog.path_service(method, path) if kind == KIND_HTTP else None,
+            )
+        ) is not None:
+            return choice_decision
 
         # 4. Boundedness. A payload that names nothing, or that carries a
         #    template, does not constrain its own command.
@@ -665,6 +800,86 @@ class Decider:
             return None
         entity_id = f"{domain}.{service}"
         return entity_id if self._entity_exists(entity_id) else None
+
+    @callback
+    def _decide_choices(
+        self,
+        permissions: Permissions,
+        payload: dict[str, Any],
+        entities: set[str],
+        called: "tuple[str, str] | None" = None,
+    ) -> "Decision | None":
+        """Refuse a select the role may work but may not set to this option.
+
+        Entity permission is the wrong granularity for a select whose options
+        are people. Control of `input_select.announcing` is control of every
+        name on it, and a role that may announce for one person should not be
+        able to announce as another. So a rule narrows the options rather than
+        the entity, and the entity grant stays what it was.
+
+        Three ways to reach an option, and all three are judged. `select_option`
+        names the one it wants. The cycling four name none and would walk to any
+        option in the list, so they are refused outright for a covered entity --
+        there is no way to tell where they will land without tracking the
+        entity's current position, and guessing would be guessing in the
+        permissive direction. `set_options` rewrites the list itself, which
+        would let a forbidden option be made permitted first.
+
+        Judged against every covered entity the payload names rather than
+        matching each call to its own target: a payload naming two selects and
+        one option is asking for that option on both as far as anything here
+        can tell, and refusing is the direction to be wrong in.
+
+        `called` is the service a REST path names. `POST
+        /api/services/input_select/select_option` is the same request as a
+        `call_service` command with the two halves of the name in the URL,
+        where walking the body cannot reach them -- and a gate that read only
+        the body let one curl choose any option a role was refused.
+        """
+        if not permissions.restricts_options:
+            return None
+        calls = _select_services(payload)
+        if called is not None and called[0] in SELECT_DOMAINS:
+            calls.append(called)
+        if not calls:
+            return None
+
+        covered = {
+            entity_id: allowed
+            for entity_id in entities
+            if (allowed := permissions.options_allowed(entity_id)) is not None
+        }
+        if not covered:
+            return None
+
+        services = {service for _, service in calls}
+        blocked = services & (CYCLE_SERVICES | {REWRITE_SERVICE})
+        if blocked:
+            return Decision(
+                allowed=False,
+                reason=REASON_RESOURCE,
+                detail=(
+                    f"{', '.join(sorted(blocked))} can reach any option on "
+                    f"{', '.join(sorted(covered))}"
+                ),
+                message="You can only choose certain options there.",
+                resources=sorted(covered),
+            )
+
+        if CHOOSE_SERVICE not in services:
+            return None
+
+        permitted = set.intersection(*covered.values()) if covered else set()
+        if refused := sorted(_requested_options(payload) - permitted):
+            return Decision(
+                allowed=False,
+                reason=REASON_RESOURCE,
+                detail=f"option {', '.join(refused)} not permitted on "
+                f"{', '.join(sorted(covered))}",
+                message="You can only choose certain options there.",
+                resources=sorted(covered),
+            )
+        return None
 
     @callback
     def _observe(

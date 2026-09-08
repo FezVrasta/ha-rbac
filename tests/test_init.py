@@ -100,6 +100,50 @@ async def test_unload_releases_everything(
     assert DATA_RBAC not in hass.data
 
 
+async def test_setup_refuses_an_instance_that_terminates_tls(
+    hass: HomeAssistant, socket_enabled: None
+) -> None:
+    """Refused before anything is staged, and above all before any restart.
+
+    Reported as #29. The proxy is plaintext on both sides, so an instance
+    holding its own certificate cannot be sat in front of. Coming up anyway
+    would forward plaintext to a listener expecting TLS and serve nothing but
+    errors, while reading as installed and enforcing -- and if the move ran, it
+    would take the HTTPS port to answer plaintext on it, which is an outage
+    until Home Assistant's own revert undoes it.
+
+    The config flow refuses this too. This is the second half: a certificate
+    can be added to an instance that was set up without one.
+    """
+    for domain in ("http", "websocket_api"):
+        await async_setup_component(hass, domain, {"http": {}})
+    await hass.async_block_till_done()
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_PROXY_PORT: _free_port(),
+            CONF_BIND_ADDRESS: "127.0.0.1",
+            CONF_UPSTREAM_HOST: "127.0.0.1",
+            CONF_UPSTREAM_PORT: 8124,
+            CONF_MANAGE_HTTP: True,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        patch.object(hass.http, "ssl_certificate", "/ssl/fullchain.pem", create=True),
+        patch(
+            "custom_components.ha_rbac.http_config.async_stage", new=AsyncMock()
+        ) as stage,
+        pytest.raises(ConfigEntryNotReady, match="serving HTTPS itself"),
+    ):
+        await async_setup_entry(hass, entry)
+
+    stage.assert_not_called()
+    assert DATA_RBAC not in hass.data
+
+
 async def test_a_reload_rebinds_the_port(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -320,12 +364,17 @@ async def test_stopping_a_recording_reports_everything_it_saw(
     """
     data = hass.data[DATA_RBAC]
     role = await data.store.async_create_role(
-        {"name": "Guests", "deny": {CAT_ENTITIES: {"domains": {"lock": True}}}}
+        {
+            "name": "Guests",
+            "deny": {CAT_ENTITIES: {"domains": {"lock": True}}},
+            "apps": {"allow": [], "deny": ["config/*"], "dashboards": {}},
+        }
     )
     recording = data.recorder.start(role["id"])
     recording.note_entity("light.kitchen", POLICY_READ)
     recording.note_entity("lock.front", POLICY_READ)
     recording.apps.add("lovelace")
+    recording.apps.add("config/automation")
     recording.capabilities.add("automations")
 
     client = await hass_ws_client(hass)
@@ -339,10 +388,12 @@ async def test_stopping_a_recording_reports_everything_it_saw(
         "light.kitchen": POLICY_READ,
         "lock.front": POLICY_READ,
     }
-    assert result["seen"]["apps"] == ["lovelace"]
+    assert result["seen"]["apps"] == ["config/automation", "lovelace"]
     assert result["seen"]["capabilities"] == ["automations"]
-    # Added to the allow side, and vetoed by the role's own denial.
+    # Added to the allow side, and vetoed by the role's own denial. Both kinds
+    # are reported: an entity the deny rule overrules, and a screen it does.
     assert result["blocked"] == ["lock.front"]
+    assert result["blocked_apps"] == ["config/automation"]
 
 
 async def test_discarding_a_recording_leaves_the_role_alone(

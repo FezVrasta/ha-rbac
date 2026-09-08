@@ -28,7 +28,13 @@ from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ha_rbac import async_setup_entry, async_unload_entry
-from custom_components.ha_rbac.catalog import Catalog, build_routes
+from custom_components.ha_rbac.catalog import (
+    Catalog,
+    CommandInfo,
+    RouteInfo,
+    _url_to_pattern,
+    build_routes,
+)
 from custom_components.ha_rbac.const import (
     CONF_BIND_ADDRESS,
     CONF_PROXY_PORT,
@@ -1555,3 +1561,468 @@ async def test_a_rest_body_naming_a_resource_is_not_bound_by_its_service(
     )
     assert decision.allowed is False
     assert decision.reason == REASON_UNBOUNDED
+
+
+async def test_a_templated_target_cannot_walk_past_a_deny_rule(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-r5fr-xh67-8fwc: a one-line Jinja template defeated every denial.
+
+    A resource key was the one place a string reached the buckets without
+    passing the template check the generic walk runs on every other string, so
+    `{"entity_id": "{{ 'lock.gun_safe' }}"}` was recorded as an entity
+    literally called `{{ 'lock.gun_safe' }}`. No deny rule is written against
+    that name, and a blanket `all` allow -- the shape of the built-in User and
+    Editor roles, and of every "allow broadly, deny a few" role -- matched it
+    without ever consulting the deny side. The payload then looked bounded, so
+    it was allowed, and Home Assistant rendered the template server-side and
+    unlocked the entity the role denies.
+
+    Templates are unbounded by the rule that already exists for them. This
+    checks it holds wherever the template is written, including the one place
+    it was not being looked for.
+    """
+    hass.states.async_set("lock.gun_safe", "locked")
+    hass.states.async_set("light.hall", "on")
+    for domain in ("websocket_api", "config", "api"):
+        await async_setup_component(hass, domain, {})
+    await hass.async_block_till_done()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    decider = Decider(hass, catalog, REGISTRY)
+
+    # Allow everything, deny one thing: what the deny side is for.
+    permissions = Permissions(
+        roles=[
+            compile_role(
+                hass,
+                _role(
+                    allow={
+                        CAT_ENTITIES: {
+                            SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}
+                        }
+                    },
+                    deny={CAT_ENTITIES: {"entity_ids": {"lock.gun_safe": True}}},
+                    tiers={"max": TIER_USER, "allow": [], "deny": []},
+                ),
+                _lookup(hass),
+            )
+        ]
+    )
+    assert permissions.check_entity("light.hall", POLICY_CONTROL) is True
+    assert permissions.check_entity("lock.gun_safe", POLICY_CONTROL) is False
+
+    named = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "lock",
+            "service": "unlock",
+            "target": {"entity_id": "lock.gun_safe"},
+        },
+    )
+    assert named.allowed is False, "precondition: the direct way is refused"
+
+    for payload in (
+        {
+            "type": "execute_script",
+            "sequence": [
+                {
+                    "service": "lock.unlock",
+                    "target": {"entity_id": "{{ 'lock.gun_safe' }}"},
+                }
+            ],
+        },
+        {
+            "type": "call_service",
+            "domain": "lock",
+            "service": "unlock",
+            "target": {"entity_id": "{% if 1 %}lock.gun_safe{% endif %}"},
+        },
+        # A list under the resource key goes the same way, and a real entity
+        # sitting beside the template must not bound the call either.
+        {
+            "type": "call_service",
+            "domain": "lock",
+            "service": "unlock",
+            "target": {"entity_id": ["light.hall", "{{ 'lock.gun_safe' }}"]},
+        },
+    ):
+        decision = decider.decide(permissions, KIND_WS, payload["type"], payload)
+        assert decision.allowed is False, f"allowed: {payload}"
+        # `execute_script` is above this role's tier and is refused there
+        # first; the templated `call_service` reaches the boundedness rule,
+        # which is the gate this is about.
+        assert decision.reason in (REASON_UNBOUNDED, REASON_TIER)
+        assert "{{" not in "".join(decision.resources), (
+            "a template is not an entity id and must not be logged as one"
+        )
+
+    # Without the tier gate in the way, the boundedness rule is what refuses it.
+    templated = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "lock",
+            "service": "unlock",
+            "target": {"entity_id": "{{ 'lock.gun_safe' }}"},
+        },
+    )
+    assert templated.allowed is False
+    assert templated.reason == REASON_UNBOUNDED
+
+
+async def _camera_decider(hass: HomeAssistant) -> Decider:
+    """Return a decider on an instance with one registered camera."""
+    for domain in ("websocket_api", "config", "api"):
+        await async_setup_component(hass, domain, {})
+    await hass.async_block_till_done()
+    entities = er.async_get(hass)
+    entities.async_get_or_create(
+        "camera", "demo", "bedroom", suggested_object_id="bedroom"
+    )
+    hass.states.async_set("camera.bedroom", "recording")
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    # As Frigate registers them: its own commands, admin-gated by nothing, so
+    # the tier gate lets them through and the resource gate is what must judge.
+    for command in ("frigate/recordings/get", "frigate/events/get"):
+        catalog._commands[command] = CommandInfo(
+            command=command,
+            tier=TIER_OPEN,
+            required_resources=set(),
+            optional_resources=set(),
+            is_write=False,
+        )
+    return Decider(hass, catalog, REGISTRY)
+
+
+def _may_read_all_but(hass: HomeAssistant, denied: str) -> Permissions:
+    """Return permissions reading everything except one entity."""
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            deny={CAT_ENTITIES: {"entity_ids": {denied: True}}},
+        ),
+        _lookup(hass),
+    )
+    return Permissions(roles=[role])
+
+
+async def test_an_integrations_own_word_for_a_camera_still_names_it(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-23ch-3r34-x2hq: Frigate asks for a camera without an entity id.
+
+    An integration is free to invent its own vocabulary for something Home
+    Assistant already has an entity for. Frigate's websocket commands take
+    `{"camera": "bedroom"}` and its REST routes put the same name in a path
+    segment, so the resource gate saw a request that named nothing at all and
+    the role's deny rule for `camera.bedroom` was never consulted. The reply is
+    video, which carries no entity data of its own and is therefore streamed
+    rather than filtered, so nothing downstream caught it either.
+
+    Resolved the way every other guess here is: try it, and let the registry
+    decide. A key that is a domain qualifies its value, and `camera.bedroom`
+    counts only because it turns out to be a real entity.
+    """
+    decider = await _camera_decider(hass)
+    permissions = _may_read_all_but(hass, "camera.bedroom")
+
+    named = decider.decide(
+        permissions,
+        KIND_WS,
+        "frigate/recordings/get",
+        {"type": "frigate/recordings/get", "instance_id": "x", "camera": "bedroom"},
+    )
+    assert named.allowed is False, "the camera it asks for is denied"
+    assert named.reason == REASON_RESOURCE
+
+    plural = decider.decide(
+        permissions,
+        KIND_WS,
+        "frigate/events/get",
+        {"type": "frigate/events/get", "cameras": ["bedroom"]},
+    )
+    assert plural.allowed is False, "a list of them is spelled `cameras`"
+
+    # A camera the role may see is unaffected, and so is a value naming nothing.
+    entities = er.async_get(hass)
+    entities.async_get_or_create("camera", "demo", "hall", suggested_object_id="hall")
+    hass.states.async_set("camera.hall", "recording")
+    allowed = decider.decide(
+        permissions,
+        KIND_WS,
+        "frigate/recordings/get",
+        {"type": "frigate/recordings/get", "camera": "hall"},
+    )
+    assert allowed.allowed is True
+
+    unknown = decider.decide(
+        permissions,
+        KIND_WS,
+        "frigate/recordings/get",
+        {"type": "frigate/recordings/get", "camera": "not_a_camera"},
+    )
+    assert unknown.allowed is True, "a name that is no entity binds nothing"
+
+
+async def test_an_integrations_own_route_names_its_camera_too(
+    hass: HomeAssistant,
+) -> None:
+    """The same name, in a path segment instead of a payload.
+
+    `/api/frigate/{instance}/recording/{camera}/start/{s}/end/{e}` names
+    `camera.bedroom` in a segment called `camera`. Only segments named after a
+    Home Assistant resource key were read, so this one was invisible and the
+    request named nothing -- and the reply is `video/mp4`, which is streamed
+    rather than filtered.
+    """
+    decider = await _camera_decider(hass)
+    url = (
+        "/api/frigate/{frigate_instance_id:.+}/recording/{camera:.+}"
+        "/start/{start:[.0-9]+}/end/{end:[.0-9]*}"
+    )
+    decider._catalog._routes = [
+        RouteInfo(
+            pattern=_url_to_pattern(url),
+            url=url,
+            tiers={"get": TIER_OPEN},
+            requires_auth=True,
+        )
+    ]
+
+    decision = decider.decide(
+        _may_read_all_but(hass, "camera.bedroom"),
+        KIND_HTTP,
+        "GET /api/frigate/example/recording/bedroom/start/1/end/2",
+        {},
+    )
+    assert decision.allowed is False
+    assert decision.resources == ["camera.bedroom"], (
+        "the request has to name the camera for the deny rule to be consulted"
+    )
+
+
+async def _member_decider(hass: HomeAssistant) -> Decider:
+    """Return a decider on an instance with a light group and a scene.
+
+    The group is the helper kind -- an ordinary `light.` entity that forwards to
+    its members -- rather than an old-style `group.` entity, because those two
+    are expanded by different machinery and only the old one was covered.
+    """
+    for domain in ("websocket_api", "config", "api"):
+        await async_setup_component(hass, domain, {})
+    await async_setup_component(
+        hass,
+        "input_select",
+        {"input_select": {"announcing": {"options": ["Jan", "Federico"]}}},
+    )
+    await hass.async_block_till_done()
+
+    hass.states.async_set("light.bed_light", "on", {})
+    hass.states.async_set("light.ceiling_lights", "on", {})
+    # The two an installation gets from the helper editor and the scene editor,
+    # published the way Home Assistant publishes them.
+    hass.states.async_set(
+        "light.hall",
+        "on",
+        {"entity_id": ["light.bed_light", "light.ceiling_lights"]},
+    )
+    hass.states.async_set(
+        "scene.evening",
+        "unknown",
+        {"entity_id": ["input_select.announcing", "light.bed_light"]},
+    )
+    hass.states.async_set(
+        "media_player.speakers",
+        "playing",
+        {"group_members": ["media_player.kitchen"]},
+    )
+    hass.states.async_set("media_player.kitchen", "playing", {"volume_level": 1.0})
+    await hass.async_block_till_done()
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    return Decider(hass, catalog, REGISTRY)
+
+
+def _may_control_all_but(hass: HomeAssistant, *entity_ids: str) -> Permissions:
+    """Control of everything except these, which stay readable."""
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {
+                    SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True},
+                    "entity_ids": {
+                        entity_id: {POLICY_READ: True} for entity_id in entity_ids
+                    },
+                }
+            },
+            tiers={"max": TIER_USER, "allow": [], "deny": []},
+        ),
+        _lookup(hass),
+    )
+    return Permissions(roles=[role])
+
+
+def _call(domain: str, service: str, entity_id: str, **data: Any) -> dict[str, Any]:
+    return {
+        "type": "call_service",
+        "domain": domain,
+        "service": service,
+        "target": {"entity_id": entity_id},
+        "service_data": data,
+    }
+
+
+async def test_a_group_helper_cannot_carry_a_call_to_a_denied_member(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-6qwm-3pgq-2w7h: a read-only light went off with the group it is in.
+
+    Only an old-style `group.` entity is expanded before the service runs, and
+    that is the one this layer was resolving. A group *helper* is an ordinary
+    `light.` entity whose own handler forwards to its members from inside Home
+    Assistant, after the answer has already been given -- so the members were
+    never judged, and the group was a one-click way around any rule naming one.
+    """
+    decider = await _member_decider(hass)
+    permissions = _may_control_all_but(hass, "light.bed_light")
+
+    direct = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.bed_light"),
+    )
+    assert direct.allowed is False, "the rule works when the entity is named"
+
+    through = decider.decide(
+        permissions, KIND_WS, "call_service", _call("light", "turn_off", "light.hall")
+    )
+    assert through.allowed is False, "and has to work when the group names it"
+    assert "light.bed_light" in through.resources
+
+    # The other member is not the reason, and a group of only allowed members
+    # stays workable.
+    hass.states.async_set(
+        "light.hall_ok", "on", {"entity_id": ["light.ceiling_lights"]}
+    )
+    await hass.async_block_till_done()
+    assert decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.hall_ok"),
+    ).allowed
+
+
+async def test_a_scene_cannot_carry_a_value_to_a_denied_entity(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-8vfg-2wp7-3rh8: a read-only select took a new value from a scene.
+
+    `scene.apply` names the states it reproduces in its payload and was already
+    read. A *stored* scene names nothing -- `scene.turn_on` carries only the
+    scene -- and what it puts back is on the scene entity, which nothing looked
+    at. Activating one was a way to write any entity it had been built with.
+    """
+    decider = await _member_decider(hass)
+    permissions = _may_control_all_but(hass, "input_select.announcing")
+
+    decision = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        _call("scene", "turn_on", "scene.evening"),
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_RESOURCE
+    assert "input_select.announcing" in decision.resources
+
+
+async def test_a_speaker_group_cannot_carry_a_volume_to_a_denied_member(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-rm59-p5pc-35m5: a read-only speaker took a volume from its group.
+
+    Same shape again, under the attribute a media player uses for it. Kept as
+    its own test because it is a different attribute, and covering one of the
+    two would have read as covering both.
+    """
+    decider = await _member_decider(hass)
+    permissions = _may_control_all_but(hass, "media_player.kitchen")
+
+    decision = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        _call("media_player", "volume_set", "media_player.speakers", volume_level=0.5),
+    )
+    assert decision.allowed is False
+    assert "media_player.kitchen" in decision.resources
+
+
+async def test_a_member_list_is_followed_through_a_nested_group(
+    hass: HomeAssistant,
+) -> None:
+    """A group holding a group is one more hop to the same denied entity."""
+    decider = await _member_decider(hass)
+    hass.states.async_set("light.outer", "on", {"entity_id": ["light.hall"]})
+    await hass.async_block_till_done()
+
+    decision = decider.decide(
+        _may_control_all_but(hass, "light.bed_light"),
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.outer"),
+    )
+    assert decision.allowed is False
+    assert "light.bed_light" in decision.resources
+
+
+async def test_a_member_list_that_points_at_itself_terminates(
+    hass: HomeAssistant,
+) -> None:
+    """A cycle is a configuration mistake, not a reason to hang the proxy."""
+    decider = await _member_decider(hass)
+    hass.states.async_set("light.a", "on", {"entity_id": ["light.b"]})
+    hass.states.async_set("light.b", "on", {"entity_id": ["light.a"]})
+    await hass.async_block_till_done()
+
+    decision = decider.decide(
+        _may_control_all_but(hass, "light.bed_light"),
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.a"),
+    )
+    assert decision.allowed is True
+
+
+async def test_an_attribute_that_is_not_a_member_list_is_not_expanded(
+    hass: HomeAssistant,
+) -> None:
+    """`entity_id` naming something that is not an entity must not deny a call.
+
+    The list is confirmed against the state machine rather than trusted, so an
+    integration publishing an unrelated string under the same attribute costs a
+    failed lookup instead of a refusal nobody can explain.
+    """
+    decider = await _member_decider(hass)
+    hass.states.async_set("light.odd", "on", {"entity_id": ["not_an_entity", 7]})
+    await hass.async_block_till_done()
+
+    decision = decider.decide(
+        _may_control_all_but(hass, "light.bed_light"),
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.odd"),
+    )
+    assert decision.allowed is True

@@ -186,3 +186,35 @@ async def test_an_unrecognisable_home_assistant_is_reported_not_guessed(
         side_effect=AttributeError("moved in a later release"),
     ):
         assert await http_config.async_can_manage(hass) is False
+
+
+@pytest.mark.parametrize(
+    ("certificate", "expected"),
+    [
+        (None, False),
+        ("", False),
+        ("/ssl/fullchain.pem", True),
+    ],
+    ids=["no-certificate", "empty-certificate", "home-assistant-holds-it"],
+)
+async def test_home_assistant_terminating_tls_is_recognised(
+    hass: HomeAssistant, certificate: Any, expected: bool
+) -> None:
+    """The proxy is plaintext on both sides, so this decides whether it can run.
+
+    Read from the running server, not the store: `ssl_certificate` is as often
+    set in `configuration.yaml` as under Settings > System > Network, and the
+    store never sees the former. A reverse proxy holding the certificate
+    instead leaves this unset, which is why that arrangement keeps working.
+    """
+    server = SimpleNamespace(ssl_certificate=certificate)
+    with patch.object(hass, "http", server, create=True):
+        assert http_config.terminates_tls(hass) is expected
+
+
+async def test_tls_is_not_assumed_before_the_http_server_exists(
+    hass: HomeAssistant,
+) -> None:
+    """Answering yes with nothing to read would refuse setup on every install."""
+    with patch.object(hass, "http", None, create=True):
+        assert http_config.terminates_tls(hass) is False

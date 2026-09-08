@@ -8,9 +8,11 @@ across releases instead of rotting.
 
 import logging
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from functools import partial
+from types import CodeType
 from typing import Any
 
 from homeassistant.components.websocket_api import const as ws_const
@@ -47,14 +49,31 @@ def introspection_works() -> bool:
     silently classifying everything as open.
     """
     from homeassistant.components.websocket_api import decorators  # noqa: PLC0415
+    from homeassistant.exceptions import Unauthorized  # noqa: PLC0415
 
     def probe(hass: Any, connection: Any, msg: Any) -> None:
         """Do nothing; only its wrapper is inspected."""
+
+    def gated(request: Any) -> None:
+        """Refuse a non-administrator the way core's inline views do."""
+        if not request["hass_user"].is_admin:
+            raise Unauthorized
+
+    def branched(request: Any) -> Any:
+        """Read the same flag to choose an answer, and answer either way."""
+        return "all" if request["hass_user"].is_admin else "some"
 
     return (
         derive_tier(decorators.require_admin(probe)) == TIER_ADMIN
         and derive_tier(decorators.ws_require_user()(probe)) == TIER_USER
         and derive_tier(probe) == TIER_OPEN
+        # The second mechanism, for the views core gates without a decorator.
+        # Both halves: recognising the gate, and *not* mistaking a branch for
+        # one -- a detector that answered True to everything would read as
+        # working while making the whole REST surface administrator-only.
+        and gates_on_admin(gated)
+        and not gates_on_admin(branched)
+        and not gates_on_admin(probe)
     )
 
 
@@ -94,6 +113,73 @@ def derive_tier(handler: Any) -> str:
     if USER_WRAPPER_NAME in names:
         return TIER_USER
     return TIER_OPEN
+
+
+# How a view refuses a caller who is not an administrator. `Unauthorized` is
+# Home Assistant's own exception; the status names and their numbers cover the
+# views that answer with a bare response instead of raising.
+REFUSAL_NAMES = frozenset({"Unauthorized", "UNAUTHORIZED", "FORBIDDEN"})
+REFUSAL_CODES = frozenset({401, 403})
+ADMIN_ATTRIBUTE = "is_admin"
+
+
+def _code_objects(handler: Any) -> "Iterator[CodeType]":
+    """Yield the handler's own code and everything nested or wrapped inside it.
+
+    Comprehensions, closures and inner functions are separate code objects, and
+    a decorator puts the real body behind `__wrapped__`, so a check written in
+    any of those is only visible by walking the lot.
+    """
+    seen: set[int] = set()
+    stack: list[Any] = [handler]
+    while stack and len(seen) < 200:
+        current = stack.pop()
+        if isinstance(current, CodeType):
+            code = current
+        else:
+            if (wrapped := getattr(current, "__wrapped__", None)) is not None:
+                stack.append(wrapped)
+            code = getattr(current, "__code__", None)
+            if code is None:
+                continue
+        if id(code) in seen:
+            continue
+        seen.add(id(code))
+        yield code
+        stack.extend(c for c in code.co_consts if isinstance(c, CodeType))
+
+
+def gates_on_admin(handler: Any) -> bool:
+    """Return True if a handler refuses non-administrators in its own body.
+
+    Home Assistant marks most of its administrative surface with a decorator,
+    which `derive_tier` reads. Several core views do not: they check
+    `request["hass_user"].is_admin` inline and raise `Unauthorized` (or answer
+    401) themselves. `derive_tier` finds no decorator on those and reports the
+    handler as open, so the tier gate imposed nothing at all -- on, among
+    others, the whole Supervisor REST surface and `POST /api/states/{id}`,
+    which overwrites an entity's reported state without touching the device.
+
+    Testing for `is_admin` alone is too broad. `APIStatesView.get` reads it to
+    decide whether to filter the list it returns, and both branches answer:
+    that is a branch, not a gate, and treating it as one would make the single
+    most-used endpoint in Home Assistant administrator-only. So a refusal has
+    to appear beside it -- the shape of "not an admin, so you get nothing".
+    """
+    for code in _code_objects(handler):
+        # Globals and attributes land in `co_names`, but a name closed over
+        # from an enclosing scope -- an exception imported inside the function
+        # that defines the handler, say -- is a free variable and appears in
+        # neither. Both are the same thing to this question: a name the code
+        # refers to.
+        names = frozenset(code.co_names) | frozenset(code.co_freevars)
+        if ADMIN_ATTRIBUTE not in names:
+            continue
+        if names & REFUSAL_NAMES or REFUSAL_CODES.intersection(
+            const for const in code.co_consts if isinstance(const, int)
+        ):
+            return True
+    return False
 
 
 HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
@@ -255,7 +341,12 @@ def build_routes() -> list[RouteInfo]:
         for method in HTTP_METHODS:
             if (handler := getattr(cls, method, None)) is None:
                 continue
-            tiers[method] = derive_tier(handler)
+            tier = derive_tier(handler)
+            # A view that gates on `is_admin` in its own body carries no
+            # decorator for `derive_tier` to find, so it derives as open.
+            if tier == TIER_OPEN and gates_on_admin(handler):
+                tier = TIER_ADMIN
+            tiers[method] = tier
 
         urls = [url, *(getattr(cls, "extra_urls", None) or [])]
         for candidate in urls:
@@ -467,6 +558,26 @@ class Catalog:
             name: value
             for name, value in (match.groupdict() or {}).items()
             if value and name in RESOURCE_KEYS
+        }
+
+    @callback
+    def path_variables(self, method: str, path: str) -> dict[str, str]:
+        """Return every named segment of the matched route, resource key or not.
+
+        `path_resources` answers only for the names Home Assistant itself uses.
+        An integration registering its own route names its own things, and
+        Frigate's `/api/frigate/{instance}/recording/{camera}/...` names a
+        camera in a segment called `camera` -- a real entity, spelled the way
+        that integration spells it. Handing the raw segments to the same
+        registry-confirmed resolution the body gets is what binds the request
+        to `camera.bedroom`, so a role denying that camera is consulted.
+        """
+        if (route := self.route_for(method, path)) is None:
+            return {}
+        if (match := route.pattern.match(path)) is None:
+            return {}
+        return {
+            name: value for name, value in (match.groupdict() or {}).items() if value
         }
 
     @callback

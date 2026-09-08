@@ -13,7 +13,8 @@ from typing import Any
 from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.core import HomeAssistant
 
-from .extract import entity_candidate
+from .const import EVENT_RBAC_DENIED, KEY_ENTITY, RESOURCE_KEYS
+from .extract import Extracted, entity_candidate
 
 # Keys of the compressed state-diff protocol used by subscribe_entities.
 # Within one entity's compressed state, "a" holds its attributes; at the event
@@ -166,7 +167,33 @@ class FilterRegistry:
         return prune(ctx, payload)
 
     def filter_event(self, command: str, ctx: FilterContext, payload: Any) -> Any:
-        """Filter one streamed event, falling back to the generic walk."""
+        """Filter one streamed event, falling back to the generic walk.
+
+        Every event frame the proxy relays passes through here, whatever the
+        subscription was called, so this is where an event that must not reach
+        a filtered connection at all is dropped -- ahead of any per-command
+        filter and of the generic walk.
+
+        There is exactly one: this integration's own denial event. It carries
+        `detail`, which names commands, tiers and entity ids and is documented
+        in `decide.py` as a diagnostic that must not reach an end user, plus
+        the id and name of whoever was refused. It was reaching every
+        restricted user on the instance -- `subscribe_events` with no filter is
+        an ordinary command that every frontend session issues on load -- and
+        neither the state-changed filter nor `prune` touched it, because
+        `resources` is not a key either of them recognises and `detail` is free
+        text. So a guest could watch every refusal in the house, learn the
+        entity ids of things their own role hides entirely, and see which
+        household member attempted what.
+
+        Dropped rather than redacted: nothing a filtered connection does needs
+        it. A refused request already carries its own `message` in the reply,
+        and the deny log itself is behind an admin-only websocket command. A
+        connection that is not being filtered never reaches this code, so
+        automations and the panel are unaffected.
+        """
+        if isinstance(payload, dict) and payload.get("event_type") == EVENT_RBAC_DENIED:
+            return None
         if (func := self._event.get(command)) is not None:
             return func(ctx, payload)
         return prune(ctx, payload)
@@ -200,6 +227,45 @@ def _looks_like_entity_id(value: Any) -> bool:
     return isinstance(value, str) and value.count(".") == 1 and " " not in value
 
 
+def _container_visible(ctx: FilterContext, node: dict[str, Any]) -> bool:
+    """Return True unless this object names a container the role cannot see.
+
+    A device, area, label or floor stands for the entities inside it, so the
+    question is whether the role can read any of them. If it can read none, the
+    container is one it is not supposed to know exists, and the object naming it
+    goes. If it can read some, the object stays and the walk keeps pruning what
+    is inside it -- the same treatment an area gets everywhere else.
+
+    A reference that resolves to nothing is left alone rather than treated as
+    denied. `expand_to_entities` drops ids that are not in the registries, and a
+    `device_id` in a Z-Wave payload is a Z-Wave node id, not a Home Assistant
+    device; refusing on that basis would empty responses that name no Home
+    Assistant resource at all.
+    """
+    # Imported here because `decide` imports this module: the expansion is one
+    # already-tested implementation of "what entities does this stand for", and
+    # a second one in a security path is a second one to get wrong.
+    from .decide import expand_to_entities  # noqa: PLC0415
+
+    found = Extracted()
+    buckets = found.buckets
+    named = False
+    for key, kind in RESOURCE_KEYS.items():
+        if kind == KEY_ENTITY or (value := node.get(key)) is None:
+            continue
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, str):
+                buckets[kind].add(item)
+                named = True
+    if not named:
+        return True
+
+    entities = expand_to_entities(ctx.hass, found)
+    if not entities:
+        return True
+    return any(ctx.readable(entity_id) for entity_id in entities)
+
+
 def prune(ctx: FilterContext, node: Any) -> Any:
     """Drop anything carrying a denied entity id.
 
@@ -211,6 +277,16 @@ def prune(ctx: FilterContext, node: Any) -> Any:
     if isinstance(node, dict):
         entity_id = node.get("entity_id") or node.get(DISPLAY_ENTITY_ID)
         if _looks_like_entity_id(entity_id) and not ctx.readable(entity_id):
+            return None
+
+        # An entity id is not the only way an object names something. The
+        # request side treats `device_id`, `area_id`, `label_id` and `floor_id`
+        # as first-class, and this walk did not: an event echoing one of those
+        # rather than a resolved entity went through untouched. Home Assistant
+        # fires `call_service` with the call's *original* target, before it is
+        # resolved, so a role subscribed to events could watch a service being
+        # invoked against an area or device it has no access to at all.
+        if not _container_visible(ctx, node):
             return None
 
         # History and statistics return states in the compressed form, where
@@ -564,6 +640,28 @@ def _filter_get_services(ctx: FilterContext, result: Any) -> Any:
     }
 
 
+def _lovelace_entity_keys(node: dict[str, Any]) -> list[str]:
+    """Return the keys of one card that name entities.
+
+    The three Lovelace itself uses, plus the convention custom cards follow
+    when they add their own: a suffix of `_entity` or `_entities`. Advanced
+    Camera Card asks for `camera_entity`, and a denied camera stayed in the
+    dashboard configuration under it -- which hands over the entity id of
+    something the role hides entirely, and with it the name to go looking for
+    on that integration's own routes.
+
+    A suffix rather than a longer list, because the list is the thing this
+    project exists to avoid: a card key nobody has heard of is covered the day
+    somebody writes it, as long as it is spelled the way the others are.
+    """
+    return [
+        key
+        for key in node
+        if isinstance(key, str)
+        and (key in LOVELACE_ENTITY_KEYS or key.endswith(("_entity", "_entities")))
+    ]
+
+
 @REGISTRY.result("lovelace/config")
 def _filter_lovelace(ctx: FilterContext, result: Any) -> Any:
     """Drop cards referring to entities the role cannot read.
@@ -576,7 +674,7 @@ def _filter_lovelace(ctx: FilterContext, result: Any) -> Any:
 
     def scrub(node: Any) -> Any:
         if isinstance(node, dict):
-            for key in LOVELACE_ENTITY_KEYS:
+            for key in _lovelace_entity_keys(node):
                 value = node.get(key)
                 if _looks_like_entity_id(value) and not ctx.readable(value):
                     return None
@@ -674,3 +772,57 @@ def strip_denied_addons(ctx: FilterContext, endpoint: str, result: Any) -> Any:
         }
 
     return {**result, "data": cleaned} if wrapped else cleaned
+
+
+def _filter_history_states(ctx: FilterContext, states: Any) -> Any:
+    """Filter a mapping of entity id -> that entity's compressed states.
+
+    History is the one response shape where the entity a sample belongs to is
+    not in the sample. Each one carries only `s`, `a`, `lu`, `lc`, keyed by
+    entity id one level up, so the generic walk recovered no entity id and
+    stripped attributes with `None` -- which matches only the rules written
+    against no entity or domain in particular. A rule scoped to an entity or a
+    domain, "hide latitude and longitude on person.*", was silently skipped for
+    history while working correctly for `get_states` and `subscribe_entities`.
+
+    Here the key is the entity id, so it is threaded down into the strip and the
+    rule matches. Unreadable entities go entirely rather than being emptied: an
+    entity id with a zero-length history still says the entity exists.
+    """
+    if not isinstance(states, dict):
+        return prune(ctx, states)
+    out: dict[str, Any] = {}
+    for entity_id, samples in states.items():
+        if _looks_like_entity_id(entity_id) and not ctx.readable(entity_id):
+            continue
+        named = entity_id if _looks_like_entity_id(entity_id) else None
+        if not ctx.hides_attributes or not isinstance(samples, list):
+            out[entity_id] = samples
+            continue
+        out[entity_id] = [
+            {
+                **sample,
+                COMPRESSED_ATTRIBUTES: ctx.strip_attributes(
+                    named, sample[COMPRESSED_ATTRIBUTES]
+                ),
+            }
+            if isinstance(sample, dict)
+            and isinstance(sample.get(COMPRESSED_ATTRIBUTES), dict)
+            else sample
+            for sample in samples
+        ]
+    return out
+
+
+@REGISTRY.result("history/history_during_period")
+def _filter_history_result(ctx: FilterContext, result: Any) -> Any:
+    """Filter the entity-keyed mapping the result is."""
+    return _filter_history_states(ctx, result)
+
+
+@REGISTRY.event("history/stream", "history/history_during_period")
+def _filter_history_event(ctx: FilterContext, event: Any) -> Any:
+    """Filter the same mapping, which a stream frame wraps under `states`."""
+    if not isinstance(event, dict) or not isinstance(event.get("states"), dict):
+        return prune(ctx, event)
+    return {**event, "states": _filter_history_states(ctx, event["states"])}
