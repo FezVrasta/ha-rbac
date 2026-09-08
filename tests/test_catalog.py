@@ -309,3 +309,80 @@ async def test_the_admin_default_survives_the_static_exception(
     assert catalog.tier_for_request("GET", "/robots.txt/anything") == TIER_ADMIN
     assert catalog.tier_for_request("GET", "/nothing/registered") == TIER_ADMIN
     assert catalog.tier_for_request("GET", "/api/error_log") == TIER_ADMIN
+
+
+async def test_a_view_that_gates_on_admin_inline_is_not_read_as_open(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-rf3j-8w24-5pc8: the decorator is not the only way core gates admin.
+
+    `derive_tier` reads Home Assistant's `require_admin` decorator off the
+    handler. Several core views carry no decorator and check
+    `request["hass_user"].is_admin` in the body instead, raising `Unauthorized`
+    themselves. Those derived as *open* -- not as the fail-closed admin default
+    used for a route this build has never seen -- so the tier gate imposed
+    nothing on them for any role.
+
+    `POST /api/states/{entity_id}` is the one to hold onto: it overwrites what
+    Home Assistant reports for an entity without going near the device, which
+    is why core reserves it to administrators, and a role with ordinary control
+    of that entity satisfied the resource gate.
+    """
+    import homeassistant.components.api  # noqa: F401, PLC0415
+
+    await async_setup_component(hass, "http", {})
+    await async_setup_component(hass, "api", {})
+    await hass.async_block_till_done()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+
+    assert catalog.tier_for_request("POST", "/api/states/light.kitchen") == TIER_ADMIN
+    assert catalog.tier_for_request("DELETE", "/api/states/light.kitchen") == TIER_ADMIN
+
+
+async def test_reading_the_state_list_stays_open(hass: HomeAssistant) -> None:
+    """The check that must not be mistaken for a gate.
+
+    `APIStatesView.get` reads `is_admin` too, but to choose whether to filter
+    the list rather than whether to answer at all -- both branches return
+    states. Treating that as a gate would make the single most-used endpoint in
+    Home Assistant administrator-only and empty every restricted dashboard,
+    which is why the detector wants a refusal beside the flag rather than the
+    flag alone.
+    """
+    import homeassistant.components.api  # noqa: F401, PLC0415
+
+    await async_setup_component(hass, "http", {})
+    await async_setup_component(hass, "api", {})
+    await hass.async_block_till_done()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+
+    assert catalog.tier_for_request("GET", "/api/states") == TIER_OPEN
+
+
+def test_the_inline_gate_detector_reads_both_shapes() -> None:
+    """Raising and answering 401 are both refusals; branching is not."""
+    from homeassistant.exceptions import Unauthorized  # noqa: PLC0415
+
+    from custom_components.ha_rbac.catalog import gates_on_admin  # noqa: PLC0415
+
+    def raises(request):
+        if not request["hass_user"].is_admin:
+            raise Unauthorized
+
+    def answers_401(request):
+        if not request["hass_user"].is_admin:
+            return {"status": 401}
+        return {"status": 200}
+
+    def branches(request):
+        return "all" if request["hass_user"].is_admin else "mine"
+
+    def unrelated(request):
+        return request.query.get("q")
+
+    assert gates_on_admin(raises) is True
+    assert gates_on_admin(answers_401) is True
+    assert gates_on_admin(branches) is False
+    assert gates_on_admin(unrelated) is False
