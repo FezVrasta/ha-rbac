@@ -13,8 +13,9 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.setup import async_setup_component
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.ha_rbac.config_flow import RbacConfigFlow
+from custom_components.ha_rbac.config_flow import RbacConfigFlow, RbacOptionsFlow
 from custom_components.ha_rbac.const import (
     CONF_BIND_ADDRESS,
     CONF_MANAGE_HTTP,
@@ -189,3 +190,61 @@ async def test_the_manual_instruction_survives_where_it_is_the_only_route(
     warning = step["description_placeholders"]["warning"]
     assert "127.0.0.1" in warning
     assert "Settings > System > Network" in warning
+
+
+@pytest.fixture(name="options")
+async def options_fixture(hass: HomeAssistant) -> RbacOptionsFlow:
+    """Return a reconfigure flow bound to an existing entry."""
+    await async_setup_component(hass, "http", {"http": {}})
+    entry = MockConfigEntry(domain=DOMAIN, data=PORTS)
+    entry.add_to_hass(hass)
+
+    handler = RbacOptionsFlow()
+    handler.hass = hass
+    # For an options flow `handler` is the config entry id, which is how
+    # `config_entry` finds the entry being reconfigured.
+    handler.handler = entry.entry_id
+    handler.flow_id = "test-options"
+    handler.context = {}
+    return handler
+
+
+async def test_reconfiguring_onto_one_port_is_refused_too(
+    options: RbacOptionsFlow,
+) -> None:
+    """One process cannot bind both, so the wizard refuses it -- and so must this.
+
+    The check existed only on the initial setup, so the same combination could
+    be reached later by reopening the options and typing it in. It saved, and
+    the failure arrived as a bind error on the next reload with the instance
+    already down.
+    """
+    step = await options.async_step_init({**PORTS, CONF_UPSTREAM_PORT: 8123})
+
+    assert step["type"] is FlowResultType.FORM
+    assert step["errors"] == {CONF_PROXY_PORT: "port_conflict"}
+
+
+async def test_a_refused_reconfigure_keeps_what_was_typed(
+    options: RbacOptionsFlow,
+) -> None:
+    """Resetting the form to the saved values loses the rest of the edit.
+
+    Somebody correcting one field should not have to retype the others they
+    changed in the same visit.
+    """
+    step = await options.async_step_init(
+        {**PORTS, CONF_UPSTREAM_PORT: 8123, CONF_BIND_ADDRESS: "127.0.0.1"}
+    )
+
+    defaults = {key.schema: key.default() for key in step["data_schema"].schema}
+    assert defaults[CONF_BIND_ADDRESS] == "127.0.0.1"
+
+
+async def test_a_valid_reconfigure_is_saved(options: RbacOptionsFlow) -> None:
+    """The refusal must not stand in the way of an ordinary change."""
+    step = await options.async_step_init({**PORTS, CONF_PROXY_PORT: 9000})
+
+    assert step["type"] is FlowResultType.CREATE_ENTRY
+    assert step["data"][CONF_PROXY_PORT] == 9000
+    assert step["data"][CONF_UPSTREAM_PORT] == PORTS[CONF_UPSTREAM_PORT]
