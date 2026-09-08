@@ -394,6 +394,14 @@ class Decider:
         # check without counting as a bound, so a payload that names nothing a
         # schema recognises stays unbounded.
         entities |= entity_ids_in(payload, self._entity_exists)
+        if kind == KIND_HTTP:
+            # And an integration's own route names its own things: Frigate asks
+            # for `/recording/{camera}/...`, which is `camera.bedroom` spelled
+            # the way that integration spells it. Same resolution, same registry
+            # confirmation, so a segment naming nothing costs a failed lookup.
+            entities |= entity_ids_in(
+                self._catalog.path_variables(method, path), self._entity_exists
+            )
         key = POLICY_CONTROL if self._is_mutation(kind, name, payload) else POLICY_READ
 
         # 3. Resource gate. Every entity the request names must be permitted.

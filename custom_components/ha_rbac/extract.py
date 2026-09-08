@@ -172,6 +172,47 @@ def extract(payload: Any) -> Extracted:
     return found
 
 
+def _qualified_by_key(
+    key: Any, value: Any, exists: "Callable[[str], bool]"
+) -> set[str]:
+    """Return entities a key names by domain, with the value as the object id.
+
+    An integration is free to invent its own vocabulary for something Home
+    Assistant already has an entity for. Frigate asks for a recording with
+    `{"camera": "bedroom"}`, and over its own REST route with `bedroom` as a
+    path segment -- naming `camera.bedroom` without ever writing an entity id,
+    so the resource gate saw a request that named nothing and the role's deny
+    rule for that camera was never consulted. The response is video, which
+    carries no entity data of its own and is therefore streamed rather than
+    filtered, so nothing downstream caught it either.
+
+    The rule is the same one the rest of this walk runs on: guess, then let the
+    registry decide. A key that is a domain qualifies its value, and
+    `camera.bedroom` counts only because it turns out to be a real entity. A
+    key named `camera` whose value names nothing costs one failed lookup.
+
+    Plural keys are tried singular, because a list of them is spelled
+    `cameras`. Values are lowercased for the same reason ids are everywhere
+    else here: the policy lookup is an exact match.
+    """
+    if not isinstance(key, str) or not key:
+        return set()
+    domains = [key.lower()]
+    if key.lower().endswith("s"):
+        domains.append(key.lower()[:-1])
+
+    values = value if isinstance(value, list) else [value]
+    found: set[str] = set()
+    for item in values:
+        if not isinstance(item, str) or not item or "." in item:
+            continue
+        for domain in domains:
+            candidate = f"{domain}.{item}".lower()
+            if exists(candidate):
+                found.add(candidate)
+    return found
+
+
 def entity_ids_in(payload: Any, exists: "Callable[[str], bool]") -> set[str]:
     """Return every entity a structure mentions, wherever it mentions it.
 
@@ -204,6 +245,7 @@ def entity_ids_in(payload: Any, exists: "Callable[[str], bool]") -> set[str]:
             for key, value in node.items():
                 if (candidate := entity_candidate(key)) and exists(candidate):
                     found.add(candidate)
+                found |= _qualified_by_key(key, value, exists)
                 stack.append((value, depth + 1))
         elif isinstance(node, list):
             stack.extend((item, depth + 1) for item in node)

@@ -561,6 +561,26 @@ class Catalog:
         }
 
     @callback
+    def path_variables(self, method: str, path: str) -> dict[str, str]:
+        """Return every named segment of the matched route, resource key or not.
+
+        `path_resources` answers only for the names Home Assistant itself uses.
+        An integration registering its own route names its own things, and
+        Frigate's `/api/frigate/{instance}/recording/{camera}/...` names a
+        camera in a segment called `camera` -- a real entity, spelled the way
+        that integration spells it. Handing the raw segments to the same
+        registry-confirmed resolution the body gets is what binds the request
+        to `camera.bedroom`, so a role denying that camera is consulted.
+        """
+        if (route := self.route_for(method, path)) is None:
+            return {}
+        if (match := route.pattern.match(path)) is None:
+            return {}
+        return {
+            name: value for name, value in (match.groupdict() or {}).items() if value
+        }
+
+    @callback
     def path_service(self, method: str, path: str) -> tuple[str, str] | None:
         """Return the service a path calls, if it is the REST spelling of a call.
 

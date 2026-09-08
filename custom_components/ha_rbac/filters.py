@@ -640,6 +640,28 @@ def _filter_get_services(ctx: FilterContext, result: Any) -> Any:
     }
 
 
+def _lovelace_entity_keys(node: dict[str, Any]) -> list[str]:
+    """Return the keys of one card that name entities.
+
+    The three Lovelace itself uses, plus the convention custom cards follow
+    when they add their own: a suffix of `_entity` or `_entities`. Advanced
+    Camera Card asks for `camera_entity`, and a denied camera stayed in the
+    dashboard configuration under it -- which hands over the entity id of
+    something the role hides entirely, and with it the name to go looking for
+    on that integration's own routes.
+
+    A suffix rather than a longer list, because the list is the thing this
+    project exists to avoid: a card key nobody has heard of is covered the day
+    somebody writes it, as long as it is spelled the way the others are.
+    """
+    return [
+        key
+        for key in node
+        if isinstance(key, str)
+        and (key in LOVELACE_ENTITY_KEYS or key.endswith(("_entity", "_entities")))
+    ]
+
+
 @REGISTRY.result("lovelace/config")
 def _filter_lovelace(ctx: FilterContext, result: Any) -> Any:
     """Drop cards referring to entities the role cannot read.
@@ -652,7 +674,7 @@ def _filter_lovelace(ctx: FilterContext, result: Any) -> Any:
 
     def scrub(node: Any) -> Any:
         if isinstance(node, dict):
-            for key in LOVELACE_ENTITY_KEYS:
+            for key in _lovelace_entity_keys(node):
                 value = node.get(key)
                 if _looks_like_entity_id(value) and not ctx.readable(value):
                     return None
