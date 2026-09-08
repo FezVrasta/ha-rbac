@@ -102,6 +102,23 @@ def _add(target: Extracted, kind: str, value: Any) -> None:
 
     bucket = target.buckets[kind]
     for raw in values:
+        # A resource key is the one place a string reached the buckets without
+        # ever passing the template check the generic walk runs on every other
+        # string. Home Assistant renders `target.entity_id` server-side, so
+        # `{"entity_id": "{{ 'lock.gun_safe' }}"}` was recorded as an entity
+        # literally called `{{ 'lock.gun_safe' }}` -- a name no deny rule is
+        # written against, and one that a blanket `all` allow matched happily.
+        # The request then looked bounded, was allowed, and Home Assistant
+        # resolved the template to the entity the role denies.
+        #
+        # So it is treated as what it is: a template, whose reach has nothing
+        # to do with what it appears to name. That makes the command unbounded
+        # by the rule already in `is_bounded`, and the fake id is not recorded
+        # at all -- nothing downstream should be checking a policy against it,
+        # and it would only reappear as a resource in the deny log.
+        if _is_template(raw):
+            target.templated = True
+            continue
         # Home Assistant lowercases these on the way in (`cv.entity_id`), and
         # its policy lookup is an exact dict match -- so comparing the raw string
         # would let `LOCK.Front` miss a deny rule written for `lock.front`, and

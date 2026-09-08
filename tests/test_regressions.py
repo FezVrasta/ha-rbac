@@ -1555,3 +1555,116 @@ async def test_a_rest_body_naming_a_resource_is_not_bound_by_its_service(
     )
     assert decision.allowed is False
     assert decision.reason == REASON_UNBOUNDED
+
+
+async def test_a_templated_target_cannot_walk_past_a_deny_rule(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-r5fr-xh67-8fwc: a one-line Jinja template defeated every denial.
+
+    A resource key was the one place a string reached the buckets without
+    passing the template check the generic walk runs on every other string, so
+    `{"entity_id": "{{ 'lock.gun_safe' }}"}` was recorded as an entity
+    literally called `{{ 'lock.gun_safe' }}`. No deny rule is written against
+    that name, and a blanket `all` allow -- the shape of the built-in User and
+    Editor roles, and of every "allow broadly, deny a few" role -- matched it
+    without ever consulting the deny side. The payload then looked bounded, so
+    it was allowed, and Home Assistant rendered the template server-side and
+    unlocked the entity the role denies.
+
+    Templates are unbounded by the rule that already exists for them. This
+    checks it holds wherever the template is written, including the one place
+    it was not being looked for.
+    """
+    hass.states.async_set("lock.gun_safe", "locked")
+    hass.states.async_set("light.hall", "on")
+    for domain in ("websocket_api", "config", "api"):
+        await async_setup_component(hass, domain, {})
+    await hass.async_block_till_done()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    decider = Decider(hass, catalog, REGISTRY)
+
+    # Allow everything, deny one thing: what the deny side is for.
+    permissions = Permissions(
+        roles=[
+            compile_role(
+                hass,
+                _role(
+                    allow={
+                        CAT_ENTITIES: {
+                            SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}
+                        }
+                    },
+                    deny={CAT_ENTITIES: {"entity_ids": {"lock.gun_safe": True}}},
+                    tiers={"max": TIER_USER, "allow": [], "deny": []},
+                ),
+                _lookup(hass),
+            )
+        ]
+    )
+    assert permissions.check_entity("light.hall", POLICY_CONTROL) is True
+    assert permissions.check_entity("lock.gun_safe", POLICY_CONTROL) is False
+
+    named = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "lock",
+            "service": "unlock",
+            "target": {"entity_id": "lock.gun_safe"},
+        },
+    )
+    assert named.allowed is False, "precondition: the direct way is refused"
+
+    for payload in (
+        {
+            "type": "execute_script",
+            "sequence": [
+                {
+                    "service": "lock.unlock",
+                    "target": {"entity_id": "{{ 'lock.gun_safe' }}"},
+                }
+            ],
+        },
+        {
+            "type": "call_service",
+            "domain": "lock",
+            "service": "unlock",
+            "target": {"entity_id": "{% if 1 %}lock.gun_safe{% endif %}"},
+        },
+        # A list under the resource key goes the same way, and a real entity
+        # sitting beside the template must not bound the call either.
+        {
+            "type": "call_service",
+            "domain": "lock",
+            "service": "unlock",
+            "target": {"entity_id": ["light.hall", "{{ 'lock.gun_safe' }}"]},
+        },
+    ):
+        decision = decider.decide(permissions, KIND_WS, payload["type"], payload)
+        assert decision.allowed is False, f"allowed: {payload}"
+        # `execute_script` is above this role's tier and is refused there
+        # first; the templated `call_service` reaches the boundedness rule,
+        # which is the gate this is about.
+        assert decision.reason in (REASON_UNBOUNDED, REASON_TIER)
+        assert "{{" not in "".join(decision.resources), (
+            "a template is not an entity id and must not be logged as one"
+        )
+
+    # Without the tier gate in the way, the boundedness rule is what refuses it.
+    templated = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "lock",
+            "service": "unlock",
+            "target": {"entity_id": "{{ 'lock.gun_safe' }}"},
+        },
+    )
+    assert templated.allowed is False
+    assert templated.reason == REASON_UNBOUNDED
