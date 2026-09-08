@@ -47,6 +47,7 @@ what an LLM can do in your home.
 | **How much** | Look only, or look and touch. |
 | **What stays private** | Hide details: where someone is, a door code, a serial number. |
 | **Where they can go** | Which dashboards, add-ons and screens are in their sidebar. |
+| **Which options** | On a dropdown of people or modes, the ones they may choose. *The kids can announce as themselves, not as you.* |
 | **When** | Days and hours. *A cleaner, weekdays 9 to 5. A babysitter, Friday evenings.* |
 | **What they can change** | Nothing, everything, or one part of the settings: automations, dashboards, helpers, users, backups. |
 
