@@ -21,14 +21,18 @@ from homeassistant.helpers import (
 from homeassistant.helpers import (
     entity_registry as er,
 )
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.ha_rbac.catalog import Catalog
 from custom_components.ha_rbac.const import (
     ROLE_EDITOR,
     TIER_ADMIN,
     TIER_OPEN,
     TIER_USER,
 )
+from custom_components.ha_rbac.decide import KIND_WS, REASON_RESOURCE, Decider
+from custom_components.ha_rbac.filters import REGISTRY
 from custom_components.ha_rbac.policy import (
     ROLE_SCHEMA,
     Permissions,
@@ -361,3 +365,245 @@ async def test_the_editor_role_stops_short_of_the_house_itself(
         "lovelace/resources/create",
     ):
         assert permissions.tier_allowed(command, TIER_ADMIN) is False, command
+
+
+async def _select_decider(hass: HomeAssistant) -> Decider:
+    """Return a decider on an instance with an input_select of names."""
+    for domain in ("websocket_api", "config", "api"):
+        await async_setup_component(hass, domain, {})
+    await async_setup_component(
+        hass,
+        "input_select",
+        {
+            "input_select": {
+                "announcing": {
+                    "options": ["Jan", "Federico", "Nobody"],
+                    "initial": "Nobody",
+                }
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    return Decider(hass, catalog, REGISTRY)
+
+
+def _may_announce_as(hass: HomeAssistant, *options: str) -> Permissions:
+    """Control of the announcer, narrowed to certain options."""
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {
+                    "entity_ids": {
+                        "input_select.announcing": {
+                            POLICY_READ: True,
+                            POLICY_CONTROL: True,
+                        }
+                    }
+                }
+            },
+            choices={
+                "rules": [
+                    {
+                        "target": "entity_ids",
+                        "ids": ["input_select.announcing"],
+                        "options": list(options),
+                    }
+                ]
+            },
+            tiers={"max": TIER_USER, "allow": [], "deny": []},
+        ),
+        _lookup(hass),
+    )
+    return Permissions(roles=[role])
+
+
+def _choose(option: str) -> dict[str, Any]:
+    """Return the payload for choosing one option on the announcer."""
+    return {
+        "type": "call_service",
+        "domain": "input_select",
+        "service": "select_option",
+        "target": {"entity_id": "input_select.announcing"},
+        "service_data": {"option": option},
+    }
+
+
+async def test_a_role_may_be_given_only_some_of_a_selects_options(
+    hass: HomeAssistant,
+) -> None:
+    """Entity permission is the wrong granularity for a select full of people.
+
+    Control of the announcer is control of every name on it, so a role that may
+    announce for one person could announce as anybody. The rule narrows the
+    options and leaves the entity grant alone.
+    """
+    decider = await _select_decider(hass)
+    permissions = _may_announce_as(hass, "Jan")
+
+    assert decider.decide(permissions, KIND_WS, "call_service", _choose("Jan")).allowed
+    refused = decider.decide(permissions, KIND_WS, "call_service", _choose("Federico"))
+    assert refused.allowed is False
+    assert refused.reason == REASON_RESOURCE
+    assert refused.message == "You can only choose certain options there."
+    assert "Federico" not in refused.message, "the option is a diagnostic, not a reply"
+
+
+async def test_cycling_a_select_cannot_walk_past_the_rule(hass: HomeAssistant) -> None:
+    """The four that name no option would reach every one of them.
+
+    `select_next` and its siblings do not say where they are going, and where
+    they land depends on where the select already is. There is no way to judge
+    that without tracking its position, and guessing would be guessing in the
+    permissive direction -- so a covered entity refuses them outright. Without
+    this the rule is one extra request to step around.
+    """
+    decider = await _select_decider(hass)
+    permissions = _may_announce_as(hass, "Jan")
+
+    for service in ("select_next", "select_previous", "select_first", "select_last"):
+        decision = decider.decide(
+            permissions,
+            KIND_WS,
+            "call_service",
+            {
+                "type": "call_service",
+                "domain": "input_select",
+                "service": service,
+                "target": {"entity_id": "input_select.announcing"},
+            },
+        )
+        assert decision.allowed is False, service
+
+
+async def test_rewriting_the_options_cannot_widen_the_rule(
+    hass: HomeAssistant,
+) -> None:
+    """`set_options` replaces the list, so a forbidden name could be added."""
+    decider = await _select_decider(hass)
+    decision = decider.decide(
+        _may_announce_as(hass, "Jan"),
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "input_select",
+            "service": "set_options",
+            "target": {"entity_id": "input_select.announcing"},
+            "service_data": {"options": ["Jan", "Federico"]},
+        },
+    )
+    assert decision.allowed is False
+
+
+async def test_a_script_cannot_carry_the_forbidden_choice(hass: HomeAssistant) -> None:
+    """`execute_script` holds its calls in a sequence, so the walk goes in."""
+    decider = await _select_decider(hass)
+    decision = decider.decide(
+        _may_announce_as(hass, "Jan"),
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "input_select",
+            "service": "select_option",
+            "target": {"entity_id": "input_select.announcing"},
+            "data": {"option": "Federico"},
+        },
+    )
+    assert decision.allowed is False
+
+
+async def test_a_select_no_rule_covers_is_untouched(hass: HomeAssistant) -> None:
+    """A rule narrows the selects it names and nothing else.
+
+    The role controls both selects; only one of them is ruled. The other must
+    behave exactly as it did before choices existed.
+    """
+    decider = await _select_decider(hass)
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {
+                    "entity_ids": {
+                        "input_select.announcing": {
+                            POLICY_READ: True,
+                            POLICY_CONTROL: True,
+                        },
+                        "input_select.other": {
+                            POLICY_READ: True,
+                            POLICY_CONTROL: True,
+                        },
+                    }
+                }
+            },
+            choices={
+                "rules": [
+                    {
+                        "target": "entity_ids",
+                        "ids": ["input_select.announcing"],
+                        "options": ["Jan"],
+                    }
+                ]
+            },
+            tiers={"max": TIER_USER, "allow": [], "deny": []},
+        ),
+        _lookup(hass),
+    )
+    permissions = Permissions(roles=[role])
+
+    unruled = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "input_select",
+            "service": "select_option",
+            "target": {"entity_id": "input_select.other"},
+            "service_data": {"option": "anything"},
+        },
+    )
+    assert unruled.allowed is True, "no rule covers it, so nothing is narrowed"
+
+    # And cycling it, which is refused only where a rule applies.
+    cycled = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        {
+            "type": "call_service",
+            "domain": "input_select",
+            "service": "select_next",
+            "target": {"entity_id": "input_select.other"},
+        },
+    )
+    assert cycled.allowed is True
+
+    # The ruled one still is.
+    assert not decider.decide(
+        permissions, KIND_WS, "call_service", _choose("Federico")
+    ).allowed
+
+
+async def test_a_role_without_choice_rules_is_unaffected(hass: HomeAssistant) -> None:
+    """The gate must cost nothing for the roles that do not use it."""
+    decider = await _select_decider(hass)
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}}
+            },
+            tiers={"max": TIER_USER, "allow": [], "deny": []},
+        ),
+        _lookup(hass),
+    )
+    permissions = Permissions(roles=[role])
+    assert permissions.restricts_options is False
+    assert decider.decide(
+        permissions, KIND_WS, "call_service", _choose("Federico")
+    ).allowed

@@ -317,6 +317,15 @@ function readSchedule(role) {
   return rules;
 }
 
+/** Read a role's choices section into editable rows. */
+function readChoiceRules(role) {
+  return ((role.choices || {}).rules || []).map((rule) => ({
+    target: rule.target || "domains",
+    ids: [...(rule.ids || [])],
+    options: [...(rule.options || [])],
+  }));
+}
+
 /** Read a role's attribute section into editable rows. */
 function readAttributeRules(role) {
   const attributes = role.attributes || {};
@@ -555,6 +564,7 @@ class HaRbacPanel extends HTMLElement {
           tierAllow: [...((role.tiers || {}).allow || [])],
           tierDeny: [...((role.tiers || {}).deny || [])],
           attrRules: readAttributeRules(role),
+          choiceRules: readChoiceRules(role),
         }
       : null;
   }
@@ -749,6 +759,22 @@ class HaRbacPanel extends HTMLElement {
         </div>
       </ha-expansion-panel>
 
+      <ha-expansion-panel data-section="choices" data-title="Choices on a select"
+        header="Choices on a select">
+        <div class="card-content">      <p class="hint">Being allowed to work a
+        dropdown is being allowed to pick anything on it. Where the options are
+        people &mdash; who is announcing, whose room this is &mdash; that is
+        usually too much. Name the options this role may choose and the rest are
+        refused, while the entity itself stays as permitted as you left it
+        above. Comma separated, and matched exactly. Leave a select unnamed here
+        and nothing about it changes.</p>
+      <div id="choice-rules"></div>
+      <div class="actions">
+        <ha-button id="add-choice" ${locked ? "disabled" : ""}>Limit a select</ha-button>
+      </div>
+        </div>
+      </ha-expansion-panel>
+
       <ha-expansion-panel data-section="admin" data-title="Administration: what this role can change"
         header="Administration: what this role can change">
         <div class="card-content">      <p class="hint">Everything in this section is an administrator's job.
@@ -913,6 +939,7 @@ class HaRbacPanel extends HTMLElement {
     this._mountLocation(host.querySelector("#location"), locked);
     this._mountRules(host.querySelector("#rules"), locked);
     this._mountAttrRules(host.querySelector("#attr-rules"), locked);
+    this._mountChoiceRules(host.querySelector("#choice-rules"), locked);
   }
 
   /**
@@ -1148,6 +1175,10 @@ class HaRbacPanel extends HTMLElement {
       case "details": {
         const rules = draft.attrRules.filter((r) => r.names.length).length;
         return rules ? `${rules} rule${rules === 1 ? "" : "s"}` : "Nothing hidden";
+      }
+      case "choices": {
+        const rules = draft.choiceRules.filter((r) => r.options.length).length;
+        return rules ? `${rules} select${rules === 1 ? "" : "s"}` : "Anything on any";
       }
       case "admin": {
         if ((draft.tiers || {}).max === "admin") return "A full administrator";
@@ -1428,6 +1459,59 @@ class HaRbacPanel extends HTMLElement {
     button.disabled = locked;
     button.addEventListener("click", onClick);
     return button;
+  }
+
+  _mountChoiceRules(host, locked) {
+    if (!host) return;
+    host.innerHTML = "";
+    host.appendChild(
+      this._fallbackRow(
+        "Every option",
+        "Free to choose",
+        "Unless a rule below narrows it"
+      )
+    );
+    this._draft.choiceRules.forEach((rule, index) => {
+      host.appendChild(this._choiceRow(rule, index, locked));
+    });
+  }
+
+  _choiceRow(rule, index, locked) {
+    const row = document.createElement("div");
+    row.className = "rule deny";
+
+    const target = this._select(TARGETS, rule.target, locked, "Applies to", (value) => {
+      rule.target = value;
+      rule.ids = [];
+      this._mountChoiceRules(this.shadowRoot.getElementById("choice-rules"), locked);
+    });
+
+    const picker = document.createElement("div");
+    picker.className = "picker";
+    picker.appendChild(this._pickerFor(rule, locked));
+
+    const options = document.createElement("ha-input");
+    options.label = "Options they may choose";
+    options.value = rule.options.join(", ");
+    options.placeholder = "Jan, Nobody";
+    options.disabled = locked;
+    options.addEventListener("change", () => {
+      rule.options = options.value
+        .split(",")
+        .map((n) => n.trim())
+        .filter(Boolean);
+    });
+
+    const remove = this._removeButton(locked, () => {
+      this._draft.choiceRules.splice(index, 1);
+      this._mountChoiceRules(this.shadowRoot.getElementById("choice-rules"), locked);
+    });
+
+    target.classList.add("f-target");
+    options.classList.add("f-detail");
+    remove.classList.add("f-remove");
+    row.append(target, picker, options, remove);
+    return row;
   }
 
   _attrRow(rule, index, locked) {
@@ -1802,6 +1886,10 @@ class HaRbacPanel extends HTMLElement {
       this._draft.schedule.push({ days: [], start: "", end: "" });
       this._mountSchedule(root.getElementById("schedule"), false);
     });
+    on("add-choice", () => {
+      this._draft.choiceRules.push({ target: "entity_ids", ids: [], options: [] });
+      this._mountChoiceRules(root.getElementById("choice-rules"), false);
+    });
     on("add-attr", () => {
       this._draft.attrRules.push({ target: "domains", ids: [], names: [] });
       this._mountAttrRules(root.getElementById("attr-rules"), false);
@@ -1892,6 +1980,17 @@ class HaRbacPanel extends HTMLElement {
             names: rule.names,
           })),
       },
+      choices: {
+        // A rule naming no option would read as "nothing may be chosen", which
+        // the deny side says more clearly, so it is not written at all.
+        rules: this._draft.choiceRules
+          .filter((rule) => rule.options.length)
+          .map((rule) => ({
+            target: rule.target,
+            ids: rule.ids,
+            options: rule.options,
+          })),
+      },
       schedule: {
         // Written as a list, and the older inline window is cleared so a role
         // saved after an upgrade does not carry both shapes at once.
@@ -1976,6 +2075,7 @@ class HaRbacPanel extends HTMLElement {
           capabilities: source.capabilities,
           apps: source.apps,
           attributes: source.attributes,
+          choices: source.choices,
           schedule: source.schedule,
         },
       });

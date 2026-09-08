@@ -195,6 +195,33 @@ permissions are cached on the user *and* on which of their roles are currently
 in force, and a websocket re-resolves them per frame. A connection stays open
 for hours, which is the same span a schedule covers.
 
+## Choices on a select
+
+Entity permission is the wrong granularity for a select whose options are
+people. Control of `input_select.announcing` is control of every name on it, so
+a role that may announce for one person can announce as another. A role can
+therefore narrow the *options* on the selects it names, leaving the entity
+grant alone.
+
+Three ways to reach an option, and the gate judges all three:
+
+- `select_option` names the one it wants, which is checked against the rule.
+- `select_next`, `select_previous`, `select_first` and `select_last` name none.
+  Where they land depends on where the select already is, so there is no way to
+  judge them without tracking its position, and guessing would guess in the
+  permissive direction. They are refused outright on a covered entity.
+- `set_options` rewrites the list itself, which would let a forbidden option be
+  made permitted first. Also refused.
+
+The payload is walked rather than read at the top level, because
+`execute_script` carries its calls in a sequence. A payload naming two covered
+selects and one option is judged as asking for that option on both: matching
+each call to its own target is more precision than the walk has, and refusing
+is the direction to be wrong in.
+
+An entity no rule covers is untouched, and a role with no rules never enters
+the gate.
+
 ## Multiple roles
 
 A user can hold more than one role at once. Each of the user's active roles

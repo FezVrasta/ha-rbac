@@ -71,3 +71,23 @@ def test_deleting_a_role_asks_first() -> None:
     body = source[start : source.index('"roles/delete"', start)]
 
     assert "confirm(" in body, "_deleteRole must confirm before it calls the API"
+
+
+def test_every_editable_rule_list_is_read_back_when_a_role_is_saved() -> None:
+    """A section that renders but is never saved looks like it works and does not.
+
+    Each rule list is read out of the role into a draft, rendered, and written
+    back on save. Miss the last step and the panel accepts the edit, redraws it,
+    and drops it -- which for an access-control rule reads as "I restricted
+    that" when nothing was restricted. Pinned as a set so a section added later
+    is caught by the same check.
+    """
+    source = PANEL.read_text()
+    drafts = set(
+        re.findall(r"(\w+): read(?:Attribute|Choice|Schedule)?\w*\(role\)", source)
+    )
+    assert {"attrRules", "choiceRules"} <= drafts, drafts
+
+    saved = source[source.index("_payload()") :]
+    for draft in drafts:
+        assert f"this._draft.{draft}" in saved, f"{draft} is edited but never saved"

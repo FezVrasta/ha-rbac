@@ -139,6 +139,19 @@ ATTRIBUTE_RULE_SCHEMA = vol.Schema(
     }
 )
 
+# One rule: the options a role may choose on the selects it targets. Same
+# targeting vocabulary as an attribute rule, so "every input_select in the
+# hallway" is spelled the way it is everywhere else.
+CHOICE_RULE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("target", default=ENTITY_DOMAINS): str,
+        vol.Optional("ids", default=list): [str],
+        vol.Required("options"): [str],
+    }
+)
+
+CHOICES_SCHEMA = vol.Schema({vol.Optional("rules", default=list): [CHOICE_RULE_SCHEMA]})
+
 ATTRIBUTES_SCHEMA = vol.Schema(
     {
         vol.Optional("rules", default=list): [ATTRIBUTE_RULE_SCHEMA],
@@ -217,6 +230,7 @@ ROLE_SCHEMA = vol.Schema(
         vol.Optional("capabilities", default=list): [str],
         vol.Optional("apps", default=dict): APPS_SCHEMA,
         vol.Optional("attributes", default=dict): ATTRIBUTES_SCHEMA,
+        vol.Optional("choices", default=dict): CHOICES_SCHEMA,
         vol.Optional("schedule", default=dict): SCHEDULE_SCHEMA,
         vol.Optional("location", default=dict): LOCATION_SCHEMA,
     }
@@ -660,6 +674,59 @@ class CompiledAttributeRule:
         return any(fnmatch(name, pattern) for pattern in self.names)
 
 
+@dataclass(slots=True)
+class CompiledChoiceRule:
+    """The options a role may choose on the selects a rule targets."""
+
+    options: set[str]
+    # None means every entity; otherwise the exact set this rule covers.
+    entity_ids: set[str] | None
+    domains: set[str] | None
+
+    def covers(self, entity_id: str) -> bool:
+        """Return True if this rule applies to an entity."""
+        if self.entity_ids is None and self.domains is None:
+            return True
+        if self.domains is not None and entity_id.partition(".")[0] in self.domains:
+            return True
+        return self.entity_ids is not None and entity_id in self.entity_ids
+
+
+def _compile_choice_rules(
+    hass: HomeAssistant, choices: dict[str, Any]
+) -> list[CompiledChoiceRule]:
+    """Turn a role's choices section into matchers.
+
+    Targeted exactly like an attribute rule, and resolved through the same
+    expansion, so an area or a label means here what it means everywhere else.
+    """
+    compiled: list[CompiledChoiceRule] = []
+    for rule in choices.get("rules") or []:
+        options = {str(option) for option in (rule.get("options") or [])}
+        ids = list(rule.get("ids") or [])
+        if not options:
+            # A rule permitting nothing would be a way to deny the entity
+            # outright, which the deny side already does more clearly.
+            continue
+        if not ids:
+            compiled.append(CompiledChoiceRule(options, None, None))
+            continue
+
+        target = rule.get("target") or ENTITY_DOMAINS
+        if target == ENTITY_DOMAINS:
+            compiled.append(CompiledChoiceRule(options, None, {i.lower() for i in ids}))
+            continue
+        if target == ENTITY_ENTITY_IDS:
+            compiled.append(CompiledChoiceRule(options, {i.lower() for i in ids}, None))
+            continue
+
+        policy = desugar(hass, {CAT_ENTITIES: {target: dict.fromkeys(ids, True)}})
+        resolved = set((policy.get(CAT_ENTITIES) or {}).get(ENTITY_ENTITY_IDS) or {})
+        compiled.append(CompiledChoiceRule(options, resolved, None))
+
+    return compiled
+
+
 def _compile_attribute_rules(
     hass: HomeAssistant, attributes: dict[str, Any]
 ) -> list[CompiledAttributeRule]:
@@ -723,6 +790,7 @@ class CompiledRole:
     app_allow: list[str]
     app_deny: list[str]
     attribute_rules: "list[CompiledAttributeRule]"
+    choice_rules: "list[CompiledChoiceRule]"
     schedule: dict[str, Any]
     location: dict[str, Any]
     # url_path -> level, for dashboards this role gets the contents of.
@@ -780,12 +848,14 @@ def compile_role(
     tiers = role.get("tiers") or {}
     apps = role.get("apps") or {}
     attributes = role.get("attributes") or {}
+    choices = role.get("choices") or {}
     tier_max = _tier_ceiling(tiers.get("max"))
     tier_allow = [
         *capability_patterns(role.get("capabilities")),
         *(tiers.get("allow") or []),
     ]
     attribute_rules = _compile_attribute_rules(hass, attributes)
+    choice_rules = _compile_choice_rules(hass, choices)
 
     return CompiledRole(
         role_id=role["id"],
@@ -799,6 +869,7 @@ def compile_role(
         app_allow=list(apps.get("allow") or []),
         app_deny=list(apps.get("deny") or []),
         attribute_rules=attribute_rules,
+        choice_rules=choice_rules,
         schedule=dict(role.get("schedule") or {}),
         location=dict(role.get("location") or {}),
         dashboard_levels={
@@ -880,6 +951,34 @@ class Permissions:
             for role in self.roles
             for rule in role.attribute_rules
         )
+
+    def options_allowed(self, entity_id: str) -> "set[str] | None":
+        """Return the options a role may choose on a select, or None for any.
+
+        None and an empty set mean different things. None is "no rule covers
+        this entity", which leaves it as unrestricted as the rest of the
+        policy makes it. An empty set would be "no option is permitted", which
+        the deny side already says more clearly, so a rule listing nothing is
+        dropped when it is compiled rather than becoming one.
+
+        Roles combine the way they do everywhere else: a user holding two
+        roles may choose what either of them permits.
+        """
+        if self.pass_through:
+            return None
+        allowed: set[str] = set()
+        covered = False
+        for role in self.roles:
+            for rule in role.choice_rules:
+                if rule.covers(entity_id):
+                    covered = True
+                    allowed |= rule.options
+        return allowed if covered else None
+
+    @property
+    def restricts_options(self) -> bool:
+        """Return True if any role narrows what may be chosen on a select."""
+        return not self.pass_through and any(role.choice_rules for role in self.roles)
 
     @property
     def hides_attributes(self) -> bool:

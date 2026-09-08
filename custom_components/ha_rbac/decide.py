@@ -148,6 +148,64 @@ USER_MESSAGES = {
 DEFAULT_USER_MESSAGE = "You do not have permission to do that."
 
 
+# Selects, and the services that move them. `select_option` names the option it
+# wants; the cycling four do not name one at all and would walk to any option in
+# the list, which is the same reach by another route.
+SELECT_DOMAINS = frozenset({"input_select", "select"})
+CHOOSE_SERVICE = "select_option"
+CYCLE_SERVICES = frozenset(
+    {"select_next", "select_previous", "select_first", "select_last"}
+)
+# Rewrites the list of options itself, so a rule naming permitted options could
+# be satisfied by first making the forbidden one permitted.
+REWRITE_SERVICE = "set_options"
+
+
+def _select_services(node: Any, depth: int = 0) -> "list[tuple[str, str]]":
+    """Return every (domain, service) on a select that a payload invokes.
+
+    Walked rather than read off the top level, because `execute_script` carries
+    its calls in a sequence and a role allowed to run one could otherwise put
+    the call it wanted inside it.
+    """
+    if depth > MAX_WALK_DEPTH:
+        return [("", "")]
+    found: list[tuple[str, str]] = []
+    if isinstance(node, dict):
+        for key in SERVICE_KEYS:
+            value = node.get(key)
+            if not isinstance(value, str):
+                continue
+            domain, _, service = value.partition(".")
+            if not service:
+                domain, service = str(node.get("domain") or ""), value
+            if domain in SELECT_DOMAINS:
+                found.append((domain, service))
+        for value in node.values():
+            found.extend(_select_services(value, depth + 1))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(_select_services(item, depth + 1))
+    return found
+
+
+def _requested_options(node: Any, depth: int = 0) -> set[str]:
+    """Return every value a payload offers as the option to select."""
+    if depth > MAX_WALK_DEPTH:
+        return set()
+    found: set[str] = set()
+    if isinstance(node, dict):
+        option = node.get("option")
+        if isinstance(option, str):
+            found.add(option)
+        for value in node.values():
+            found |= _requested_options(value, depth + 1)
+    elif isinstance(node, list):
+        for item in node:
+            found |= _requested_options(item, depth + 1)
+    return found
+
+
 @dataclass(slots=True)
 class Decision:
     """The verdict on one request, and why."""
@@ -419,6 +477,14 @@ class Decider:
                 resources=denied,
             )
 
+        # 3b. Choice gate. A role may be allowed to work a select without
+        #     being allowed to choose every option on it -- "these people may
+        #     put their own name on the announcer, and nobody else's".
+        if (
+            choice_decision := self._decide_choices(permissions, payload, entities)
+        ) is not None:
+            return choice_decision
+
         # 4. Boundedness. A payload that names nothing, or that carries a
         #    template, does not constrain its own command.
         if not is_bounded(found):
@@ -673,6 +739,74 @@ class Decider:
             return None
         entity_id = f"{domain}.{service}"
         return entity_id if self._entity_exists(entity_id) else None
+
+    @callback
+    def _decide_choices(
+        self, permissions: Permissions, payload: dict[str, Any], entities: set[str]
+    ) -> "Decision | None":
+        """Refuse a select the role may work but may not set to this option.
+
+        Entity permission is the wrong granularity for a select whose options
+        are people. Control of `input_select.announcing` is control of every
+        name on it, and a role that may announce for one person should not be
+        able to announce as another. So a rule narrows the options rather than
+        the entity, and the entity grant stays what it was.
+
+        Three ways to reach an option, and all three are judged. `select_option`
+        names the one it wants. The cycling four name none and would walk to any
+        option in the list, so they are refused outright for a covered entity --
+        there is no way to tell where they will land without tracking the
+        entity's current position, and guessing would be guessing in the
+        permissive direction. `set_options` rewrites the list itself, which
+        would let a forbidden option be made permitted first.
+
+        Judged against every covered entity the payload names rather than
+        matching each call to its own target: a payload naming two selects and
+        one option is asking for that option on both as far as anything here
+        can tell, and refusing is the direction to be wrong in.
+        """
+        if not permissions.restricts_options:
+            return None
+        calls = _select_services(payload)
+        if not calls:
+            return None
+
+        covered = {
+            entity_id: allowed
+            for entity_id in entities
+            if (allowed := permissions.options_allowed(entity_id)) is not None
+        }
+        if not covered:
+            return None
+
+        services = {service for _, service in calls}
+        blocked = services & (CYCLE_SERVICES | {REWRITE_SERVICE})
+        if blocked:
+            return Decision(
+                allowed=False,
+                reason=REASON_RESOURCE,
+                detail=(
+                    f"{', '.join(sorted(blocked))} can reach any option on "
+                    f"{', '.join(sorted(covered))}"
+                ),
+                message="You can only choose certain options there.",
+                resources=sorted(covered),
+            )
+
+        if CHOOSE_SERVICE not in services:
+            return None
+
+        permitted = set.intersection(*covered.values()) if covered else set()
+        if refused := sorted(_requested_options(payload) - permitted):
+            return Decision(
+                allowed=False,
+                reason=REASON_RESOURCE,
+                detail=f"option {', '.join(refused)} not permitted on "
+                f"{', '.join(sorted(covered))}",
+                message="You can only choose certain options there.",
+                resources=sorted(covered),
+            )
+        return None
 
     @callback
     def _observe(
