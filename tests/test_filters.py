@@ -1,5 +1,7 @@
 """Tests for response filtering."""
 
+import json
+
 from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.core import HomeAssistant
 
@@ -605,3 +607,39 @@ async def test_media_that_is_not_an_entity_is_left_alone(
         },
     )
     assert [child["title"] for child in result["children"]] == ["song.mp3"]
+
+
+async def test_a_custom_card_key_naming_an_entity_is_scrubbed(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-23ch-3r34-x2hq, second half: `camera_entity` was not on the list.
+
+    Lovelace's own keys were enumerated, so a custom card naming its entity any
+    other way kept it. Advanced Camera Card uses `camera_entity`, and a denied
+    camera stayed in the dashboard configuration under it -- handing over the
+    entity id of something the role hides entirely, and with it the name to go
+    looking for on that integration's own routes.
+
+    Matched by the suffix the convention uses rather than by a longer list, so
+    a card key nobody has heard of is covered the day somebody writes it.
+    """
+    result = REGISTRY.filter_result(
+        "lovelace/config",
+        _ctx(hass, {"camera.bedroom"}),
+        {
+            "views": [
+                {
+                    "cards": [
+                        {
+                            "type": "custom:advanced-camera-card",
+                            "cameras": [{"camera_entity": "camera.bedroom"}],
+                        },
+                        {"type": "picture", "camera_entity": "camera.hall"},
+                    ]
+                }
+            ]
+        },
+    )
+
+    assert "camera.bedroom" not in json.dumps(result)
+    assert "camera.hall" in json.dumps(result), "a camera they may see stays"
