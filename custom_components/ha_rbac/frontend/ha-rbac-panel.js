@@ -47,6 +47,10 @@ const LOCATION_MODES = [
 ];
 
 // Where each kind of exception lives in a stored policy.
+// The domains whose entities carry a list of options a rule can narrow. Kept
+// in step with SELECT_DOMAINS in decide.py.
+const SELECT_DOMAINS = ["input_select", "select"];
+
 const TARGETS = [
   { value: "area_ids", label: "Areas", block: "entities", selector: { area: { multiple: true } } },
   { value: "domains", label: "Domains", block: "entities", selector: null },
@@ -764,10 +768,11 @@ class HaRbacPanel extends HTMLElement {
         <div class="card-content">      <p class="hint">Being allowed to work a
         dropdown is being allowed to pick anything on it. Where the options are
         people &mdash; who is announcing, whose room this is &mdash; that is
-        usually too much. Name the options this role may choose and the rest are
+        usually too much. Pick the options this role may choose and the rest are
         refused, while the entity itself stays as permitted as you left it
-        above. Comma separated, and matched exactly. Leave a select unnamed here
-        and nothing about it changes.</p>
+        above. The list offered is what those selects say they hold; an option
+        is matched exactly, so pick rather than type wherever you can. Leave a
+        select unnamed here and nothing about it changes.</p>
       <div id="choice-rules"></div>
       <div class="actions">
         <ha-button id="add-choice" ${locked ? "disabled" : ""}>Limit a select</ha-button>
@@ -1476,6 +1481,46 @@ class HaRbacPanel extends HTMLElement {
     });
   }
 
+  /**
+   * The options the selects a choice rule targets actually offer.
+   *
+   * Read off the entities rather than typed, because a rule is matched
+   * exactly: "jan" where the select says "Jan" is a rule that reads as
+   * restricting one option and in fact permits none, and neither saving it nor
+   * being refused by it says so. The options are the shortest list in the
+   * house and the panel already has them.
+   *
+   * Kept in the order each select declares, which is the order its dropdown
+   * shows. A target the panel cannot resolve to entities on its own -- an
+   * area, a label, a floor -- offers every select's options instead, and the
+   * field takes a value that is on no list either way.
+   */
+  _optionsOffered(rule) {
+    const states = (this._hass || {}).states || {};
+    const isSelect = (id) => SELECT_DOMAINS.includes(id.split(".")[0]);
+
+    let ids;
+    if (rule.target === "entity_ids") {
+      ids = rule.ids;
+    } else if (rule.target === "domains") {
+      ids = Object.keys(states).filter((id) => rule.ids.includes(id.split(".")[0]));
+    } else {
+      ids = Object.keys(states).filter(isSelect);
+    }
+
+    const offered = [];
+    const add = (option) => {
+      if (typeof option === "string" && option && !offered.includes(option)) {
+        offered.push(option);
+      }
+    };
+    ids.forEach((id) => (((states[id] || {}).attributes || {}).options || []).forEach(add));
+    // Whatever the rule already says stays on the list even if no select
+    // offers it now, or opening the editor would quietly drop it.
+    rule.options.forEach(add);
+    return offered;
+  }
+
   _choiceRow(rule, index, locked) {
     const row = document.createElement("div");
     row.className = "rule deny";
@@ -1486,20 +1531,34 @@ class HaRbacPanel extends HTMLElement {
       this._mountChoiceRules(this.shadowRoot.getElementById("choice-rules"), locked);
     });
 
+    const remount = () =>
+      this._mountChoiceRules(this.shadowRoot.getElementById("choice-rules"), locked);
+
     const picker = document.createElement("div");
     picker.className = "picker";
-    picker.appendChild(this._pickerFor(rule, locked));
+    // Which selects the rule covers decides what there is to choose from, so
+    // the option field is rebuilt whenever that changes.
+    picker.appendChild(this._pickerFor(rule, locked, remount));
 
-    const options = document.createElement("ha-input");
+    const options = document.createElement("ha-selector");
+    options.hass = this._hass;
+    options.selector = {
+      select: {
+        multiple: true,
+        // A target the panel cannot resolve to entities still has to be
+        // expressible, and so does an option a select does not offer yet.
+        custom_value: true,
+        options: this._optionsOffered(rule).map((o) => ({ value: o, label: o })),
+      },
+    };
     options.label = "Options they may choose";
-    options.value = rule.options.join(", ");
-    options.placeholder = "Jan, Nobody";
+    options.required = false;
+    options.value = rule.options.slice();
     options.disabled = locked;
-    options.addEventListener("change", () => {
-      rule.options = options.value
-        .split(",")
-        .map((n) => n.trim())
-        .filter(Boolean);
+    options.addEventListener("value-changed", (event) => {
+      event.stopPropagation();
+      const value = event.detail.value;
+      rule.options = Array.isArray(value) ? value : value ? [value] : [];
     });
 
     const remove = this._removeButton(locked, () => {
@@ -1584,7 +1643,7 @@ class HaRbacPanel extends HTMLElement {
     return row;
   }
 
-  _pickerFor(rule, locked) {
+  _pickerFor(rule, locked, onChange) {
     const target = TARGETS.find((t) => t.value === rule.target);
 
     // Domains have no Home Assistant picker, so one is built from the domains
@@ -1609,6 +1668,7 @@ class HaRbacPanel extends HTMLElement {
       rule.ids = Array.isArray(value) ? value : value ? [value] : [];
       this._refreshSeesNothing();
       this._syncRaw();
+      if (onChange) onChange();
     });
     return el;
   }
