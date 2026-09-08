@@ -12,6 +12,7 @@ endpoints while leaving the add-on's own web UI reachable by anyone who knows
 its ingress path -- a value that is stable for the life of the installation.
 """
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -75,6 +76,9 @@ class IngressGuard:
         self._sessions: dict[str, tuple[str, float]] = {}
         self._slugs: dict[str, str] = {}
         self._loaded_at: float | None = None
+        # Serialises the rebuild, so a miss during one waits for it rather than
+        # being answered from the map it is replacing.
+        self._reload_lock = asyncio.Lock()
 
     @callback
     def remember_session(self, session: str, user_id: str) -> None:
@@ -120,17 +124,40 @@ class IngressGuard:
         self._loaded_at = None
 
     async def async_slug_for(self, token: str) -> str | None:
-        """Return the add-on an ingress token belongs to, or None if it is none."""
-        if token in self._slugs:
-            return self._slugs[token]
-        # A miss is either a token that belongs to nothing or an add-on
-        # installed since the map was built, and only a rebuild tells them
-        # apart. Guessing "not an add-on" would forward it unguarded.
-        now = time.monotonic()
-        if self._loaded_at is None or now - self._loaded_at > MISS_RELOAD_INTERVAL:
-            self._loaded_at = now
-            await self._async_load()
-        return self._slugs.get(token)
+        """Return the add-on an ingress token belongs to, or None if it is none.
+
+        A miss is either a token that belongs to nothing or an add-on installed
+        since the map was built, and only a rebuild tells them apart. Guessing
+        "not an add-on" would forward it unguarded, which is the whole thing
+        this exists to prevent.
+
+        The rebuild is serialised. The freshness stamp used to be written
+        *before* the reload it stands for, and the reload is real Supervisor
+        I/O -- a list call plus one info call per add-on. So a second request
+        for the same unknown token arriving during that window read the stamp
+        as fresh, skipped the rebuild, and was answered from the map as it
+        stood before it: `None`, which the proxy reads as "not an add-on" and
+        forwards with no permission check at all. Two near-simultaneous
+        requests were enough, and a cold cache after a restart is exactly when
+        it happens.
+
+        So concurrent misses queue on the lock and the first one's rebuild
+        answers all of them, with the map re-read on the way in because it may
+        have been filled while they waited.
+        """
+        if (slug := self._slugs.get(token)) is not None:
+            return slug
+        async with self._reload_lock:
+            if (slug := self._slugs.get(token)) is not None:
+                return slug
+            now = time.monotonic()
+            if self._loaded_at is None or now - self._loaded_at > MISS_RELOAD_INTERVAL:
+                # `_async_load` stamps `_loaded_at` itself, once it has actually
+                # loaded something. A failure raises and leaves the stamp alone,
+                # so the next request tries again rather than being told the
+                # map is fresh.
+                await self._async_load()
+            return self._slugs.get(token)
 
     async def _async_load(self) -> None:
         """Build the token -> add-on map from Supervisor."""
