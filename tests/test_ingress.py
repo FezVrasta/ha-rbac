@@ -8,6 +8,7 @@ own web UI reachable to anyone holding its ingress path, which is stable for
 the life of the installation.
 """
 
+import asyncio
 import time
 
 import pytest
@@ -202,3 +203,49 @@ async def test_the_first_lookup_always_builds_the_map(hass: HomeAssistant) -> No
     guard._async_load = _fake_load
     assert await guard.async_slug_for("anything") is None
     assert loads == 1
+
+
+async def test_a_miss_during_a_rebuild_waits_for_it(hass: HomeAssistant) -> None:
+    """GHSA-p5x6-gpc8-rqh6: a concurrent miss was answered from the stale map.
+
+    The freshness stamp was written before the reload it stands for, and the
+    reload is real Supervisor I/O -- a list call plus one info call per add-on.
+    So a second request for the same unknown token, arriving while the first
+    was still awaiting Supervisor, read the stamp as fresh, skipped the
+    rebuild, and got `None` from the map as it stood before it. The proxy
+    reads `None` as "not an add-on" and forwards the request with no
+    permission check at all, straight to the add-on's own web UI.
+
+    Two near-simultaneous requests were enough to do it, and the cold cache
+    after a restart is exactly when the window is open.
+    """
+    guard = IngressGuard(hass)
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    loads = 0
+
+    async def _slow_load() -> None:
+        nonlocal loads
+        loads += 1
+        started.set()
+        # Stands in for the Supervisor round trip: the whole window is here.
+        await finish.wait()
+        guard._slugs = {"denied-addon": "core_ssh"}
+        guard._loaded_at = time.monotonic()
+
+    guard._async_load = _slow_load
+
+    first = asyncio.create_task(guard.async_slug_for("denied-addon"))
+    await started.wait()
+    second = asyncio.create_task(guard.async_slug_for("denied-addon"))
+    # Let the second request get as far as it is going to before the first
+    # finishes; without the lock this is where it read the stale map.
+    await asyncio.sleep(0)
+    finish.set()
+
+    assert await first == "core_ssh"
+    assert await second == "core_ssh", (
+        "a request arriving during the rebuild was told the add-on does not "
+        "exist, and would have been forwarded unguarded"
+    )
+    assert loads == 1, "and the two of them share one Supervisor rebuild"
