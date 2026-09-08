@@ -1,14 +1,21 @@
 [tool.ruff]
 target-version = "py313"
 line-length = 88
-# Newer ruff releases also format JSON, and do so with a trailing comma
-# before the closing brace/bracket -- valid JSON5, not valid JSON. Home
-# Assistant loads `strings.json`/`translations/*.json` with a strict parser,
-# so letting `ruff format` anywhere near them would produce a file the
-# integration can no longer load. Nothing here is meant to be linted or
-# formatted by ruff at all, only by whatever the JSON files themselves are
-# validated with (`hassfest`, the JSON module in the test suite).
+# Ruff formats JSON now, and writes a trailing comma before the closing brace
+# -- valid JSON5, not valid JSON. Home Assistant reads `strings.json` and
+# `translations/*.json` with a strict parser, so a formatted one is a file the
+# integration can no longer load.
+#
+# It only happens when a JSON file is named directly: `ruff format .` walks for
+# Python and never reaches them, which is why CI has always been green. An
+# editor formatting the file you have open does name it directly, and so does
+# `ruff format <changed file>`, so the corruption arrives locally and silently.
+#
+# `force-exclude` is the half that matters. Without it an exclude is ignored
+# for a path given explicitly, which is exactly the case being guarded, and the
+# setting reads as working while changing nothing.
 extend-exclude = ["*.json"]
+force-exclude = true
 
 # Mirrors the Home Assistant core ruff configuration, so the component matches
 # the conventions of the codebase it plugs into.
