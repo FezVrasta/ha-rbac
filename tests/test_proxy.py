@@ -17,12 +17,12 @@ from typing import Any
 import aiohttp
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import make_mocked_request
 from homeassistant.components.http.auth import async_sign_path
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockUser
+from yarl import URL
 
 from custom_components.ha_rbac.catalog import Catalog
 from custom_components.ha_rbac.const import ROLE_READ_ONLY, TIER_ADMIN
@@ -883,26 +883,38 @@ async def test_a_protocol_relative_path_cannot_redirect_the_upstream(
     the answer -- reaching anything that machine can reach, the rest of the
     home network and a cloud instance's metadata endpoint included.
 
-    It happens in `_upstream_url`, before any user is resolved, so it needed no
-    login at all. Checked here at the URL rather than by standing up a second
-    server, because the assertion is exactly "the host never changes".
+    It happens in `_upstream_url`, before any user is resolved, so it needs no
+    login at all. Driven through a real socket rather than a mocked request,
+    because aiohttp's test helper parses `//example.com/x` into a host and a
+    path of `/x` and so cannot reproduce what the server actually receives.
     """
     proxy = proxy_env["proxy"]
     upstream = proxy._base.host
+    seen: list[str] = []
+    original = proxy._upstream_url
 
-    for target in (
-        "//example.com/x",
-        "///example.com/x",
-        "//example.com:8123/x?a=b",
-        "/api/states",
-        "/api/camera_proxy/camera.front?token=abc&authSig=xyz",
-    ):
-        request = make_mocked_request("GET", target)
-        assert proxy._upstream_url(request).host == upstream, target
+    def _record(request: Any) -> Any:
+        url = original(request)
+        seen.append(str(url))
+        return url
 
-    # The path and query still arrive byte for byte, which the signed-path
-    # HMAC depends on: it is computed over the exact path and query.
-    signed = make_mocked_request("GET", "/api/camera_proxy/camera.front?authSig=xyz")
-    assert proxy._upstream_url(signed).raw_path_qs == (
-        "/api/camera_proxy/camera.front?authSig=xyz"
-    )
+    proxy._upstream_url = _record
+    base = proxy_env["base"].rsplit(":", 1)[0].removeprefix("http://")
+    port = int(proxy_env["base"].rsplit(":", 1)[1])
+
+    for target in ("//example.com/x", "///example.com/x", "//example.com:80/y?a=b"):
+        reader, writer = await asyncio.open_connection(base, port)
+        writer.write(
+            f"GET {target} HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        with contextlib.suppress(TimeoutError, OSError):
+            await asyncio.wait_for(reader.read(64), timeout=3)
+        writer.close()
+        with contextlib.suppress(OSError):
+            await writer.wait_closed()
+
+    proxy._upstream_url = original
+    assert seen, "precondition: the requests reached the proxy"
+    for url in seen:
+        assert URL(url).host == upstream, f"upstream was redirected to {url}"
