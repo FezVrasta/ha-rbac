@@ -1807,3 +1807,222 @@ async def test_an_integrations_own_route_names_its_camera_too(
     assert decision.resources == ["camera.bedroom"], (
         "the request has to name the camera for the deny rule to be consulted"
     )
+
+
+async def _member_decider(hass: HomeAssistant) -> Decider:
+    """Return a decider on an instance with a light group and a scene.
+
+    The group is the helper kind -- an ordinary `light.` entity that forwards to
+    its members -- rather than an old-style `group.` entity, because those two
+    are expanded by different machinery and only the old one was covered.
+    """
+    for domain in ("websocket_api", "config", "api"):
+        await async_setup_component(hass, domain, {})
+    await async_setup_component(
+        hass,
+        "input_select",
+        {"input_select": {"announcing": {"options": ["Jan", "Federico"]}}},
+    )
+    await hass.async_block_till_done()
+
+    hass.states.async_set("light.bed_light", "on", {})
+    hass.states.async_set("light.ceiling_lights", "on", {})
+    # The two an installation gets from the helper editor and the scene editor,
+    # published the way Home Assistant publishes them.
+    hass.states.async_set(
+        "light.hall",
+        "on",
+        {"entity_id": ["light.bed_light", "light.ceiling_lights"]},
+    )
+    hass.states.async_set(
+        "scene.evening",
+        "unknown",
+        {"entity_id": ["input_select.announcing", "light.bed_light"]},
+    )
+    hass.states.async_set(
+        "media_player.speakers",
+        "playing",
+        {"group_members": ["media_player.kitchen"]},
+    )
+    hass.states.async_set("media_player.kitchen", "playing", {"volume_level": 1.0})
+    await hass.async_block_till_done()
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    return Decider(hass, catalog, REGISTRY)
+
+
+def _may_control_all_but(hass: HomeAssistant, *entity_ids: str) -> Permissions:
+    """Control of everything except these, which stay readable."""
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {
+                    SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True},
+                    "entity_ids": {
+                        entity_id: {POLICY_READ: True} for entity_id in entity_ids
+                    },
+                }
+            },
+            tiers={"max": TIER_USER, "allow": [], "deny": []},
+        ),
+        _lookup(hass),
+    )
+    return Permissions(roles=[role])
+
+
+def _call(domain: str, service: str, entity_id: str, **data: Any) -> dict[str, Any]:
+    return {
+        "type": "call_service",
+        "domain": domain,
+        "service": service,
+        "target": {"entity_id": entity_id},
+        "service_data": data,
+    }
+
+
+async def test_a_group_helper_cannot_carry_a_call_to_a_denied_member(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-6qwm-3pgq-2w7h: a read-only light went off with the group it is in.
+
+    Only an old-style `group.` entity is expanded before the service runs, and
+    that is the one this layer was resolving. A group *helper* is an ordinary
+    `light.` entity whose own handler forwards to its members from inside Home
+    Assistant, after the answer has already been given -- so the members were
+    never judged, and the group was a one-click way around any rule naming one.
+    """
+    decider = await _member_decider(hass)
+    permissions = _may_control_all_but(hass, "light.bed_light")
+
+    direct = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.bed_light"),
+    )
+    assert direct.allowed is False, "the rule works when the entity is named"
+
+    through = decider.decide(
+        permissions, KIND_WS, "call_service", _call("light", "turn_off", "light.hall")
+    )
+    assert through.allowed is False, "and has to work when the group names it"
+    assert "light.bed_light" in through.resources
+
+    # The other member is not the reason, and a group of only allowed members
+    # stays workable.
+    hass.states.async_set(
+        "light.hall_ok", "on", {"entity_id": ["light.ceiling_lights"]}
+    )
+    await hass.async_block_till_done()
+    assert decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.hall_ok"),
+    ).allowed
+
+
+async def test_a_scene_cannot_carry_a_value_to_a_denied_entity(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-8vfg-2wp7-3rh8: a read-only select took a new value from a scene.
+
+    `scene.apply` names the states it reproduces in its payload and was already
+    read. A *stored* scene names nothing -- `scene.turn_on` carries only the
+    scene -- and what it puts back is on the scene entity, which nothing looked
+    at. Activating one was a way to write any entity it had been built with.
+    """
+    decider = await _member_decider(hass)
+    permissions = _may_control_all_but(hass, "input_select.announcing")
+
+    decision = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        _call("scene", "turn_on", "scene.evening"),
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_RESOURCE
+    assert "input_select.announcing" in decision.resources
+
+
+async def test_a_speaker_group_cannot_carry_a_volume_to_a_denied_member(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-rm59-p5pc-35m5: a read-only speaker took a volume from its group.
+
+    Same shape again, under the attribute a media player uses for it. Kept as
+    its own test because it is a different attribute, and covering one of the
+    two would have read as covering both.
+    """
+    decider = await _member_decider(hass)
+    permissions = _may_control_all_but(hass, "media_player.kitchen")
+
+    decision = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        _call("media_player", "volume_set", "media_player.speakers", volume_level=0.5),
+    )
+    assert decision.allowed is False
+    assert "media_player.kitchen" in decision.resources
+
+
+async def test_a_member_list_is_followed_through_a_nested_group(
+    hass: HomeAssistant,
+) -> None:
+    """A group holding a group is one more hop to the same denied entity."""
+    decider = await _member_decider(hass)
+    hass.states.async_set("light.outer", "on", {"entity_id": ["light.hall"]})
+    await hass.async_block_till_done()
+
+    decision = decider.decide(
+        _may_control_all_but(hass, "light.bed_light"),
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.outer"),
+    )
+    assert decision.allowed is False
+    assert "light.bed_light" in decision.resources
+
+
+async def test_a_member_list_that_points_at_itself_terminates(
+    hass: HomeAssistant,
+) -> None:
+    """A cycle is a configuration mistake, not a reason to hang the proxy."""
+    decider = await _member_decider(hass)
+    hass.states.async_set("light.a", "on", {"entity_id": ["light.b"]})
+    hass.states.async_set("light.b", "on", {"entity_id": ["light.a"]})
+    await hass.async_block_till_done()
+
+    decision = decider.decide(
+        _may_control_all_but(hass, "light.bed_light"),
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.a"),
+    )
+    assert decision.allowed is True
+
+
+async def test_an_attribute_that_is_not_a_member_list_is_not_expanded(
+    hass: HomeAssistant,
+) -> None:
+    """`entity_id` naming something that is not an entity must not deny a call.
+
+    The list is confirmed against the state machine rather than trusted, so an
+    integration publishing an unrelated string under the same attribute costs a
+    failed lookup instead of a refusal nobody can explain.
+    """
+    decider = await _member_decider(hass)
+    hass.states.async_set("light.odd", "on", {"entity_id": ["not_an_entity", 7]})
+    await hass.async_block_till_done()
+
+    decision = decider.decide(
+        _may_control_all_but(hass, "light.bed_light"),
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.odd"),
+    )
+    assert decision.allowed is True

@@ -229,6 +229,60 @@ class Decision:
             self.message = USER_MESSAGES.get(self.reason, DEFAULT_USER_MESSAGE)
 
 
+# How an entity says which other entities it acts on. Every group platform
+# publishes its members as `entity_id`, and so does a stored scene -- the list
+# of what it puts back. `group_members` is the same thing for a speaker group.
+MEMBER_ATTRIBUTES = ("entity_id", "group_members")
+
+
+@callback
+def _expand_members(hass: HomeAssistant, entities: set[str]) -> set[str]:
+    """Add the entities that working a group or a scene reaches through it.
+
+    Home Assistant expands an old-style `group.` entity before the service runs,
+    which is why `expand_entity_ids` is enough for those. Nothing expands the
+    rest: a group helper is an ordinary `light.` or `media_player.` entity whose
+    own handler forwards the call to its members, and `scene.turn_on` puts back
+    whatever the scene stored. Both happen inside Home Assistant, after this
+    layer has already answered, so a member reachable that way was never judged
+    -- and a light denied outright went off when the group it sits in was
+    switched, a read-only select took a new value from a scene, and a read-only
+    speaker took a new volume from the group above it.
+
+    Read off the state rather than the registry because that is where every
+    group platform, the old ones and the helpers alike, publishes its members,
+    and a member that is not in the state machine is not something the call can
+    reach. Followed transitively, since a group can hold a group.
+    """
+    reached = set(entities)
+    pending = list(entities)
+    seen: set[str] = set()
+
+    while pending:
+        entity_id = pending.pop()
+        if entity_id in seen:
+            continue
+        seen.add(entity_id)
+        if (state := hass.states.get(entity_id)) is None:
+            continue
+        for attribute in MEMBER_ATTRIBUTES:
+            value = state.attributes.get(attribute)
+            if isinstance(value, str):
+                value = [value]
+            if not isinstance(value, (list, tuple, set)):
+                continue
+            for member in value:
+                if (
+                    isinstance(member, str)
+                    and member not in reached
+                    and hass.states.get(member) is not None
+                ):
+                    reached.add(member)
+                    pending.append(member)
+
+    return reached
+
+
 @callback
 def expand_to_entities(hass: HomeAssistant, found: Extracted) -> set[str]:
     """Resolve every referenced resource to concrete entity ids.
@@ -293,7 +347,9 @@ def expand_to_entities(hass: HomeAssistant, found: Extracted) -> set[str]:
     # is the same helper the service framework uses, so the expansion matches.
     entities.update(group_helper.expand_entity_ids(hass, entities))
 
-    return entities
+    # And the ones Home Assistant does not expand, which it reaches from inside
+    # the entity instead. Last, and over the whole set, for the same reason.
+    return _expand_members(hass, entities)
 
 
 class Decider:
