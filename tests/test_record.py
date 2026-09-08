@@ -408,3 +408,75 @@ async def test_a_recorded_script_press_writes_the_script_down(
 
     assert decision.allowed is True
     assert recording.entities == {"script.night_lights": POLICY_CONTROL}
+
+
+async def test_a_recorded_app_is_granted_through_an_allow_list(
+    hass: HomeAssistant,
+) -> None:
+    """Removing a denial grants nothing while an allow whitelist is in force.
+
+    `app_allowed` takes denials first, then, if any role carries a non-empty
+    allow list, requires an explicit match against it. So on a role holding
+    one, dropping an app from `deny` leaves it just as unreachable -- the
+    whitelist never named it. The recording reported success and the app was
+    still missing from the sidebar.
+    """
+    role = {
+        "id": "guests",
+        "name": "Guests",
+        "apps": {"allow": ["lovelace"], "deny": ["energy"], "dashboards": {}},
+    }
+    recording = record.Recording(role_id="guests", started=None)
+    recording.apps.add("energy")
+
+    changes = record.apply(role, recording)
+
+    assert changes["apps"]["deny"] == [], "no longer denied"
+    assert changes["apps"]["allow"] == ["energy", "lovelace"], "and now named"
+
+    permissions = _permissions(hass, {**role, **changes})
+    assert permissions.app_allowed("energy") is True
+    assert permissions.app_allowed("history") is False, "the list still bounds"
+
+
+async def test_an_empty_allow_list_is_left_empty(hass: HomeAssistant) -> None:
+    """Empty means "everything not denied", not "nothing yet".
+
+    Filling it with only what a recording happened to see would take away
+    every app the role could already open -- a recording only ever adds.
+    """
+    role = {
+        "id": "guests",
+        "name": "Guests",
+        "apps": {"allow": [], "deny": ["energy"], "dashboards": {}},
+    }
+    recording = record.Recording(role_id="guests", started=None)
+    recording.apps.add("energy")
+
+    changes = record.apply(role, recording)
+
+    assert changes["apps"]["allow"] == []
+    permissions = _permissions(hass, {**role, **changes})
+    assert permissions.app_allowed("energy") is True
+    assert permissions.app_allowed("history") is True, "and everything else still is"
+
+
+async def test_an_app_a_denial_still_refuses_is_reported(hass: HomeAssistant) -> None:
+    """`apply` only ever grows the role's own allow list, so a deny can win.
+
+    Same reasoning as the entity side: the denial is somebody's decision and
+    is not undone on their behalf, so it is reported instead of left to be
+    discovered from a sidebar that is still missing the screen.
+    """
+    role = {
+        "id": "guests",
+        "name": "Guests",
+        "apps": {"allow": [], "deny": ["config/*"], "dashboards": {}},
+    }
+    recording = record.Recording(role_id="guests", started=None)
+    recording.apps.add("config/automation")
+    recording.apps.add("energy")
+
+    updated = {**role, **record.apply(role, recording)}
+
+    assert record.blocked_apps(hass, updated, recording) == ["config/automation"]

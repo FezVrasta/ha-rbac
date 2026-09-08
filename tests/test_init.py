@@ -320,12 +320,17 @@ async def test_stopping_a_recording_reports_everything_it_saw(
     """
     data = hass.data[DATA_RBAC]
     role = await data.store.async_create_role(
-        {"name": "Guests", "deny": {CAT_ENTITIES: {"domains": {"lock": True}}}}
+        {
+            "name": "Guests",
+            "deny": {CAT_ENTITIES: {"domains": {"lock": True}}},
+            "apps": {"allow": [], "deny": ["config/*"], "dashboards": {}},
+        }
     )
     recording = data.recorder.start(role["id"])
     recording.note_entity("light.kitchen", POLICY_READ)
     recording.note_entity("lock.front", POLICY_READ)
     recording.apps.add("lovelace")
+    recording.apps.add("config/automation")
     recording.capabilities.add("automations")
 
     client = await hass_ws_client(hass)
@@ -339,10 +344,12 @@ async def test_stopping_a_recording_reports_everything_it_saw(
         "light.kitchen": POLICY_READ,
         "lock.front": POLICY_READ,
     }
-    assert result["seen"]["apps"] == ["lovelace"]
+    assert result["seen"]["apps"] == ["config/automation", "lovelace"]
     assert result["seen"]["capabilities"] == ["automations"]
-    # Added to the allow side, and vetoed by the role's own denial.
+    # Added to the allow side, and vetoed by the role's own denial. Both kinds
+    # are reported: an entity the deny rule overrules, and a screen it does.
     assert result["blocked"] == ["lock.front"]
+    assert result["blocked_apps"] == ["config/automation"]
 
 
 async def test_discarding_a_recording_leaves_the_role_alone(

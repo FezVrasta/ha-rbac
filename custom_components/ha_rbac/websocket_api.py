@@ -415,6 +415,7 @@ async def handle_record_stop(
             # the role vetoes it. Saying which ones beats leaving someone to
             # find out from a broken dashboard.
             "blocked": record.still_blocked(hass, updated, recording),
+            "blocked_apps": record.blocked_apps(hass, updated, recording),
         },
     )
 

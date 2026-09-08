@@ -1085,6 +1085,18 @@ class HaRbacPanel extends HTMLElement {
             ` but a deny rule on this role still overrules ${one ? "it" : "them"}:` +
             ` ${named}${rest > 0 ? ` and ${rest} more` : ""}.`;
         }
+        // The same for screens. Granting an app only ever grows this role's own
+        // allow list, so a denial on it still wins, and a sidebar that is still
+        // missing the screen is a worse way to find that out.
+        const blockedApps = result.blocked_apps || [];
+        if (blockedApps.length) {
+          const one = blockedApps.length === 1;
+          message +=
+            ` ${one ? "One screen is" : `${blockedApps.length} screens are`}` +
+            ` still denied by a rule on this role:` +
+            ` ${blockedApps.slice(0, 5).join(", ")}` +
+            `${blockedApps.length > 5 ? ` and ${blockedApps.length - 5} more` : ""}.`;
+        }
       },
       () => message
     );
