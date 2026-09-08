@@ -32,7 +32,8 @@
       "port_conflict": "The proxy cannot listen on the same port as Home Assistant."
     },
     "abort": {
-      "already_configured": "Access control is already set up."
+      "already_configured": "Access control is already set up.",
+      "tls_terminated": "Home Assistant is serving HTTPS itself, with its own certificate under Settings > System > Network. This proxy speaks plain HTTP on both sides, so it cannot sit in front of it: taking the HTTPS port would mean answering plaintext on it.\n\nTo use this, put a reverse proxy such as NGINX, Traefik or Caddy in front of Home Assistant to hold the certificate, then clear SSL certificate and SSL key here. That arrangement is supported and needs no other change.\n\nIf TLS is already terminated somewhere else, nothing needs doing: this message only appears when Home Assistant holds the certificate itself."
     }
   },
   "options": {
