@@ -301,6 +301,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         await proxy.async_start()
         data.proxy = proxy
+        # The proxy is the real entry point on `proxy_port` from here on,
+        # whether this integration moved Home Assistant's own listener or the
+        # person running it did that by hand -- either way the auto-detected
+        # internal URL, if nothing overrides it, would otherwise still name
+        # Home Assistant's own port.
+        discovery.async_correct_internal_url(hass, proxy_port)
         if await _confirm_move():
             # Only once the move is permanent. Until then Home Assistant may
             # still return to the port it came from, and an advertisement
@@ -465,5 +471,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Home Assistant sets `disabled_by` before it unloads, which is what tells
     # the two apart.
     if entry.disabled_by is not None:
+        # The corrected internal URL names the proxy's port, which nothing is
+        # about to answer on. Cleared here rather than in the network restore,
+        # because it is set whether or not this integration moved Home
+        # Assistant and has to come back for the same reason.
+        discovery.async_restore_internal_url(hass)
         await _async_restore_network(hass, entry)
     return True

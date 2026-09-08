@@ -202,3 +202,7 @@ DATA_RBAC: "HassKey[RbacData]" = HassKey(DOMAIN)
 # aiohttp routes cannot be removed, so the static path is registered once for
 # the lifetime of the process rather than per config entry.
 DATA_STATIC_PATH_REGISTERED: HassKey[bool] = HassKey(f"{DOMAIN}_static")
+# The internal URL this integration set, so a later correction can tell its own
+# work from a person's. Kept outside `DATA_RBAC` because it has to survive the
+# unload that reads it: the value is put back as the entry goes away.
+DATA_SET_INTERNAL_URL: HassKey[str] = HassKey(f"{DOMAIN}_internal_url")
