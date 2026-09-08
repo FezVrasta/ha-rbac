@@ -230,6 +230,23 @@ trim another. [The precise rule is in DESIGN.md](https://github.com/FezVrasta/ha
 </details>
 
 <details>
+<summary><strong>Does a schedule limit how far back someone can look?</strong></summary>
+
+<br>
+
+No. A schedule decides **when the role is in force**, not which slice of the
+past it can read. Give a cleaner weekday mornings and, during those mornings,
+they can pull the full history of every entity the role lets them see —
+including the evenings and weekends they were never here for.
+
+So a schedule is the right tool for "only while they're working" and the wrong
+one for "only what happened while they were working". If someone shouldn't see
+an entity's past, don't grant the entity: history is filtered by *what* the
+role can reach, and hidden entities are absent from it entirely.
+
+</details>
+
+<details>
 <summary><strong>Isn't this security by obscurity?</strong></summary>
 
 <br>
