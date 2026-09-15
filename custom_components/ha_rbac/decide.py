@@ -368,6 +368,18 @@ class Decider:
         self._filters = filter_registry
         self._recorder = recorder
 
+    @property
+    def catalog(self) -> Catalog:
+        """Return the catalogue this decider judges against.
+
+        The proxy needs it on the way back as well as on the way in: whether a
+        response came straight off disk is a question only the catalogue can
+        answer, and the answer has to be the same one the request was judged
+        with. Handing it out here keeps the two halves on one catalogue instead
+        of giving the proxy a second reference that could drift out of step.
+        """
+        return self._catalog
+
     @callback
     def is_recording(self, permissions: Permissions) -> bool:
         """Return True if a recording covers this user.

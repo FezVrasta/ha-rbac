@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
+from yarl import URL
 
 from .const import DATA_SET_INTERNAL_URL
 
@@ -42,14 +43,37 @@ def _api() -> Any:
 
 
 def _rewrite_port(value: str, hidden_port: int, proxy_port: int) -> str:
-    """Return a URL property with the hidden port swapped for the proxy port.
+    """Return a URL property pointing at the proxy port.
 
-    Only a URL that names the hidden port is touched. A user who configured an
-    explicit internal or external URL meant it, and it is left as it stands.
+    The zeroconf record carries the port in two shapes. The SRV record has it
+    as a number, corrected on the rebuilt `ServiceInfo`. The TXT properties
+    carry it inside URL strings -- `internal_url` and `base_url` -- and those
+    are what the companion apps read to build the connection they keep open.
+
+    An earlier form only swapped an explicit `:hidden_port`, which missed the
+    case that actually breaks the apps: Home Assistant advertises those URLs
+    with *no port at all* (`http://192.168.178.10`), so there was nothing to
+    replace and the app was handed a portless URL. It then falls back to the
+    scheme default -- port 80 -- which the proxy does not answer on, and the
+    app hangs after login. A URL that already names the hidden port hit the
+    same fate on paths where the port was elided.
+
+    So the whole authority is rebuilt to name the proxy port, whether the URL
+    had the hidden port, a different port, or none. A value that is not a URL
+    this integration is responsible for -- an external URL a person configured,
+    or a property that is not a URL -- is left untouched: only `http`/`https`
+    URLs whose port is absent or equal to the hidden one are rewritten.
     """
     if not value:
         return value
-    return value.replace(f":{hidden_port}", f":{proxy_port}")
+    parsed = URL(value)
+    if parsed.scheme not in ("http", "https") or not parsed.host:
+        return value
+    # A URL already naming some other explicit port was configured on purpose;
+    # only the hidden port or a missing one is ours to correct.
+    if parsed.explicit_port not in (None, hidden_port):
+        return value
+    return str(parsed.with_port(proxy_port))
 
 
 def _registered(aio_zc: Any, zeroconf_type: str) -> Any:

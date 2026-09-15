@@ -18,6 +18,7 @@ import json
 import logging
 from collections import OrderedDict
 from collections.abc import Callable
+from http import HTTPStatus
 from ipaddress import ip_address, ip_network
 from typing import Any
 
@@ -132,22 +133,103 @@ def _unverified_issuer(signature: str) -> str | None:
     return issuer if isinstance(issuer, str) else None
 
 
-def _carries_entity_data(content_type: str) -> bool:
-    """Return True if a response could disclose entity state.
-
-    Images, video and static assets cannot; anything textual might. Used only to
-    decide whether an unfilterable response must be refused.
-    """
-    # Media cannot disclose an entity's state, and a stream cannot be buffered
-    # to filter in any case. A camera feed the role is permitted to see must not
-    # be refused for being unfilterable.
-    if content_type.startswith(("image/", "video/", "audio/", "font/", "multipart/")):
-        return False
-    return content_type not in (
+# Content types with no representation for entity state. A body in one of these
+# shapes cannot be a disguised state dump: there is nowhere in the format to put
+# an entity id and a value. Families first, because every member of them is a
+# byte stream a codec reads.
+_NO_STATE_FAMILIES = ("image/", "video/", "audio/", "font/", "multipart/")
+_NO_STATE_TYPES = frozenset(
+    {
+        # Opaque bytes and compiled code.
         "application/octet-stream",
+        "application/wasm",
+        # Stylesheets and scripts. Static assets the frontend loads by the
+        # hundred; none is generated per user.
         "text/css",
         "text/javascript",
         "application/javascript",
+        # A spec-defined document with fixed keys and no entity slot. Earned by
+        # requirement 3.3: the companion app fetches `/manifest.json` on every
+        # connect and cannot start without it.
+        "application/manifest+json",
+        # The frontend shell. Home Assistant renders state client-side, and the
+        # index is its own `AbstractResource`, so `build_statics` skips it and
+        # provenance cannot cover it. See the residual risk below.
+        "text/html",
+    }
+)
+
+
+def _carries_entity_data(content_type: str) -> bool:
+    """Return True unless this shape provably cannot disclose entity state.
+
+    The default is refusal. An unfilterable response for a request that named
+    no resources is the one case where nothing has been checked at all -- not
+    the request, because it named nothing, and not the response, because it
+    could not be parsed -- so the only safe answer is to refuse unless the shape
+    itself rules entity state out.
+
+    Two earlier forms of this both failed, in opposite directions:
+
+    - "Is this textual?", refusing everything textual outside a short allowlist.
+      The allowlist named `text/css` and `application/javascript` but not
+      `application/manifest+json`, `text/plain` or `text/html`, so a restricted
+      user got a 403 for the PWA manifest, `/api/onboarding` and the frontend
+      index. The companion app fetches those on every connect and hung on the
+      loading screen after login.
+    - "Is this exactly `application/json`?", which emptied the guard instead of
+      tightening it. `_filter_http_body` already returns `filterable=True` for
+      parseable `application/json`, so a JSON body never reaches the refusal
+      branch; what reaches it is oversized or unparseable JSON plus every
+      genuinely non-JSON body. Answering "no" for all of those forwarded them
+      unfiltered -- a fail-open.
+
+    So each exemption is earned rather than assumed, and this function is only
+    half of it. The other half is provenance, at the call site: a body Home
+    Assistant handed straight off disk cannot carry live entity state whatever
+    its content type, which is what stays closed as Home Assistant adds new
+    static content types. This function answers only for shapes.
+
+    `text/plain` is deliberately absent, because plain text is a perfectly good
+    carrier of entity state -- a rendered template is exactly that. The
+    plain-text responses requirement 3.3 protects are covered without exempting
+    the type: `/local/` and `/frontend_latest/` are directory listings served off
+    disk, so provenance covers them, and `/api/onboarding` on an onboarded
+    instance is Home Assistant's own `404: Not Found`, which the call site
+    forwards as an upstream error rather than as a body worth trusting. A 200
+    `text/plain` body from a view stays refused.
+
+    Known residual risk, per the design: `text/html` is exempt on the strength
+    of Home Assistant rendering state client-side, so a custom integration that
+    rendered entity state into HTML would be forwarded. Narrowable later by
+    scoping that entry to non-`/api/` paths if it proves to matter.
+    """
+    base = content_type.partition(";")[0].strip().lower()
+    if base in _NO_STATE_TYPES:
+        return False
+    return not base.startswith(_NO_STATE_FAMILIES)
+
+
+def _is_upstream_error(content_type: str, status: int) -> bool:
+    """Return True for Home Assistant's own plain-text error framing.
+
+    Every path Home Assistant does not serve comes back as `404: Not Found` with
+    a `text/plain` body -- measured, not assumed. Refusing those would turn each
+    one into a 403, which is requirement 3.2's whole failure mode: the companion
+    app requests `/api/ios/config` on every launch, reads anything but the 404 as
+    an auth failure, and loops on token refresh until onboarding hangs. It is
+    also what `/api/onboarding` answers on an onboarded instance, which is the
+    only way a restricted user can see that path at all -- during onboarding
+    proper there is no signed-in user, so the response is never filtered.
+
+    Scoped to error statuses on purpose, so it cannot excuse a body a view
+    produced: an error body is Home Assistant's framing, and the residual risk
+    is a view that reported entity state in a plain-text error, which none in
+    core does. `text/plain` at 200 is still refused.
+    """
+    return (
+        status >= HTTPStatus.BAD_REQUEST
+        and content_type.partition(";")[0].strip().lower() == "text/plain"
     )
 
 
@@ -615,7 +697,20 @@ class RbacProxy:
                 # against them by the resource gate, so an unfilterable response
                 # to it discloses nothing new. Refusal is for the unbounded case,
                 # where the response was the only thing left to check.
-                if not decision.resources and _carries_entity_data(content_type):
+                #
+                # Three ways out of the refusal, and each has to be earned:
+                # the shape cannot hold entity state (`_carries_entity_data`),
+                # Home Assistant handed the body straight off disk so it is not
+                # live state at all whatever its type (`serves_a_file` -- this is
+                # the half that stays closed as new static content types
+                # appear), or the body is Home Assistant's own error framing,
+                # where manufacturing a 403 is what breaks the companion app.
+                if (
+                    not decision.resources
+                    and _carries_entity_data(content_type)
+                    and not self._decider.catalog.serves_a_file(method, request.path)
+                    and not _is_upstream_error(content_type, result.status)
+                ):
                     # A size limit is a performance guard, not a correctness
                     # boundary: streaming here would hand a restricted user every
                     # entity in a large response, silently.
@@ -631,9 +726,33 @@ class RbacProxy:
                         {"message": "Response too large to filter"}, status=403
                     )
 
-            # Anything else -- images, streams, static assets -- carries no
-            # entity data of its own, and the state that would reveal it has
-            # already been filtered.
+            # What reaches here either was not judged as this user's at all, or
+            # earned one of the exemptions above -- images, streams and static
+            # assets, whose shape or provenance rules entity state out.
+            #
+            # A response the upstream framed with a Content-Length is sent back
+            # the same way: buffered, with that length restored. Streaming it
+            # instead drops the length (it was stripped above) and aiohttp then
+            # delimits the body with chunked transfer-encoding. Most clients
+            # cope, but iOS's URLSession -- which keeps one connection and
+            # reuses it hard -- mis-frames a chunked reply on a reused
+            # connection often enough that a burst of small requests loses one
+            # to "the network connection was lost" (-1005). The companion app
+            # fires ~20 `/auth/token` refreshes back to back on login; one such
+            # drop there fails onboarding and hangs the app after the password
+            # is entered. Preserving the original framing keeps the connection
+            # reusable. Only a genuinely unbounded body (no Content-Length, e.g.
+            # a camera stream) is streamed, where chunked is the only option.
+            length = result.headers.get(hdrs.CONTENT_LENGTH)
+            if length is not None:
+                body = await result.read()
+                return web.Response(
+                    body=body,
+                    status=result.status,
+                    headers=headers,
+                    content_type=content_type,
+                )
+
             response = web.StreamResponse(status=result.status, headers=headers)
             response.content_type = content_type
             await response.prepare(request)

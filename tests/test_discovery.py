@@ -178,3 +178,51 @@ async def test_nothing_happens_when_zeroconf_is_not_loaded(
 
     assert updated is False
     get_instance.assert_not_called()
+
+
+def _service_info_portless() -> AsyncServiceInfo:
+    """Build the record Home Assistant actually broadcasts on a moved instance.
+
+    The `base_url` and `internal_url` in the TXT carry no port at all -- this is
+    what a real instance advertised, and what the companion apps read to build
+    the connection they keep open. The SRV record still names the hidden port.
+    """
+    return AsyncServiceInfo(
+        ZEROCONF_TYPE,
+        name=f"Home.{ZEROCONF_TYPE}",
+        server="uuid.local.",
+        parsed_addresses=["192.168.1.10"],
+        port=HIDDEN_PORT,
+        properties={
+            "location_name": "Home",
+            "uuid": "uuid",
+            "version": "2026.9.0",
+            "base_url": "http://192.168.1.10",
+            "internal_url": "http://192.168.1.10",
+            "external_url": "",
+        },
+    )
+
+
+async def test_a_portless_url_property_gains_the_proxy_port(
+    hass: HomeAssistant,
+) -> None:
+    """A TXT URL advertised without a port is the case that hung the apps.
+
+    Home Assistant broadcasts `base_url`/`internal_url` with no port, so the
+    companion app fell back to port 80 -- which the proxy does not answer on --
+    and hung after login. The correction must add the proxy port, not only swap
+    an explicit one.
+    """
+    hass.config.components.add("zeroconf")
+    zeroconf = _FakeAsyncZeroconf(_service_info_portless())
+
+    with _patch(zeroconf):
+        updated = await discovery.async_advertise_proxy_port(hass, PROXY_PORT)
+
+    assert updated is True
+    (registered,) = zeroconf.registry.async_get_infos_type(ZEROCONF_TYPE)
+    assert registered.port == PROXY_PORT
+    props = registered.decoded_properties
+    assert props["base_url"] == f"http://192.168.1.10:{PROXY_PORT}"
+    assert props["internal_url"] == f"http://192.168.1.10:{PROXY_PORT}"
