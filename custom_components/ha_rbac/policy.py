@@ -817,18 +817,26 @@ class CompiledRole:
     def _granted_by_a_dashboard(self, entity_id: str, key: str) -> bool:
         """Return True if a dashboard this role gets the contents of shows it.
 
+        A dashboard grant only ever widens *reading*. Control is never handed
+        out this way: an entity a role may operate is one its own allow list
+        names, because otherwise anyone who can edit a dashboard could grant
+        control of anything by dropping it on a dashboard the role happens to
+        hold -- a privilege escalation the entity list was written to prevent.
+        A `control` dashboard still reads as the visibility grant it also is;
+        the control half comes from the allow list, which is checked before
+        this.
+
         A denial still wins, which is checked before this: naming an entity a
         role must not see should not be undone by someone putting it on a
-        dashboard the role happens to hold. So does an exception that caps an
-        entity below the level asked for -- a garage door marked read-only is
-        read-only wherever it is drawn.
+        dashboard the role happens to hold.
         """
         if self.dashboard_entities is None:
             return False
+        # Control is not grantable through a dashboard; only the allow list is.
+        if key == POLICY_CONTROL:
+            return False
         for url_path, level in self.dashboard_levels.items():
             if level == DASHBOARD_EMPTY:
-                continue
-            if key == POLICY_CONTROL and level != DASHBOARD_CONTROL:
                 continue
             if entity_id in self.dashboard_entities(url_path):
                 return True
