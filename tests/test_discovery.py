@@ -226,3 +226,55 @@ async def test_a_portless_url_property_gains_the_proxy_port(
     props = registered.decoded_properties
     assert props["base_url"] == f"http://192.168.1.10:{PROXY_PORT}"
     assert props["internal_url"] == f"http://192.168.1.10:{PROXY_PORT}"
+
+
+def _service_info_with_an_external_url() -> AsyncServiceInfo:
+    """Build the record broadcast by an instance reachable from outside.
+
+    `external_url` is a real Home Assistant TXT property, and `base_url` is set
+    to it whenever there is one -- so the portless URL in this record is not the
+    proxy's, it is how the instance is reached over the internet.
+    """
+    return AsyncServiceInfo(
+        ZEROCONF_TYPE,
+        name=f"Home.{ZEROCONF_TYPE}",
+        server="uuid.local.",
+        parsed_addresses=["192.168.1.10"],
+        port=HIDDEN_PORT,
+        properties={
+            "location_name": "Home",
+            "uuid": "uuid",
+            "version": "2026.9.0",
+            "external_url": "https://abcdef.ui.nabu.casa",
+            "base_url": "https://abcdef.ui.nabu.casa",
+            "internal_url": "http://192.168.1.10",
+        },
+    )
+
+
+async def test_an_external_url_does_not_gain_the_proxy_port(
+    hass: HomeAssistant,
+) -> None:
+    """Correcting the local URLs must not rewrite the remote one.
+
+    Adding the proxy port to a portless URL is right for `internal_url`, which
+    names this instance on the LAN, and wrong for `external_url`, which names
+    how it is reached from outside -- `https://abcdef.ui.nabu.casa:8123` is an
+    address nothing answers on, and the companion app reads these properties to
+    decide how to connect. `base_url` mirrors the external URL when there is
+    one, so it has to be left alone for the same reason.
+    """
+    hass.config.components.add("zeroconf")
+    zeroconf = _FakeAsyncZeroconf(_service_info_with_an_external_url())
+
+    with _patch(zeroconf):
+        updated = await discovery.async_advertise_proxy_port(hass, PROXY_PORT)
+
+    assert updated is True
+    (registered,) = zeroconf.registry.async_get_infos_type(ZEROCONF_TYPE)
+    props = registered.decoded_properties
+    # The remote URLs are untouched...
+    assert props["external_url"] == "https://abcdef.ui.nabu.casa"
+    assert props["base_url"] == "https://abcdef.ui.nabu.casa"
+    # ...while the local one still gets the correction it is there for.
+    assert props["internal_url"] == f"http://192.168.1.10:{PROXY_PORT}"

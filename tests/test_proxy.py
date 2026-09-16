@@ -33,6 +33,7 @@ from custom_components.ha_rbac.filters import REGISTRY
 from custom_components.ha_rbac.ingress import SESSION_ENDPOINT
 from custom_components.ha_rbac.policy import Evaluator, Permissions
 from custom_components.ha_rbac.proxy import (
+    MAX_BUFFERED_RESPONSE_SIZE,
     RbacProxy,
     _carries_entity_data,
     _WsSession,
@@ -142,6 +143,36 @@ async def proxy_env_fixture(
             )
 
     hass.http.register_view(_RenderedTemplateView())
+
+    # A body over the buffering cap, in an exempt shape so it reaches the
+    # forwarding path rather than the filter. Held in memory whole, this is what
+    # a backup download or a media file costs the proxy.
+    class _BigView(HomeAssistantView):
+        """Stands in for a backup or a media file."""
+
+        url = "/rbac_big"
+        name = "rbac_test:big"
+
+        async def get(self, request: web.Request) -> web.Response:
+            """Return a body over the buffering cap."""
+            return web.Response(
+                body=b"x" * (MAX_BUFFERED_RESPONSE_SIZE + 1), content_type="image/png"
+            )
+
+    hass.http.register_view(_BigView())
+
+    # The same shape, comfortably under the cap.
+    class _SmallView(HomeAssistantView):
+        """Stands in for the small replies the companion app fires in bursts."""
+
+        url = "/rbac_small"
+        name = "rbac_test:small"
+
+        async def get(self, request: web.Request) -> web.Response:
+            """Return a body well under the buffering cap."""
+            return web.Response(body=b"x" * 1024, content_type="image/png")
+
+    hass.http.register_view(_SmallView())
 
     # A file served straight off disk, for the provenance exemption. Registered
     # through Home Assistant so the catalogue derives it the way it does live.
@@ -1200,3 +1231,60 @@ async def test_unfilterable_entity_state_is_refused(
         body = await response.text()
         assert response.status == HTTPStatus.FORBIDDEN, body
         assert "light.bedroomlight" not in body
+
+
+async def test_a_small_response_keeps_its_content_length(
+    proxy_env: dict[str, Any],
+) -> None:
+    """Small replies are buffered so their original framing survives.
+
+    Streaming drops the Content-Length and aiohttp delimits the body with
+    chunked transfer-encoding instead. iOS's URLSession reuses one connection
+    hard and mis-frames a chunked reply on a reused connection often enough
+    that one of the ~20 token refreshes the companion app fires on login is
+    lost, which hangs the app after the password is entered.
+    """
+    await _bind(proxy_env["store"], proxy_env["read_only_user"], ROLE_READ_ONLY)
+
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(
+            f"{proxy_env['base']}/rbac_small",
+            headers={"Authorization": f"Bearer {proxy_env['read_only_token']}"},
+        ) as response,
+    ):
+        body = await response.read()
+
+    assert response.status == HTTPStatus.OK
+    assert len(body) == 1024
+    assert response.headers.get("Content-Length") == "1024"
+
+
+async def test_a_large_response_streams_instead_of_being_buffered(
+    proxy_env: dict[str, Any],
+) -> None:
+    """Preserving framing must not mean holding a whole download in memory.
+
+    Every backup and media file Home Assistant serves with a Content-Length
+    comes through this path, for admins as much as for anyone else, so
+    buffering on the strength of a Content-Length alone turns a multi-gigabyte
+    download into a multi-gigabyte allocation on hardware that does not have
+    it. The framing this protects belongs to small replies sent back to back;
+    a large body is one long transfer where chunked costs nothing.
+    """
+    await _bind(proxy_env["store"], proxy_env["read_only_user"], ROLE_READ_ONLY)
+
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(
+            f"{proxy_env['base']}/rbac_big",
+            headers={"Authorization": f"Bearer {proxy_env['read_only_token']}"},
+        ) as response,
+    ):
+        body = await response.read()
+
+    assert response.status == HTTPStatus.OK
+    # It arrives whole either way; what is being pinned is how.
+    assert len(body) == MAX_BUFFERED_RESPONSE_SIZE + 1
+    assert response.headers.get("Content-Length") is None
+    assert response.headers.get("Transfer-Encoding") == "chunked"

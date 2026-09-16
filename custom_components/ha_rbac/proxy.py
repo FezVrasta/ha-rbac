@@ -98,6 +98,10 @@ MAX_PENDING_IDS = 8192
 MAX_ENDPOINTS = 64
 # Bodies above this are not filtered, and are refused rather than forwarded.
 MAX_FILTERABLE_RESPONSE_SIZE = 16 * 1024 * 1024
+# Bodies above this keep their original framing by being buffered and sent back
+# with their Content-Length; larger ones stream, so that a backup or a media
+# file is never held in memory whole.
+MAX_BUFFERED_RESPONSE_SIZE = 4 * 1024 * 1024
 DISABLED_TIMEOUT = ClientTimeout(total=None)
 
 WS_PATH = "/api/websocket"
@@ -741,10 +745,20 @@ class RbacProxy:
             # fires ~20 `/auth/token` refreshes back to back on login; one such
             # drop there fails onboarding and hangs the app after the password
             # is entered. Preserving the original framing keeps the connection
-            # reusable. Only a genuinely unbounded body (no Content-Length, e.g.
-            # a camera stream) is streamed, where chunked is the only option.
+            # reusable.
+            #
+            # Buffering is capped, because the framing this protects is a
+            # property of small replies sent back to back -- the token
+            # refreshes, the manifest, a frontend chunk. A large body is a
+            # single long transfer where chunked costs nothing, and buffering
+            # it would hold the whole thing in memory: every backup download
+            # and media file Home Assistant serves with a Content-Length goes
+            # through here, for admins too, and on the hardware this runs on
+            # that is the difference between a proxy and an outage. Over the
+            # cap, and for a genuinely unbounded body (no Content-Length, e.g.
+            # a camera stream), it streams as before.
             length = result.headers.get(hdrs.CONTENT_LENGTH)
-            if length is not None:
+            if length is not None and int(length) <= MAX_BUFFERED_RESPONSE_SIZE:
                 body = await result.read()
                 return web.Response(
                     body=body,
