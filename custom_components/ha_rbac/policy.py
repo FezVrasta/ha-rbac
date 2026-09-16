@@ -203,14 +203,34 @@ LOCATION_SCHEMA = vol.Schema(
 # dashboard, and sees on it only what it is allowed elsewhere.
 DASHBOARD_EMPTY = "empty"
 DASHBOARD_CONTENT = "content"
-DASHBOARD_CONTROL = "control"
-DASHBOARD_LEVELS = (DASHBOARD_EMPTY, DASHBOARD_CONTENT, DASHBOARD_CONTROL)
+DASHBOARD_LEVELS = (DASHBOARD_EMPTY, DASHBOARD_CONTENT)
+
+# A third level, "control", once granted control of whatever the dashboard
+# showed. It was a way to escalate: dashboards are editable -- by a non-admin
+# too, if the role holds the `dashboards` capability -- so dropping an entity
+# onto a granted dashboard handed out control the role's own entity list never
+# gave. Control now comes from the entity list and nowhere else, which leaves
+# the level meaning exactly what "content" means.
+#
+# Folded into "content" rather than rejected. A role that fails this schema is
+# skipped whole, taking with it the access it still describes correctly, and
+# every role saved before this reads as invalid otherwise. It is also what a
+# browser still running the old panel sends.
+DASHBOARD_CONTROL_LEGACY = "control"
+
+
+def _dashboard_level(value: Any) -> str:
+    """Validate a dashboard level, folding the retired one into `content`."""
+    if value == DASHBOARD_CONTROL_LEGACY:
+        return DASHBOARD_CONTENT
+    return vol.In(DASHBOARD_LEVELS)(value)
+
 
 APPS_SCHEMA = vol.Schema(
     {
         vol.Optional("allow", default=list): [str],
         vol.Optional("deny", default=list): [str],
-        vol.Optional("dashboards", default=dict): {str: vol.In(DASHBOARD_LEVELS)},
+        vol.Optional("dashboards", default=dict): {str: _dashboard_level},
     }
 )
 
@@ -821,10 +841,9 @@ class CompiledRole:
         out this way: an entity a role may operate is one its own allow list
         names, because otherwise anyone who can edit a dashboard could grant
         control of anything by dropping it on a dashboard the role happens to
-        hold -- a privilege escalation the entity list was written to prevent.
-        A `control` dashboard still reads as the visibility grant it also is;
-        the control half comes from the allow list, which is checked before
-        this.
+        hold -- a privilege escalation the entity list was written to prevent,
+        and one a non-admin could work themselves if the role holds the
+        `dashboards` capability.
 
         A denial still wins, which is checked before this: naming an entity a
         role must not see should not be undone by someone putting it on a

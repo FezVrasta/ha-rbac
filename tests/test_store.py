@@ -178,3 +178,21 @@ async def test_asking_for_no_denials_returns_none_of_them(
     assert log.async_recent() != [], "precondition: there are denials to withhold"
 
     assert log.async_recent(limit) == []
+
+
+async def test_a_role_stored_with_the_retired_dashboard_level_survives(
+    store: RbacStore,
+) -> None:
+    """The retired `control` level folds into `content` instead of being rejected.
+
+    A role that fails the schema is skipped whole, which would take with it all
+    the access it still describes correctly -- and every role saved with a
+    control dashboard before the level was retired would fail. So it is coerced
+    to the level below, which is what it now means: the dashboard still carries
+    its contents, and control comes from the entity list alone.
+    """
+    role = await store.async_create_role(
+        {"name": "Kids", "apps": {"dashboards": {"kids": "control"}}}
+    )
+
+    assert role["apps"]["dashboards"] == {"kids": "content"}

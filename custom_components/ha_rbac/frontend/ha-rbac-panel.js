@@ -710,7 +710,7 @@ class HaRbacPanel extends HTMLElement {
         reopening the role. A denial elsewhere still wins.</p>
       <table id="dashboards">
         <thead><tr>
-          <th>Dashboard</th><th>Can open</th><th>Sees what is on it</th><th>Can control it</th>
+          <th>Dashboard</th><th>Can open</th><th>Sees what is on it</th>
         </tr></thead>
         <tbody>${this._visibleApps()
           .filter((app) => app.kind === "lovelace")
@@ -724,7 +724,6 @@ class HaRbacPanel extends HTMLElement {
               <td>${esc(app.label)}</td>
               <td>${box("open", !denied)}</td>
               <td>${box("content", !denied && level !== "empty")}</td>
-              <td>${box("control", !denied && level === "control")}</td>
             </tr>`;
           })
           .join("")}</tbody>
@@ -1755,7 +1754,7 @@ class HaRbacPanel extends HTMLElement {
 
         <h3>Dashboards</h3>
         <p class="hint">A dashboard's contents decide what the roles holding it
-          can reach, and they are re-read whenever Home Assistant says one
+          can see, and they are re-read whenever Home Assistant says one
           changed. This is for when you would rather not take its word for it.</p>
         <div class="actions">
           <ha-button id="refresh-dashboards">Re-read dashboards</ha-button>
@@ -1963,9 +1962,14 @@ class HaRbacPanel extends HTMLElement {
   }
 
   /**
-   * The three boxes describe one level, not three independent ones, so ticking
-   * a deeper one implies the shallower and unticking a shallower one drops
-   * what it carried.
+   * The two boxes describe one level, not two independent ones, so ticking the
+   * deeper one implies the shallower and unticking the shallower one drops what
+   * it carried.
+   *
+   * There was a third, "can control it", which granted control of whatever the
+   * dashboard showed. Dashboards are editable, so it was a way to hand out
+   * control the role's entity list never gave; control now comes from that list
+   * alone. A role still holding the old level reads as this one.
    */
   _wireDashboards(locked) {
     if (locked) return;
@@ -1980,21 +1984,12 @@ class HaRbacPanel extends HTMLElement {
 
         if (which === "open" && !on) {
           at("content").checked = false;
-          at("control").checked = false;
-        } else if (which === "content") {
-          if (on) at("open").checked = true;
-          else at("control").checked = false;
-        } else if (which === "control" && on) {
+        } else if (which === "content" && on) {
           at("open").checked = true;
-          at("content").checked = true;
         }
 
         const denied = !at("open").checked;
-        const level = at("control").checked
-          ? "control"
-          : at("content").checked
-            ? "content"
-            : "empty";
+        const level = at("content").checked ? "content" : "empty";
         this._draft.appDenied = this._draft.appDenied.filter((p) => p !== path);
         if (denied) this._draft.appDenied.push(path);
         if (level === "empty") delete this._draft.dashboardLevels[path];

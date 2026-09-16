@@ -164,7 +164,7 @@ not a correctness boundary, so it fails closed.
   matter as much as values: `{"-": {"a": ["latitude"]}}` names an attribute
   without its value, which still discloses that it exists.
 - **Apps**: which sidebar entries the role may open. Dashboards carry a level as
-  well: a role can open one empty, read what is on it, or control it. That is
+  well: a role can open one empty, or read what is on it. That is
   resolved against the dashboard when a request is judged rather than recorded
   when the role is saved, so a dashboard being edited changes who can see what
   without anyone reopening the role. The entity list per dashboard is cached and
@@ -172,6 +172,16 @@ not a correctness boundary, so it fails closed.
   consulted on the hottest path there is. A denial is checked first, so putting
   a forbidden entity on a granted dashboard does not unlock it, which would
   otherwise hand a grant to anyone who can edit a dashboard.
+
+  A dashboard widens *reading* and nothing else. There was a third level once,
+  which granted control of whatever the dashboard showed, and it was the same
+  hole read from the other end: dashboards are editable -- by a non-admin too,
+  where the role holds the `dashboards` capability -- so dropping an entity onto
+  a granted dashboard handed out control the role's own entity list never gave.
+  Control comes from the entity list alone. A role stored with the retired level
+  reads as the level below it rather than being rejected, because a role that
+  fails validation is skipped whole and would take the access it still describes
+  correctly with it.
 - **Commands**: ordinary use, or everything including settings, plus any
   *capabilities* — named parts of the administrative surface, so that granting
   automations or dashboards does not mean writing a glob. A role stores the
