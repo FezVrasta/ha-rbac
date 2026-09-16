@@ -1285,6 +1285,72 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+async def test_a_view_registered_after_setup_is_reclassified_on_start(
+    hass: HomeAssistant, socket_enabled: None
+) -> None:
+    """The route a non-admin's phone hung on was one the catalogue built before.
+
+    The catalogue is a snapshot: `rebuild` freezes the tier of every view that
+    exists at that moment. Setup builds it early, but `mobile_app` pulls in the
+    `ios` component -- and its `/api/ios/config` view -- later in start-up. A
+    route missing from the snapshot falls through to the admin default, so a
+    restricted user's companion app, which fetches that path on every launch,
+    was refused it and hung after login. Setup registers one more rebuild on
+    the started event to capture whatever appeared in between; without it, the
+    late view stays admin forever. This registers a view *after* setup's build
+    and proves the started rebuild -- and only it -- reclassifies the route.
+    """
+    from homeassistant.components.http import HomeAssistantView  # noqa: PLC0415
+
+    for domain in ("http", "websocket_api"):
+        await async_setup_component(hass, domain, {"http": {}})
+    await hass.async_block_till_done()
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_PROXY_PORT: _free_port(),
+            CONF_BIND_ADDRESS: "127.0.0.1",
+            CONF_UPSTREAM_HOST: "127.0.0.1",
+            CONF_UPSTREAM_PORT: _free_port(),
+        },
+    )
+    entry.add_to_hass(hass)
+
+    # Not running, so the started listener is registered rather than skipped.
+    hass.set_state(CoreState.not_running)
+    assert await async_setup_entry(hass, entry)
+    catalog = hass.data[DATA_RBAC].catalog
+
+    # A user-level view that comes into being only now -- after setup already
+    # snapshotted the catalogue -- standing in for `ios` arriving late.
+    class _LateUserView(HomeAssistantView):
+        url = "/api/rbac_regression/late"
+        name = "api:rbac_regression:late"
+        requires_auth = True
+
+        async def get(self, request: object) -> None:
+            """Answer a plain user-level GET, with no admin gate."""
+
+    method, path = "GET", _LateUserView.url
+    try:
+        # The snapshot predates the view, so the path is unknown and admin.
+        assert catalog.tier_for_request(method, path) == TIER_ADMIN, (
+            "precondition: the late view is absent from the build-time snapshot"
+        )
+
+        hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+        await hass.async_block_till_done()
+        hass.set_state(CoreState.running)
+
+        # The started rebuild re-walked the views and captured the late one.
+        assert catalog.tier_for_request(method, path) != TIER_ADMIN, (
+            "the started rebuild must reclassify a view registered after setup"
+        )
+    finally:
+        assert await async_unload_entry(hass, entry)
+
+
 async def test_a_role_can_refuse_one_ordinary_service(
     hass: HomeAssistant,
 ) -> None:

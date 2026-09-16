@@ -133,6 +133,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     # Integrations register websocket commands lazily as they are set up.
     data.unsubscribes.append(hass.bus.async_listen("component_loaded", catalog.rebuild))
+    # `component_loaded` fires as a component is imported, which is before some
+    # of them register their HTTP views -- the `ios` component that `mobile_app`
+    # pulls in registers `/api/ios/config` late enough that the rebuild above
+    # can miss it. A route the catalogue never captured falls through to the
+    # admin default, and a non-admin's companion app, which fetches that path
+    # on every launch, is refused it and hangs after login. Rebuilding once
+    # more when Home Assistant has finished starting captures whatever
+    # registered in between.
+    data.unsubscribes.append(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, catalog.rebuild)
+    )
     data.dashboard_entities = dashboard_entities
     websocket_api.async_register(hass)
     # The panel is how roles are administered, but it is not how they are

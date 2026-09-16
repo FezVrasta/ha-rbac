@@ -17,6 +17,7 @@ from typing import Any
 import aiohttp
 import pytest
 from aiohttp import web
+from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.components.http.auth import async_sign_path
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -31,7 +32,11 @@ from custom_components.ha_rbac.denylog import Denial, DenyLog
 from custom_components.ha_rbac.filters import REGISTRY
 from custom_components.ha_rbac.ingress import SESSION_ENDPOINT
 from custom_components.ha_rbac.policy import Evaluator, Permissions
-from custom_components.ha_rbac.proxy import RbacProxy, _WsSession
+from custom_components.ha_rbac.proxy import (
+    RbacProxy,
+    _carries_entity_data,
+    _WsSession,
+)
 from custom_components.ha_rbac.record import Recorder
 from custom_components.ha_rbac.store import RbacStore
 
@@ -58,6 +63,7 @@ async def proxy_env_fixture(
     hass_access_token: str,
     hass_read_only_user: MockUser,
     hass_read_only_access_token: str,
+    tmp_path: Any,
 ) -> dict[str, Any]:
     """Start Home Assistant behind the proxy and return the pieces under test."""
     for domain in ("http", "websocket_api", "api", "config", "auth"):
@@ -77,6 +83,72 @@ async def proxy_env_fixture(
         return web.Response(text="webhook reached")
 
     hass.http.app.router.add_route("POST", "/api/webhook/{id}", _webhook)
+
+    # Non-JSON responses the companion app fetches on every connect. None
+    # carries entity data; all were being refused to a restricted user, which
+    # hung the app on the loading screen after login.
+    async def _manifest(request: web.Request) -> web.Response:
+        return web.Response(
+            text='{"name": "Home Assistant"}',
+            content_type="application/manifest+json",
+        )
+
+    hass.http.app.router.add_route("GET", "/manifest.json", _manifest)
+
+    # The frontend index, as a view at "/" the way Home Assistant registers it.
+    # `build_statics` skips "/" outright, so provenance cannot cover the index
+    # and the `text/html` exemption is the only thing that lets it through --
+    # which is the residual risk the design records.
+    class _IndexView(HomeAssistantView):
+        """Stands in for the frontend shell."""
+
+        url = "/"
+        name = "rbac_test:index"
+        requires_auth = False
+
+        async def get(self, request: web.Request) -> web.Response:
+            """Return the shell, with no state rendered into it."""
+            return web.Response(
+                text="<html>Home Assistant</html>", content_type="text/html"
+            )
+
+    hass.http.register_view(_IndexView())
+
+    # `/api/onboarding` as it actually answers a restricted user, measured on the
+    # live instance: the onboarding views are gone once onboarding is done, so
+    # Home Assistant 404s with a `text/plain` body. During onboarding proper
+    # nobody is signed in, so no response is filtered and this path is not
+    # reachable with a role at all. An earlier stub here returned 200
+    # `text/plain`, which no Home Assistant build does -- the onboarding views
+    # answer JSON -- and asserting on it is what made `text/plain` look like a
+    # type that has to be exempt.
+    async def _onboarding(request: web.Request) -> web.Response:
+        raise web.HTTPNotFound(text="404: Not Found", content_type="text/plain")
+
+    hass.http.app.router.add_route("GET", "/api/onboarding", _onboarding)
+
+    # A rendered template: entity state in a 200 `text/plain` body from a view
+    # that no role marks admin, which is why `text/plain` is not exempt by type.
+    class _RenderedTemplateView(HomeAssistantView):
+        """Stands in for an endpoint that answers with rendered state."""
+
+        url = "/rbac_rendered"
+        name = "rbac_test:rendered"
+
+        async def get(self, request: web.Request) -> web.Response:
+            """Return entity state as plain text."""
+            return web.Response(
+                text="light.bedroomlight is on", content_type="text/plain"
+            )
+
+    hass.http.register_view(_RenderedTemplateView())
+
+    # A file served straight off disk, for the provenance exemption. Registered
+    # through Home Assistant so the catalogue derives it the way it does live.
+    (tmp_path / "note.txt").write_text("a note on disk")
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig("/rbac_static", str(tmp_path), False)]
+    )
 
     upstream = await aiohttp_server(hass.http.app)
 
@@ -986,3 +1058,145 @@ async def test_a_protocol_relative_path_cannot_redirect_the_upstream(
     assert seen, "precondition: the requests reached the proxy"
     for url in seen:
         assert URL(url).host == upstream, f"upstream was redirected to {url}"
+
+
+@pytest.mark.parametrize(
+    ("content_type", "carries"),
+    [
+        # The exemption set: shapes with no representation for entity state.
+        # There is nowhere in any of these formats to put an entity id and a
+        # value, so an unfilterable body in one of them discloses nothing.
+        ("image/png", False),
+        ("image/svg+xml", False),
+        ("video/mp4", False),
+        ("audio/mpeg", False),
+        ("font/woff2", False),
+        ("multipart/x-mixed-replace", False),
+        ("multipart/x-mixed-replace; boundary=frame", False),
+        ("application/octet-stream", False),
+        ("application/wasm", False),
+        ("text/css", False),
+        ("text/javascript", False),
+        ("application/javascript", False),
+        # The two earned by requirement 3.3, and the ones the earlier allowlist
+        # missed: the PWA manifest and the frontend shell. The companion app
+        # fetches both on every connect and cannot start without them.
+        ("application/manifest+json", False),
+        ("text/html", False),
+        ("text/html; charset=utf-8", False),
+        # Outside the set. `application/json` reaches this branch only when it
+        # was too large or too malformed to parse -- `_filter_http_body` returns
+        # `filterable=True` for anything it can read, so a parseable JSON body
+        # never gets here at all.
+        ("application/json", True),
+        ("application/json; charset=utf-8", True),
+        # The third one the earlier allowlist missed, and the one that must not
+        # be exempted by type: a rendered template is entity state in plain
+        # text. The plain-text paths requirement 3.3 protects are covered by
+        # provenance and by the upstream-error rule instead, both at the call
+        # site.
+        ("text/plain", True),
+        ("text/plain; charset=utf-8", True),
+        # A spread of shapes nobody enumerated, each of which could carry state.
+        # Defaulting to refusal is what makes these safe without naming them.
+        ("application/xml", True),
+        ("text/xml", True),
+        ("text/csv", True),
+        ("text/event-stream", True),
+        ("application/x-yaml", True),
+        ("application/graphql-response+json", True),
+        ("application/vnd.api+json", True),
+        ("", True),
+        ("application/JSON", True),
+    ],
+)
+def test_only_shapes_without_a_state_slot_are_exempt(
+    content_type: str, carries: bool
+) -> None:
+    """Refusal is the default; a shape earns its exemption or is refused.
+
+    The rule this replaces asked whether the type was exactly
+    `application/json`, which emptied the guard rather than tightening it:
+    parseable JSON never reaches this branch, so answering "no" for everything
+    else forwarded every non-JSON carrier of entity state unfiltered. The rule
+    before that tried to enumerate the harmless types and missed three, which is
+    why the exemptions here are a closed set and the default is refusal.
+    """
+    assert _carries_entity_data(content_type) is carries
+
+
+@pytest.mark.parametrize(
+    ("path", "status", "content_type", "marker"),
+    [
+        # Requirement 3.3, and the shapes measured on the live instance.
+        (
+            "/manifest.json",
+            HTTPStatus.OK,
+            "application/manifest+json",
+            "Home Assistant",
+        ),
+        ("/", HTTPStatus.OK, "text/html", "Home Assistant"),
+        # Home Assistant's own 404, which is what `/api/onboarding` answers once
+        # onboarding is done. It must arrive as the 404 it is: the companion app
+        # reads anything else as an auth failure and loops on token refresh.
+        ("/api/onboarding", HTTPStatus.NOT_FOUND, "text/plain", "404"),
+        # Requirement 3.5, provenance: `text/plain` off disk, which no
+        # content-type exemption covers.
+        ("/rbac_static/note.txt", HTTPStatus.OK, "text/plain", "a note on disk"),
+    ],
+)
+async def test_unfilterable_but_harmless_reaches_a_restricted_user(
+    proxy_env: dict[str, Any],
+    path: str,
+    status: HTTPStatus,
+    content_type: str,
+    marker: str,
+) -> None:
+    """A restricted user gets these back, with their own status and type.
+
+    Each is unfilterable and named no resources, so each reaches the refusal
+    branch: the decision for a plain GET that names nothing is
+    `allowed=True, resources=[], filter_response=True`. What lets them through
+    is an earned exemption -- shape, provenance, or Home Assistant's own error
+    framing -- not a 403.
+    """
+    await _bind(proxy_env["store"], proxy_env["read_only_user"], ROLE_READ_ONLY)
+    token = proxy_env["read_only_token"]
+
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(
+            f"{proxy_env['base']}{path}",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as response,
+    ):
+        body = await response.text()
+        assert response.status == status, body
+        assert response.headers["Content-Type"].startswith(content_type)
+        assert marker in body
+
+
+async def test_unfilterable_entity_state_is_refused(
+    proxy_env: dict[str, Any],
+) -> None:
+    """The fail-open is closed: a non-exempt unfilterable body is refused.
+
+    `/rbac_rendered` is a rendered template -- entity state in a 200
+    `text/plain` body, served by a view rather than off disk. The request names
+    no resources, so the resource gate checked nothing, and the response cannot
+    be parsed, so the filter checked nothing either. Under the rule this
+    replaces it was forwarded, handing a restricted user state her role denies.
+    """
+    await _bind(proxy_env["store"], proxy_env["read_only_user"], ROLE_READ_ONLY)
+    token = proxy_env["read_only_token"]
+
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(
+            f"{proxy_env['base']}/rbac_rendered",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as response,
+    ):
+        body = await response.text()
+        assert response.status == HTTPStatus.FORBIDDEN, body
+        assert "light.bedroomlight" not in body
