@@ -63,10 +63,10 @@ def test_deleting_a_role_asks_first() -> None:
     confirmation is easy to drop in a refactor and nothing else would notice.
     """
     source = PANEL.read_text()
-    start = source.index("  _deleteRole() {")
+    start = source.index("_deleteRole() {")
     body = source[start : source.index('"roles/delete"', start)]
 
-    assert "confirm(" in body, "_deleteRole must confirm before it calls the API"
+    assert "_confirm(" in body, "_deleteRole must confirm before it calls the API"
 
 
 def test_every_editable_rule_list_is_read_back_when_a_role_is_saved() -> None:
