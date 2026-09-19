@@ -54,11 +54,7 @@ A release is a GitHub release with a `vX.Y.Z` tag. Publishing it triggers `.gith
 
    **To drive the panel in a browser, mint a token — do not try to log in.** The owner's refresh tokens are in `.storage/auth`; exchange one for an access token and write `hassTokens` into the origin's `localStorage`. The `clientId` must match the origin you are browsing (`http://192.168.139.96:8123/`), not `127.0.0.1`, or the frontend rejects it. Note the panel refuses `ha_rbac/roles/list` for any non-admin, so a Guest session shows an error card and no editor — check which user the session belongs to before concluding anything about the UI.
 
-3. **Commit the content.** One commit per logical change, present-tense summary line, and a body that says *why* — match the surrounding `git log`, which is discursive and explains the reasoning, not just the diff. End every commit with the trailer:
-   ```
-   Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-   ```
-   Then `git push origin main`.
+3. **Commit the content.** One commit per logical change, present-tense summary line, and a body that says *why* — match the surrounding `git log`, which is discursive and explains the reasoning, not just the diff. **No trailers, and nothing attributing the work to a model** — no `Co-Authored-By: Claude`, no `Claude-Session:`, no "generated with" line. The commit is Federico's; he reads and owns every change before it goes out. A few older commits on `main` carry those trailers, from before this was settled; they are history, not the convention. Then `git push origin main`.
 
 4. **Create the release.** Write notes to a file and:
    ```bash
