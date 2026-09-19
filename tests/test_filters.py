@@ -928,3 +928,92 @@ async def test_statistic_metadata_passthrough_when_not_a_list(
         "recorder/get_statistics_metadata", _ctx(hass, {"sensor.x"}), {"unexpected": 1}
     )
     assert result == {"unexpected": 1}
+
+
+async def test_a_denied_floor_or_label_is_not_named_by_a_search(
+    hass: HomeAssistant,
+) -> None:
+    """A search result names floors and labels as well as devices and areas.
+
+    Searching an automation returns the floors and labels that automation
+    *targets*, and a role allowed to read the automation is not thereby allowed
+    to know what is upstairs. `device` and `area` were filtered by a hardcoded
+    pair of names and `floor` and `label` were not, so both came back for a
+    role that can read nothing inside either -- which is the leak the filter
+    was written to close, read one key over.
+    """
+    from homeassistant.helpers import area_registry as ar  # noqa: PLC0415
+    from homeassistant.helpers import entity_registry as er  # noqa: PLC0415
+    from homeassistant.helpers import floor_registry as fr  # noqa: PLC0415
+    from homeassistant.helpers import label_registry as lr  # noqa: PLC0415
+    from pytest_homeassistant_custom_component.common import (  # noqa: PLC0415
+        MockConfigEntry,
+    )
+
+    entry = MockConfigEntry(domain="demo")
+    entry.add_to_hass(hass)
+    floor = fr.async_get(hass).async_create("Attic")
+    label = lr.async_get(hass).async_create("Security")
+    area = ar.async_get(hass).async_create("Vault", floor_id=floor.floor_id)
+    hidden = er.async_get(hass).async_get_or_create(
+        "lock",
+        "demo",
+        "vault",
+        config_entry=entry,
+    )
+    er.async_get(hass).async_update_entity(
+        hidden.entity_id, area_id=area.id, labels={label.label_id}
+    )
+
+    result = REGISTRY.filter_result(
+        "search/related",
+        _ctx(hass, {hidden.entity_id}),
+        {
+            "floor": [floor.floor_id],
+            "label": [label.label_id],
+            "area": [area.id],
+            "automation": ["automation.probe"],
+        },
+    )
+
+    assert "floor" not in result, "nothing readable on that floor"
+    assert "label" not in result, "nothing readable carries that label"
+    assert "area" not in result, "the area was already filtered; it still is"
+    assert result["automation"] == ["automation.probe"], "the readable item stays"
+
+
+def test_every_search_item_type_is_classified() -> None:
+    """Pin the search key sets against Home Assistant's own list of item types.
+
+    The filter splits `search/related`'s keys three ways: ids that are entities,
+    ids that are containers, and ids that are neither and pass untouched. That
+    split is only safe while it covers every type Home Assistant can answer
+    with, and a type added upstream would otherwise join the third group in
+    silence -- which is how `floor` and `label` came to be unfiltered. So the
+    third group is spelled out here: if `ItemType` grows a member, this fails
+    and somebody decides which group it belongs in.
+    """
+    from homeassistant.components.search import ItemType  # noqa: PLC0415
+
+    from custom_components.ha_rbac.filters import (  # noqa: PLC0415
+        _SEARCH_CONTAINER_KEYS,
+        _SEARCH_ENTITY_KEYS,
+    )
+
+    # Neither an entity nor a container: a blueprint path, a config entry id and
+    # an integration domain name nothing a role can be hidden from.
+    not_a_resource = {
+        "automation_blueprint",
+        "config_entry",
+        "integration",
+        "script_blueprint",
+    }
+
+    classified = set(_SEARCH_ENTITY_KEYS) | set(_SEARCH_CONTAINER_KEYS) | not_a_resource
+    upstream = {str(item) for item in ItemType}
+    assert upstream <= classified, (
+        f"unclassified search item types: {upstream - classified}"
+    )
+    assert classified <= upstream, (
+        f"search keys Home Assistant never sends: {classified - upstream}"
+    )

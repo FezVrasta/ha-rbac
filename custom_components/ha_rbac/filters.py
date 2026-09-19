@@ -726,9 +726,23 @@ def _filter_statistic_metadata(ctx: FilterContext, result: Any) -> Any:
 
 # Search result keys whose values are entity ids (bare strings, not objects),
 # so the generic walk -- which only inspects a dict's own `entity_id` field --
-# never checked them. `device` and `area` are containers, filtered by whether
-# the role can read anything inside.
+# never checked them.
 _SEARCH_ENTITY_KEYS = ("entity", "automation", "scene", "script", "person", "group")
+
+# The rest of the keys that name something the role may be hidden from are
+# containers, and they are the resource kinds this integration already knows
+# about: a search result's `device`, `area`, `label` and `floor` are the same
+# things `device_id`, `area_id`, `label_id` and `floor_id` name on the request
+# side. Derived from `RESOURCE_KEYS` rather than listed, because listing them is
+# what let `floor` and `label` through: they were left out of a pair of
+# hardcoded names while `device` and `area` were filtered, so an automation the
+# role may read handed over the id of a floor and a label holding nothing it is
+# allowed to see. `tests/test_filters.py` pins both sets against Home
+# Assistant's own `ItemType`, so a kind added upstream fails a test rather than
+# leaking quietly.
+_SEARCH_CONTAINER_KEYS = tuple(
+    sorted({kind for kind in RESOURCE_KEYS.values() if kind != KEY_ENTITY})
+)
 
 
 @REGISTRY.result("search/related")
@@ -750,7 +764,7 @@ def _filter_search_related(ctx: FilterContext, result: Any) -> Any:
             continue
         if key in _SEARCH_ENTITY_KEYS:
             kept = [i for i in ids if not _looks_like_entity_id(i) or ctx.readable(i)]
-        elif key in ("device", "area"):
+        elif key in _SEARCH_CONTAINER_KEYS:
             kept = [i for i in ids if _container_id_visible(ctx, key, i)]
         else:
             kept = ids
@@ -760,11 +774,11 @@ def _filter_search_related(ctx: FilterContext, result: Any) -> Any:
 
 
 def _container_id_visible(ctx: FilterContext, kind: str, container_id: Any) -> bool:
-    """Return True if the role can read any entity in a device or area.
+    """Return True if the role can read any entity in a container.
 
-    A device or area the role can see nothing in is one it is not meant to know
-    exists, so its id is withheld -- the same rule `_container_visible` applies
-    to objects that name one.
+    A device, area, label or floor the role can see nothing in is one it is not
+    meant to know exists, so its id is withheld -- the same rule
+    `_container_visible` applies to objects that name one.
     """
     if not isinstance(container_id, str):
         return True
