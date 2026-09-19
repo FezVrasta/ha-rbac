@@ -2299,17 +2299,78 @@ class HaRbacPanel extends HTMLElement {
     }, "Cloned.");
   }
 
-  _deleteRole() {
+  /**
+   * Ask before doing something that cannot be taken back, through Home
+   * Assistant's own confirmation dialog rather than the browser's.
+   *
+   * The dialog is the same one the rest of Home Assistant uses: a bubbling,
+   * composed `show-dialog` event is what a custom element fires to reach the
+   * dialog manager on the root `home-assistant` element, which lazy-loads
+   * `dialog-box` and runs `confirm`/`cancel` for us. `destructive` paints the
+   * confirm button in the warning colour, which is the whole reason to prefer
+   * it here over `window.confirm`.
+   *
+   * If that machinery is not reachable -- an old core, or the event never
+   * finds a manager -- this falls back to `window.confirm` rather than letting
+   * an irreversible action through unguarded. The fallback is chosen by
+   * whether the dialog element can be resolved, with a short timeout as the
+   * backstop for the case where the event is simply never handled.
+   */
+  _confirm({ title, text, confirmText, dismissText }) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+
+      const detail = {
+        dialogTag: "dialog-box",
+        // Loaded already once any generic dialog has been shown this session;
+        // `whenDefined` resolves then. Never rejects, so a dialog that has not
+        // been loaded yet simply waits, and the timeout below covers it.
+        dialogImport: () => customElements.whenDefined("dialog-box"),
+        dialogParams: {
+          confirmation: true,
+          destructive: true,
+          title,
+          text,
+          confirmText: confirmText || "Delete",
+          dismissText: dismissText || "Cancel",
+          confirm: () => finish(true),
+          cancel: () => finish(false),
+        },
+        addHistory: false,
+      };
+
+      this.dispatchEvent(
+        new CustomEvent("show-dialog", { detail, bubbles: true, composed: true })
+      );
+
+      // If nothing handled the event and no dialog exists to have run its
+      // callbacks, fall back rather than swallowing the action. Only fires
+      // when the promise is otherwise still pending.
+      setTimeout(() => {
+        if (settled) return;
+        if (!customElements.get("dialog-box")) {
+          finish(window.confirm(`${title}\n\n${text}`));
+        }
+      }, 500);
+    });
+  }
+
+  async _deleteRole() {
     const role = this._roles.find((r) => r.id === this._selected);
     const name = role ? role.name : this._selected;
-    if (
-      !window.confirm(
-        `Delete the role "${name}"? Anyone who had it falls back to their ` +
-          `Home Assistant group. This cannot be undone.`,
-      )
-    ) {
-      return;
-    }
+    const ok = await this._confirm({
+      title: `Delete the role "${name}"?`,
+      text:
+        "Anyone who had it falls back to their Home Assistant group. " +
+        "This cannot be undone.",
+      confirmText: "Delete",
+    });
+    if (!ok) return;
     this._guard(async () => {
       await this._call("roles/delete", { role_id: this._selected });
       this._selected = null;
