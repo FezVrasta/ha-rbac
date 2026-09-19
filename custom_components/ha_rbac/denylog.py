@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.util import dt as dt_util
 
 from .const import DENYLOG_SIZE, EVENT_RBAC_DENIED
 
@@ -28,6 +29,12 @@ class Denial:
     # made it terse for them and unavailable here; now it is only ever read by
     # whoever is working out why a role is too tight.
     detail: str = ""
+    # When the request was refused, as a Unix timestamp. Stamped by the log
+    # rather than the caller so every denial carries one without every
+    # construction site having to remember it. The Denials tab reads this to
+    # say how long ago something broke -- the first question when someone
+    # reports that a UI stopped working.
+    ts: float = 0.0
 
 
 class DenyLog:
@@ -41,6 +48,11 @@ class DenyLog:
     @callback
     def async_record(self, denial: Denial) -> None:
         """Record a denial and fire `rbac_denied` so automations can react."""
+        # Stamp the time here so a caller never has to, and so every denial --
+        # including the event automations see -- carries the same one. A caller
+        # that set it explicitly is left alone.
+        if not denial.ts:
+            denial.ts = dt_util.utcnow().timestamp()
         self._entries.append(denial)
         self._hass.bus.async_fire(EVENT_RBAC_DENIED, asdict(denial))
 

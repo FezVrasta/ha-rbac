@@ -80,6 +80,18 @@ const DAYS = [
   { value: "sun", label: "Sun" },
 ];
 
+// The reasons a request is refused, in words. One list so the Denials table
+// and its filter chips read a denial the same way. Order is deliberate: the
+// gates run roughly in this order, so the chips do too.
+const REASONS = [
+  ["tier", "Not allowed to use that command"],
+  ["resource", "No access to that entity"],
+  ["app", "No access to that dashboard, add-on or screen"],
+  ["unbounded", "Request did not say what it would touch"],
+  ["degraded", "Permission derivation unavailable"],
+];
+const REASON_LABELS = Object.fromEntries(REASONS);
+
 // mdiClose, mdiPlus: inlined because @mdi/js is a build-time import.
 const ICON_CLOSE =
   "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z";
@@ -162,6 +174,23 @@ const STYLES = `
      anywhere, because a long REST path has no spaces to wrap on. */
   td .detail { display: block; margin-top: 2px; color: var(--secondary-text-color);
                font-size: var(--ha-font-size-s, .85rem); overflow-wrap: anywhere; }
+  /* The "When" column is a short relative time and reads better unbroken; the
+     full timestamp is on the cell's title. */
+  td.nowrap, th.nowrap { white-space: nowrap; }
+  /* The denials filter: a search field over a row of reason chips. The field
+     takes the width it needs and the chips wrap under it on a narrow screen. */
+  .denial-tools { display: flex; flex-direction: column; gap: 12px; margin: 4px 0 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    font: inherit; font-size: var(--ha-font-size-s, .85rem); cursor: pointer;
+    border: 1px solid var(--divider-color); border-radius: 16px;
+    padding: 5px 12px; background: none; color: var(--primary-text-color);
+  }
+  .chip:hover { background: var(--secondary-background-color); }
+  .chip[aria-pressed="true"] {
+    background: var(--primary-color); color: var(--text-primary-color, #fff);
+    border-color: var(--primary-color);
+  }
   .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
   .actions .spacer { flex: 1; }
   ul.roles { list-style: none; margin: 0; padding: 0; }
@@ -285,6 +314,25 @@ const esc = (v) =>
   String(v ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
   );
+
+/**
+ * How long ago a denial happened, in words. "just now", "5 min ago", "3 h ago",
+ * then a plain date once it is old enough that the exact day matters more than
+ * the elapsed time. A denial with no timestamp -- one recorded before the log
+ * carried them -- says nothing rather than "55 years ago".
+ */
+function timeAgo(ts) {
+  if (!ts) return "";
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (seconds < 45) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days} d ago`;
+  return new Date(ts * 1000).toLocaleDateString();
+}
 
 /** Turn a stored permission value into one of none/read/control. */
 function accessOf(value) {
@@ -479,6 +527,11 @@ class HaRbacPanel extends HTMLElement {
     this._catalog = null;
     this._recording = {};
     this._recordTimer = null;
+    // Denials tab: a free-text needle and an optional reason to narrow the
+    // list to. The table can hold a hundred rows and the whole point of it is
+    // to find one, so it is filtered rather than only scrolled.
+    this._denialFilter = "";
+    this._denialReason = "";
     // Which sections are open, kept across renders: saving a role should
     // not fold away the section you were working in.
     this._open = new Set();
@@ -1969,10 +2022,81 @@ class HaRbacPanel extends HTMLElement {
     }
   }
 
+  /** Does a denial match the current text needle and reason chip? */
+  _denialMatches(d) {
+    if (this._denialReason && d.reason !== this._denialReason) return false;
+    const needle = this._denialFilter.trim().toLowerCase();
+    if (!needle) return true;
+    // Match on everything the row shows, so what you can read you can search:
+    // person, command, reason in words, diagnostic and the entities.
+    const hay = [
+      d.user_name,
+      d.user_id,
+      d.name,
+      this._reason(d.reason),
+      d.detail,
+      (d.resources || []).join(" "),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return hay.includes(needle);
+  }
+
   _denialsView() {
-    const rows = this._denials
+    // The reasons actually present, so a chip never offers a filter that would
+    // empty the table. Kept in the order the const lists them for stability.
+    const present = new Set(this._denials.map((d) => d.reason));
+    const chips = [["", "All"]]
+      .concat(REASONS.filter(([id]) => present.has(id)))
+      .map(
+        ([id, label]) =>
+          `<button class="chip" data-reason="${esc(id)}"
+             aria-pressed="${this._denialReason === id}">${esc(label)}</button>`
+      )
+      .join("");
+
+    const shown = this._denials.filter((d) => this._denialMatches(d));
+    const body = this._denialRowsHtml(shown);
+
+    return `<ha-card>
+      <div class="card-content">
+        <h2>Recent denials</h2>
+        <p class="hint">The person is told only that they do not have permission,
+          and which accessory when it is one they can already see. Everything
+          else &mdash; the command, the tier, the entities &mdash; would describe
+          the policy to them, so it is kept here instead. This is where to look
+          when someone says something stopped working.</p>
+        <div class="denial-tools">
+          <ha-input id="denial-filter" type="search"
+            label="Filter denials"
+            placeholder="Person, command, entity&hellip;"
+            value="${esc(this._denialFilter)}"></ha-input>
+          <div class="chips" id="denial-reasons">${chips}</div>
+        </div>
+        <div class="actions" style="margin-top:0">
+          <ha-button id="load-denials">Refresh</ha-button>
+          ${
+            this._denials.length
+              ? `<span class="hint" id="denial-count" style="margin:0">Showing ${shown.length} of ${this._denials.length}.</span>`
+              : ""
+          }
+        </div>
+        <table>
+          <thead><tr><th class="nowrap">When</th><th>Person</th><th>Request</th><th>Why</th><th>Entities</th></tr></thead>
+          <tbody id="denial-rows">${body}</tbody>
+        </table>
+      </div>
+    </ha-card>`;
+  }
+
+  /** The table body for a set of denials, with the three empty states. */
+  _denialRowsHtml(shown) {
+    const rows = shown
       .map(
         (d) => `<tr>
+          <td class="nowrap" title="${esc(
+            d.ts ? new Date(d.ts * 1000).toLocaleString() : ""
+          )}">${timeAgo(d.ts) ? esc(timeAgo(d.ts)) : "&mdash;"}</td>
           <td>${esc(d.user_name || d.user_id)}</td>
           <td><code>${esc(d.name)}</code></td>
           <td>${esc(this._reason(d.reason))}${
@@ -1984,24 +2108,26 @@ class HaRbacPanel extends HTMLElement {
         </tr>`
       )
       .join("");
+    if (rows) return rows;
+    // Two distinct empty states: nothing was ever refused, or everything was
+    // filtered out. They mean different things to whoever is looking.
+    return this._denials.length
+      ? '<tr><td colspan="5" class="hint">No denials match this filter.</td></tr>'
+      : '<tr><td colspan="5" class="hint">Nothing refused yet.</td></tr>';
+  }
 
-    return `<ha-card>
-      <div class="card-content">
-        <h2>Recent denials</h2>
-        <p class="hint">The person is told only that they do not have permission,
-          and which accessory when it is one they can already see. Everything
-          else &mdash; the command, the tier, the entities &mdash; would describe
-          the policy to them, so it is kept here instead. This is where to look
-          when someone says something stopped working.</p>
-        <div class="actions" style="margin-top:0">
-          <ha-button id="load-denials">Refresh</ha-button>
-        </div>
-        <table>
-          <thead><tr><th>Person</th><th>Request</th><th>Why</th><th>Entities</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="4" class="hint">Nothing refused yet.</td></tr>'}</tbody>
-        </table>
-      </div>
-    </ha-card>`;
+  /**
+   * Redraw the denials table body and the count in place, leaving the filter
+   * field alone so typing into it never loses focus.
+   */
+  _refreshDenialRows() {
+    const root = this.shadowRoot;
+    const tbody = root.getElementById("denial-rows");
+    if (!tbody) return;
+    const shown = this._denials.filter((d) => this._denialMatches(d));
+    tbody.innerHTML = this._denialRowsHtml(shown);
+    const count = root.getElementById("denial-count");
+    if (count) count.textContent = `Showing ${shown.length} of ${this._denials.length}.`;
   }
 
   /**
@@ -2026,15 +2152,7 @@ class HaRbacPanel extends HTMLElement {
   }
 
   _reason(reason) {
-    return (
-      {
-        tier: "Not allowed to use that command",
-        resource: "No access to that entity",
-        unbounded: "Request did not say what it would touch",
-        degraded: "Permission derivation unavailable",
-        app: "No access to that dashboard, add-on or screen",
-      }[reason] || reason
-    );
+    return REASON_LABELS[reason] || reason;
   }
 
   _wire() {
@@ -2072,6 +2190,23 @@ class HaRbacPanel extends HTMLElement {
     on("delete", () => this._deleteRole());
     on("save-bindings", () => this._saveBindings());
     on("load-denials", () => this._loadDenials());
+
+    // The denials filter updates the table in place rather than re-rendering
+    // the tab: a full render on every keystroke would take focus off the field
+    // mid-word. The chips do re-render, since a click does not hold focus.
+    const filter = root.getElementById("denial-filter");
+    if (filter) {
+      filter.addEventListener("input", () => {
+        this._denialFilter = filter.value || "";
+        this._refreshDenialRows();
+      });
+    }
+    root.querySelectorAll("[data-reason]").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        this._denialReason = chip.dataset.reason;
+        this._render();
+      });
+    });
     on("save-settings", () => this._saveSettings());
     on("refresh-dashboards", () => this._refreshDashboards());
     on("add-window", () => {
