@@ -8,7 +8,7 @@ objects carrying a denied entity id.
 
 from collections.abc import Callable
 from functools import cached_property
-from typing import Any
+from typing import Any, Final
 
 from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.core import HomeAssistant
@@ -26,6 +26,26 @@ STATE_DIFF_REMOVALS = "-"
 ENTITY_EVENT_ADD = "a"
 ENTITY_EVENT_CHANGE = "c"
 ENTITY_EVENT_REMOVE = "r"
+
+# What `subscribe_entities` opens with when the role may see nothing.
+#
+# The subscription's first frame carries every entity's initial state, and the
+# frontend treats it as "states have loaded" -- it sits on a spinner until it
+# arrives. A role that can read nothing, which a history-only grant makes a
+# sensible thing to configure, filters that frame down to nothing, and an event
+# filtered to nothing is not forwarded, so the session never finished loading.
+#
+# Home Assistant sends `{"a": {}}` to a user with no readable states, so that is
+# what stands in: the shape the frontend already handles, not an invention.
+#
+# Only the *first* frame, and the substitution is the proxy's because only the
+# proxy knows which frame that is. Answering every emptied diff with a bare
+# frame would hand the role a clock: one frame per state change anywhere in the
+# house, denied entities included, arriving the moment it happens. Measured on a
+# test instance, five deliberate toggles of a light the role could not read
+# produced five frames -- a real-time activity oracle for entities the role is
+# not supposed to know exist, handed to it by the code that hides them.
+OPENING_SNAPSHOT: Final[dict[str, Any]] = {ENTITY_EVENT_ADD: {}}
 
 # Lovelace uses its own conventions, which are not Home Assistant resource keys.
 LOVELACE_ENTITY_KEYS = ("entity", "entities", "camera_image")
@@ -395,16 +415,9 @@ def _filter_entity_event(ctx: FilterContext, event: Any) -> Any:
         if kept_ids:
             out[ENTITY_EVENT_REMOVE] = kept_ids
 
-    # An empty diff is returned rather than dropped. `subscribe_entities` opens
-    # with one event carrying every entity's initial state, and the frontend
-    # treats that first frame as "states have loaded" -- it shows a spinner
-    # until it arrives. A role that can read nothing (a history-only grant, for
-    # instance) filters that frame to nothing, and dropping it left the frame
-    # unsent and the frontend loading forever. An empty `{}` is a valid frame
-    # meaning "nothing you may see", which lets the load finish with an empty
-    # set rather than hang. Later empty diffs cost a bare frame, which is
-    # harmless.
-    return out
+    # Nothing left means nothing is sent. The opening snapshot is the one
+    # exception and the proxy makes it, not this: see OPENING_SNAPSHOT.
+    return out or None
 
 
 def _strip_compressed(ctx: FilterContext, entity_id: str, key: str, value: Any) -> Any:

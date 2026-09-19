@@ -778,3 +778,37 @@ async def test_history_grant_survives_a_schema_round_trip(
     # A role with no history section defaults to an empty one, not an error.
     empty = ROLE_SCHEMA({"id": "r2", "name": "r2"})
     assert empty["history"] == {"rules": []}
+
+
+async def test_a_history_rule_naming_nothing_grants_nothing(
+    hass: HomeAssistant,
+) -> None:
+    """A blank history rule must not mean the history of the whole instance.
+
+    A history rule carries nothing but its target and its ids, so an unfinished
+    one -- ids never picked -- is indistinguishable from "every entity the target
+    names", which for the default domain target is everything. Read that way, a
+    role that could read nothing live came back with the recorded history of
+    every entity on a live instance, from a role posted as `{"rules": [{}]}`.
+
+    The panel filters empty rows out before saving, so this arrives through the
+    role API instead: a backup, a script, or an older build. It grants nothing.
+    """
+    role = compile_role(hass, _role(history={"rules": [{}]}), _lookup(hass))
+    assert role.history_rules == [], "an unfinished rule is not a grant"
+
+    perms = Permissions(roles=[role])
+    assert perms.history_allowed("lock.secret") is False
+    assert perms.grants_any_history is False, "and it does not open the app gate"
+
+
+async def test_a_history_rule_with_a_target_but_no_ids_grants_nothing(
+    hass: HomeAssistant,
+) -> None:
+    """Naming a target without picking any id is still an unfinished rule."""
+    role = compile_role(
+        hass,
+        _role(history={"rules": [{"target": "area_ids", "ids": []}]}),
+        _lookup(hass),
+    )
+    assert Permissions(roles=[role]).history_allowed("sensor.anything") is False

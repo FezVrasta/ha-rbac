@@ -42,6 +42,7 @@ from yarl import URL
 from .decide import KIND_HTTP, KIND_WS, REASON_APP, Decider, Decision
 from .denylog import Denial, DenyLog
 from .filters import (
+    OPENING_SNAPSHOT,
     REGISTRY,
     FilterContext,
     filter_rest_history,
@@ -117,6 +118,8 @@ TYPE_AUTH_REQUIRED = "auth_required"
 TYPE_AUTH_OK = "auth_ok"
 TYPE_RESULT = "result"
 TYPE_EVENT = "event"
+# The subscription whose opening frame the frontend blocks on.
+SUBSCRIBE_ENTITIES = "subscribe_entities"
 
 ERR_UNAUTHORIZED = "unauthorized"
 
@@ -1306,10 +1309,22 @@ class _WsSession:
 
         if msg_type == TYPE_EVENT and "event" in message:
             # First event proves this id is a subscription; move it somewhere it
-            # cannot be evicted, or the UI would quietly stop updating.
+            # cannot be evicted, or the UI would quietly stop updating. Whether
+            # this is that first event is read before recording it, because the
+            # opening frame of a `subscribe_entities` subscription is the one
+            # frame that has to arrive even when it is empty.
+            opening = msg_id not in self._streaming
             self._streaming.setdefault(msg_id, command)
             filtered = REGISTRY.filter_event(command, ctx, message["event"])
             if filtered is None:
+                if opening and command == SUBSCRIBE_ENTITIES:
+                    # The frontend waits on this frame before it stops showing a
+                    # spinner, so a role that may read nothing is sent the empty
+                    # snapshot Home Assistant would have sent it anyway. Later
+                    # frames are still dropped: answering every emptied diff
+                    # would tell the role the instant any entity changed,
+                    # including the ones it is hidden from.
+                    return {**message, "event": OPENING_SNAPSHOT}
                 return None
             return {**message, "event": filtered}
 

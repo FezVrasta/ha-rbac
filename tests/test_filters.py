@@ -52,23 +52,22 @@ async def test_compressed_state_change_and_remove_are_filtered(
     assert event["r"] == ["light.b"]
 
 
-async def test_event_filtered_to_nothing_is_empty_not_dropped(
-    hass: HomeAssistant,
-) -> None:
-    """An event whose every entity was denied is emptied, not dropped.
+async def test_event_filtered_to_nothing_is_dropped(hass: HomeAssistant) -> None:
+    """An event whose every entity was denied must not be forwarded at all.
 
-    `subscribe_entities` opens with one event carrying every entity's state,
-    and the frontend waits on that first frame before it finishes loading. A
-    role that can read nothing filters it to nothing; dropping it left the
-    frame unsent and the frontend loading forever. An empty diff is a valid
-    frame meaning "nothing you may see", which lets the load complete.
+    A bare frame is not free. Forwarding one per emptied diff would tell the
+    role the instant anything in the house changed, denied entities included --
+    an activity clock handed over by the code that hides them. The one frame
+    that has to arrive even when empty is the subscription's opening snapshot,
+    and the proxy substitutes that, because only the proxy knows which frame is
+    the first: see `tests/test_proxy.py`.
     """
     event = REGISTRY.filter_event(
         "subscribe_entities",
         _ctx(hass, {"lock.front"}),
         {"a": {"lock.front": {"s": "unlocked"}}},
     )
-    assert event == {}, "empty, but a frame -- not None"
+    assert event is None
 
 
 async def test_camera_token_goes_with_the_entity(hass: HomeAssistant) -> None:
@@ -87,8 +86,7 @@ async def test_camera_token_goes_with_the_entity(hass: HomeAssistant) -> None:
             }
         },
     )
-    assert event == {}, "the denied camera, token and all, is gone; the frame is empty"
-    assert "s3cret" not in json.dumps(event)
+    assert event is None, "the denied camera, token and all, is gone"
 
 
 async def test_state_changed_events_are_dropped(hass: HomeAssistant) -> None:

@@ -730,16 +730,22 @@ class CompiledChoiceRule:
 
 @dataclass(slots=True)
 class CompiledHistoryRule:
-    """The entities whose history a rule grants reading of."""
+    """The entities whose history a rule grants reading of.
 
-    # None means every entity; otherwise the exact set this rule covers.
+    Unlike an attribute or a choice rule, this one *grants*, so it has no
+    "covers everything" state: a rule that names nothing covers nothing, and
+    `_compile_history_rules` drops it rather than building one. Reading the
+    empty case as universal is how a blank rule came to hand over the history of
+    the whole instance.
+    """
+
+    # The exact entity ids this rule covers, or the domains it covers. Both None
+    # is a rule that grants nothing, which is never built.
     entity_ids: set[str] | None
     domains: set[str] | None
 
     def covers(self, entity_id: str) -> bool:
         """Return True if this rule applies to an entity."""
-        if self.entity_ids is None and self.domains is None:
-            return True
         if self.domains is not None and entity_id.partition(".")[0] in self.domains:
             return True
         return self.entity_ids is not None and entity_id in self.entity_ids
@@ -752,16 +758,24 @@ def _compile_history_rules(
 
     Targeted exactly like an attribute or choice rule, and resolved through the
     same expansion, so an area or a label means here what it means everywhere
-    else. A rule with no `ids` covers every entity its target names -- an empty
-    `ids` under the default domain target is "every domain", i.e. all history,
-    which a role would express by simply not denying the History app; it is
-    accepted rather than special-cased.
+    else.
+
+    A rule naming no ids grants nothing and is dropped. It is the only rule in
+    the section with nothing else on it -- no names, no options -- so "covers
+    every entity its target names" would make an unfinished rule mean the
+    history of the whole house. The panel never writes one, filtering empty rows
+    out before it saves, but the role API accepts what it is given and a role can
+    arrive from a backup or a script: posted `{"rules": [{}]}`, a role that could
+    read nothing live came back with the recorded history of every entity on the
+    instance. The same reasoning drops a choice rule permitting no options.
+
+    A role that wants all of it says so by not denying the History app, or by
+    naming the domains; neither needs a blank rule to mean everything.
     """
     compiled: list[CompiledHistoryRule] = []
     for rule in history.get("rules") or []:
         ids = list(rule.get("ids") or [])
         if not ids:
-            compiled.append(CompiledHistoryRule(None, None))
             continue
 
         target = rule.get("target") or ENTITY_DOMAINS

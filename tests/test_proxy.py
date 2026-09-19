@@ -1288,3 +1288,95 @@ async def test_a_large_response_streams_instead_of_being_buffered(
     assert len(body) == MAX_BUFFERED_RESPONSE_SIZE + 1
     assert response.headers.get("Content-Length") is None
     assert response.headers.get("Transfer-Encoding") == "chunked"
+
+
+def _read_nothing_session(hass: Any) -> _WsSession:
+    """Return a relayed session whose role may read no entity at all."""
+    nothing = Permissions(roles=[])
+    session = _WsSession.__new__(_WsSession)
+    session._hass = hass
+    session._pending = OrderedDict({1: "subscribe_entities"})
+    session._streaming = {}
+    session._endpoints = OrderedDict()
+    session._highest_id = 1
+    session._permissions = nothing
+    session._evaluator = SimpleNamespace(async_permissions=lambda _user: nothing)
+    session._ingress = None
+    session._client = _RecordingClient()
+    session._user = None
+    return session
+
+
+async def test_the_opening_snapshot_reaches_a_role_that_may_read_nothing(
+    hass: HomeAssistant,
+) -> None:
+    """A role that can read nothing must still be told that states have loaded.
+
+    `subscribe_entities` opens with one frame carrying every entity's initial
+    state, and the frontend sits on a spinner until it arrives. A role that may
+    read nothing -- which a history-only grant makes a sensible configuration --
+    filters that frame down to nothing, and an event filtered to nothing is not
+    forwarded, so the session never finished loading. Reproduced against a live
+    instance: the result came back and then no event frame at all.
+    """
+    hass.states.async_set("lock.front", "locked")
+    session = _read_nothing_session(hass)
+
+    opening = session._filter_outbound(
+        {"id": 1, "type": "event", "event": {"a": {"lock.front": {"s": "locked"}}}}
+    )
+
+    assert opening is not None, "the frame the frontend waits on must be sent"
+    assert opening["event"] == {"a": {}}, "empty, and the shape Home Assistant sends"
+
+
+async def test_later_empty_diffs_do_not_become_an_activity_clock(
+    hass: HomeAssistant,
+) -> None:
+    """Only the opening frame is substituted; an emptied diff is still dropped.
+
+    Answering every diff that filters to nothing with a bare frame hands the
+    role a clock: one frame per state change anywhere in the house, denied
+    entities included, arriving the moment it happens. Measured on a test
+    instance before this was narrowed, five deliberate toggles of a light the
+    role could not read produced five frames -- a real-time activity oracle for
+    entities the role is not supposed to know exist.
+    """
+    hass.states.async_set("lock.front", "locked")
+    session = _read_nothing_session(hass)
+
+    session._filter_outbound(
+        {"id": 1, "type": "event", "event": {"a": {"lock.front": {"s": "locked"}}}}
+    )
+    later = session._filter_outbound(
+        {"id": 1, "type": "event", "event": {"c": {"lock.front": {"+": {"s": "open"}}}}}
+    )
+
+    assert later is None, "nothing survived the filter, so nothing is sent"
+
+
+async def test_only_subscribe_entities_gets_an_opening_frame(
+    hass: HomeAssistant,
+) -> None:
+    """Another subscription's first frame is not substituted.
+
+    The frontend blocks on `subscribe_entities` and on nothing else, so a frame
+    is invented for that one subscription only. Every other emptied frame is
+    dropped, first or not.
+    """
+    hass.states.async_set("lock.front", "locked")
+    session = _read_nothing_session(hass)
+    session._pending = OrderedDict({1: "subscribe_events"})
+
+    first = session._filter_outbound(
+        {
+            "id": 1,
+            "type": "event",
+            "event": {
+                "event_type": "state_changed",
+                "data": {"entity_id": "lock.front"},
+            },
+        }
+    )
+
+    assert first is None
