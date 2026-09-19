@@ -6,3 +6,12 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+.kiro
+
+# Optional local test harness (rpi-test/): the scripts and docs are tracked,
+# but everything the harness *generates* at runtime is not -- it holds a live
+# Home Assistant config, tokens and a database.
+/rpi-test/config/
+/rpi-test/.token
+/rpi-test/.guest-token
+/rpi-test/*.token
