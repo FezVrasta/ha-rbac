@@ -209,6 +209,9 @@ const STYLES = `
   }
   .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
   .actions .spacer { flex: 1; }
+  /* Unsaved changes: the Save button gains weight and its label changes to
+     "Save changes", so the state is carried by text and not by colour alone. */
+  ha-button.dirty { --mdc-theme-primary: var(--primary-color); font-weight: 600; }
   ul.roles { list-style: none; margin: 0; padding: 0; }
   ul.roles li {
     padding: 12px; border-radius: var(--ha-border-radius-md, 8px); cursor: pointer;
@@ -553,6 +556,9 @@ class HaRbacPanel extends HTMLElement {
     this._open = new Set();
     this._selected = null;
     this._draft = null;
+    // The role as it was loaded, serialized, so an edit can be told from it.
+    // Null while nothing editable is mounted.
+    this._baseline = null;
     this._notice = null;
     // Set by an action that edited the draft rather than the stored role.
     this._pending = null;
@@ -1135,6 +1141,69 @@ class HaRbacPanel extends HTMLElement {
         locked
       );
     }
+
+    // Snapshot the role as it was loaded, so an edit can be told from the
+    // stored value. Built-in roles cannot be edited, so they are never dirty
+    // and need no baseline. Taken after every control is mounted, because a
+    // few of them (the name, the app checkboxes) live in the DOM until
+    // `_payload` reads them, and the snapshot has to see the same source the
+    // comparison later will.
+    this._baseline = locked ? null : this._serializeDraft();
+    if (!locked) {
+      // One set of listeners over the whole editor rather than one per
+      // control: the only question here is whether the payload now differs
+      // from the baseline. `input`/`change` cover the plain fields and
+      // checkboxes; `value-changed` and `selected` are what Home Assistant's
+      // own selectors and dropdowns fire instead.
+      //
+      // Listened for in the *capture* phase, because every one of those
+      // control handlers calls `stopPropagation()` in the bubble phase --
+      // capture runs first, top-down, and reaches here before the target
+      // stops the event. A microtask defers the check to after the control's
+      // own handler has written the new value onto the draft.
+      const mark = () => Promise.resolve().then(() => this._refreshDirty());
+      for (const type of ["input", "change", "value-changed", "selected"]) {
+        host.addEventListener(type, mark, true);
+      }
+    }
+    this._refreshDirty();
+  }
+
+  /**
+   * A stable string form of the current draft, for telling an edited role from
+   * a stored one. It is the save payload, which is exactly what a save would
+   * write, so anything that would not change the stored role does not count as
+   * a change -- reordering that serialises the same, a rule left half-filled
+   * that `_payload` drops.
+   */
+  _serializeDraft() {
+    try {
+      return JSON.stringify(this._payload());
+    } catch (err) {
+      // `_payload` reads from the mounted editor; if it is not there, there is
+      // nothing to have changed.
+      return null;
+    }
+  }
+
+  /** Whether the draft differs from the role as it was loaded. */
+  _isDirty() {
+    if (this._baseline == null) return false;
+    return this._serializeDraft() !== this._baseline;
+  }
+
+  /**
+   * Reflect unsaved changes on the Save button, so it is clear there is
+   * something to save and clear once there is not.
+   */
+  _refreshDirty() {
+    const save = this.shadowRoot.getElementById("save");
+    if (!save) return;
+    const dirty = this._isDirty();
+    save.textContent = dirty ? "Save changes" : "Save";
+    // A dot beside the label is the least noisy "unsaved" marker; the label
+    // change carries it for anyone not seeing colour.
+    save.classList.toggle("dirty", dirty);
   }
 
   /**
@@ -2235,6 +2304,28 @@ class HaRbacPanel extends HTMLElement {
     }
   }
 
+  /**
+   * Move to another role, asking first if the current one has unsaved edits.
+   * The draft lives only in the panel, so switching away without saving drops
+   * it silently -- which for an access-control change reads as "I set that"
+   * when nothing was set. The prompt is the one place that is caught.
+   */
+  _switchRole(roleId) {
+    if (roleId === this._selected) return;
+    if (
+      this._isDirty() &&
+      !window.confirm(
+        "This role has unsaved changes. Switch roles and lose them?"
+      )
+    ) {
+      return;
+    }
+    this._selected = roleId;
+    this._syncUrl();
+    this._loadDraft();
+    this._render();
+  }
+
   _wire() {
     const root = this.shadowRoot;
     const tabButtons = [...root.querySelectorAll('[role="tab"]')];
@@ -2260,12 +2351,7 @@ class HaRbacPanel extends HTMLElement {
       };
     });
     root.querySelectorAll("[data-role]").forEach((item) => {
-      item.onclick = () => {
-        this._selected = item.dataset.role;
-        this._syncUrl();
-        this._loadDraft();
-        this._render();
-      };
+      item.onclick = () => this._switchRole(item.dataset.role);
     });
 
     const on = (id, handler) => {
