@@ -1,0 +1,20 @@
+services:
+  homeassistant:
+    container_name: homeassistant
+    image: ghcr.io/home-assistant/home-assistant:stable
+    # Run locally with Podman (`podman compose` / `podman-compose`).
+    #
+    # The proxy binds 8123 inside the container and Home Assistant is moved to
+    # 127.0.0.1:8124 (loopback = inside the container). Only 8123 is published,
+    # which is correct: 8124 must NOT be reachable from your machine, or the
+    # proxy is bypassable. Publishing 8124 is intentionally left out.
+    ports:
+      - "8123:8123"
+    volumes:
+      # :Z relabels the mount for SELinux (needed on Fedora/RHEL rootless
+      # Podman; harmless on macOS). Use :z instead if another container shares
+      # this directory.
+      - ./config:/config:Z
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Rome
