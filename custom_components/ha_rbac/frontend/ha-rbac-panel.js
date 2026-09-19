@@ -96,6 +96,18 @@ const STYLES = `
   @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
   ha-card { margin-bottom: 16px; }
   .card-content { padding: 16px; }
+  /* First-paint loading: centre a spinner with room around it, so an empty
+     panel reads as loading rather than broken. */
+  .loading { display: flex; flex-direction: column; align-items: center;
+             justify-content: center; gap: 12px; padding: 64px 16px;
+             color: var(--secondary-text-color); }
+  .loading .hint { margin: 0; }
+  .spinner { width: 40px; height: 40px; border-radius: 50%;
+             border: 3px solid var(--divider-color);
+             border-top-color: var(--primary-color);
+             animation: rbac-spin 0.9s linear infinite; }
+  @keyframes rbac-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
   h2 { margin: 0 0 4px; font-size: var(--ha-font-size-l, 1.15rem);
        font-weight: var(--ha-font-weight-medium, 500); }
   h3 { margin: 28px 0 4px; font-size: var(--ha-font-size-m, .95rem);
@@ -492,6 +504,12 @@ class HaRbacPanel extends HTMLElement {
     // Set by an action that edited the draft rather than the stored role.
     this._pending = null;
     this._loaded = false;
+    // False until the first fetch has resolved. The panel can be the first
+    // thing on screen when reached by its URL, and its data arrives over four
+    // websocket calls after `loadCardHelpers`; without this the element sits
+    // blank until they land, which reads as a broken page rather than a
+    // loading one.
+    this._ready = false;
     this._narrow = false;
   }
 
@@ -593,6 +611,9 @@ class HaRbacPanel extends HTMLElement {
     } catch (err) {
       this._notice = { kind: "error", text: err.message || String(err) };
     }
+    // The first fetch has now either landed or failed; either way there is
+    // something to show other than a spinner (the data, or an error banner).
+    this._ready = true;
     this._render();
     // A reload or a link can land straight on a tab that fetches its own data,
     // which until now only happened when the tab was clicked.
@@ -677,7 +698,17 @@ class HaRbacPanel extends HTMLElement {
       .join("");
 
     let body = "";
-    if (this._tab === "roles") body = this._rolesView();
+    if (!this._ready) {
+      // Before the first fetch lands. The header and tabs are already up, so
+      // the page reads as loading rather than broken. The spinner is CSS of
+      // our own rather than a Home Assistant element: the name of the built-in
+      // one changed across versions (ha-circular-progress -> ha-spinner), and
+      // a spinner that silently renders nothing is worse than none.
+      body = `<div class="loading">
+        <div class="spinner" role="progressbar" aria-label="Loading"></div>
+        <p class="hint">Loading&hellip;</p>
+      </div>`;
+    } else if (this._tab === "roles") body = this._rolesView();
     else if (this._tab === "users") body = this._usersView();
     else if (this._tab === "settings") body = this._settingsView();
     else body = this._denialsView();
@@ -710,13 +741,20 @@ class HaRbacPanel extends HTMLElement {
       )
       .join("");
 
+    // With no roles the bare list is just empty space above a button, which
+    // does not say the button is the thing to press. Say it.
+    const rolesBlock = this._roles.length
+      ? `<ul class="roles">${list}</ul>`
+      : `<p class="hint">No roles yet. Create one to start deciding what
+         people can see and do.</p>`;
+
     return `
       <div class="layout">
         <ha-card>
           <div class="card-content">
             <h2>Roles</h2>
-            <ul class="roles">${list}</ul>
-            <div class="actions"><ha-button id="new-role">New role</ha-button></div>
+            ${rolesBlock}
+            <div class="actions"><ha-button id="new-role" raised>New role</ha-button></div>
           </div>
         </ha-card>
         <ha-card><div class="card-content" id="editor"></div></ha-card>
@@ -729,7 +767,11 @@ class HaRbacPanel extends HTMLElement {
     if (!host) return;
     const draft = this._draft;
     if (!draft) {
-      host.innerHTML = "<p class='hint'>Select a role.</p>";
+      // No role selected. Which of the two reasons it is decides what to say:
+      // there are none to select, or there are and none is picked.
+      host.innerHTML = this._roles.length
+        ? "<p class='hint'>Select a role from the list to edit it.</p>"
+        : "<p class='hint'>Create a role to begin.</p>";
       return;
     }
     const locked = draft.system_generated;
