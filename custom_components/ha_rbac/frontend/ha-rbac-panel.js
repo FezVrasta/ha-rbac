@@ -111,6 +111,10 @@ const STYLES = `
     padding: 12px 16px; border-bottom: 2px solid transparent; white-space: nowrap;
   }
   .tabs button[aria-selected="true"] { opacity: 1; border-bottom-color: currentColor; }
+  /* Keyboard focus has to be visible for arrow-key navigation to be usable;
+     the mouse never lands here so a visible ring on focus is not noise. */
+  .tabs button:focus-visible { opacity: 1; outline: 2px solid currentColor;
+                               outline-offset: -2px; border-radius: 4px; }
   /* The picker is a control in its own right, wide enough to hold a list of
      entities, so it gets its own line rather than fighting the dropdowns for
      room. The dropdowns keep the top line, where their labels line up. */
@@ -653,16 +657,23 @@ class HaRbacPanel extends HTMLElement {
       banners += `<ha-alert alert-type="${esc(type)}">${esc(this._notice.text)}</ha-alert>`;
     }
 
+    // A proper ARIA tablist, not just styled buttons: each tab carries its
+    // role and an id, points at the panel it controls, and takes itself out of
+    // the tab order unless it is the selected one (roving tabindex). The arrow
+    // keys move between them, wired in `_wire`. Without this a screen reader
+    // reads four unrelated buttons and Tab stops on every one of them.
     const tabs = [
       ["roles", "Roles"],
       ["users", "Users"],
       ["denials", "Denials"],
       ["settings", "Settings"],
     ]
-      .map(
-        ([id, label]) =>
-          `<button data-tab="${id}" aria-selected="${this._tab === id}">${label}</button>`
-      )
+      .map(([id, label]) => {
+        const selected = this._tab === id;
+        return `<button role="tab" id="tab-${id}" data-tab="${id}"
+          aria-controls="rbac-tabpanel" aria-selected="${selected}"
+          tabindex="${selected ? "0" : "-1"}">${label}</button>`;
+      })
       .join("");
 
     let body = "";
@@ -674,11 +685,17 @@ class HaRbacPanel extends HTMLElement {
     // The navigationIcon slot is deliberately left empty: ha-top-app-bar-fixed
     // falls back to ha-menu-button, which is the sidebar toggle a narrow
     // screen needs and which this panel had no way of offering before.
+    //
+    // The panel is labelled by its active tab and focusable, so moving into it
+    // from the tab strip lands somewhere and a screen reader announces which
+    // tab it belongs to.
     return `
       <ha-top-app-bar-fixed>
         <div slot="title">Access Control</div>
-        <div slot="subRow" class="tabs">${tabs}</div>
-        <div class="wrap">${banners}${body}</div>
+        <div slot="subRow" class="tabs" role="tablist"
+          aria-label="Access control sections">${tabs}</div>
+        <div class="wrap" id="rbac-tabpanel" role="tabpanel"
+          tabindex="0" aria-labelledby="tab-${this._tab}">${banners}${body}</div>
       </ha-top-app-bar-fixed>`;
   }
 
@@ -2037,16 +2054,49 @@ class HaRbacPanel extends HTMLElement {
     );
   }
 
+  /**
+   * Switch to a tab, from a click or an arrow key. Shared so both routes leave
+   * the same state behind. `focus` asks for the newly selected tab button to
+   * take focus after the re-render -- what keyboard navigation needs, since the
+   * old button it was on has just been replaced.
+   */
+  _selectTab(tab, focus = false) {
+    if (tab === this._tab && !focus) return;
+    this._tab = tab;
+    this._notice = null;
+    this._syncUrl();
+    // Denials and settings fetch their own data, and `_loadForTab` re-renders
+    // once it lands; everything else renders now.
+    if (tab === "denials" || tab === "settings") this._loadForTab();
+    else this._render();
+    if (focus) {
+      const button = this.shadowRoot.getElementById(`tab-${tab}`);
+      if (button) button.focus();
+    }
+  }
+
   _wire() {
     const root = this.shadowRoot;
-    root.querySelectorAll("[data-tab]").forEach((b) => {
-      b.onclick = () => {
-        this._tab = b.dataset.tab;
-        this._notice = null;
-        this._syncUrl();
-        if (this._tab === "denials" || this._tab === "settings")
-          this._loadForTab();
-        else this._render();
+    const tabButtons = [...root.querySelectorAll('[role="tab"]')];
+    tabButtons.forEach((b, index) => {
+      b.onclick = () => this._selectTab(b.dataset.tab);
+      // The WAI-ARIA tabs pattern: Left/Right move along the strip and wrap,
+      // Home/End jump to the ends. Activation follows focus (the common
+      // "automatic" variant), which is also what a click does, so the two
+      // ways in behave the same.
+      b.onkeydown = (event) => {
+        const last = tabButtons.length - 1;
+        let next = null;
+        if (event.key === "ArrowRight") next = index === last ? 0 : index + 1;
+        else if (event.key === "ArrowLeft") next = index === 0 ? last : index - 1;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = last;
+        if (next === null) return;
+        event.preventDefault();
+        // Focus first so the strip stays put if a tab load re-renders, then
+        // activate. The re-render rebuilds the buttons, so focus is restored
+        // to the new active tab afterwards.
+        this._selectTab(tabButtons[next].dataset.tab, true);
       };
     });
     root.querySelectorAll("[data-role]").forEach((item) => {
