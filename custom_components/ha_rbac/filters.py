@@ -42,12 +42,14 @@ class FilterContext:
         check: CheckFn,
         app_allowed: "Callable[[str], bool] | None" = None,
         attribute_hidden: "Callable[[str, str], bool] | None" = None,
+        logbook_check: "Callable[[str], bool] | None" = None,
     ) -> None:
         """Initialise the context."""
         self.hass = hass
         self.check = check
         self._app_allowed = app_allowed
         self._attribute_hidden = attribute_hidden
+        self._logbook_check = logbook_check
 
     @property
     def hides_attributes(self) -> bool:
@@ -101,6 +103,7 @@ class FilterContext:
             permissions.check_entity,
             permissions.app_allowed,
             permissions.attribute_hidden if permissions.hides_attributes else None,
+            permissions.logbook_allowed,
         )
 
     def app_visible(self, url_path: str) -> bool:
@@ -110,6 +113,19 @@ class FilterContext:
     def readable(self, entity_id: str) -> bool:
         """Return True if the user may read an entity."""
         return self.check(entity_id, POLICY_READ)
+
+    def logbook_readable(self, entity_id: str) -> bool:
+        """Return True if the user may read an entity's logbook.
+
+        The logbook is past state, so anything the role can read live it can
+        read the logbook of. A logbook grant adds entities on top, for a role
+        meant to see one device's timeline without being handed its current
+        value everywhere else. With no logbook callback wired, this is exactly
+        `readable`, so a context built by hand keeps the old behaviour.
+        """
+        if self._logbook_check is not None:
+            return self._logbook_check(entity_id)
+        return self.readable(entity_id)
 
     @cached_property
     def visible_domains(self) -> set[str]:
@@ -614,6 +630,72 @@ def _filter_media(ctx: FilterContext, result: Any) -> Any:
                 if _media_readable(ctx, item)
             ]
     return filtered
+
+
+def _logbook_entry_visible(ctx: FilterContext, entry: Any) -> bool:
+    """Return True if a logbook row names no entity the role cannot see.
+
+    A row names an entity two ways, and both matter. `entity_id` is what the
+    row is about; `context_entity_id` is what *caused* it -- "the front door
+    unlocked because Alice arrived" carries the door under `entity_id` and the
+    person under `context_entity_id`. The generic walk only ever looked at
+    `entity_id`, so a row about a readable entity but caused by a denied one
+    disclosed that denied entity -- who moved, who came home -- through the
+    context field. Both are checked here, against logbook access, so a row is
+    withheld whole if either end names something the role may not see.
+    """
+    if not isinstance(entry, dict):
+        return True
+    for key in ("entity_id", "context_entity_id"):
+        value = entry.get(key)
+        if _looks_like_entity_id(value) and not ctx.logbook_readable(value):
+            return False
+    return True
+
+
+def _filter_logbook(ctx: FilterContext, entries: Any) -> Any:
+    """Drop logbook rows naming an entity the role cannot read the logbook of.
+
+    The response is a flat list of rows; a row goes whole rather than being
+    emptied, because a row stripped of its ids still says an event happened at
+    that time.
+    """
+    if not isinstance(entries, list):
+        return prune(ctx, entries)
+    return [entry for entry in entries if _logbook_entry_visible(ctx, entry)]
+
+
+@REGISTRY.result("logbook/get_events")
+def _filter_logbook_result(ctx: FilterContext, result: Any) -> Any:
+    """Filter the flat list of logbook rows the result is."""
+    return _filter_logbook(ctx, result)
+
+
+@REGISTRY.event("logbook/event_stream")
+def _filter_logbook_event(ctx: FilterContext, event: Any) -> Any:
+    """Filter a streamed logbook frame.
+
+    A stream frame wraps the rows under `events`; older shapes stream a bare
+    list. Both are narrowed to the rows the role may see, and a frame with no
+    rows left is still sent (empty) rather than dropped, so the frontend's
+    subscription does not stall waiting on a frame that never comes.
+    """
+    if isinstance(event, dict) and isinstance(event.get("events"), list):
+        return {**event, "events": _filter_logbook(ctx, event["events"])}
+    if isinstance(event, list):
+        return _filter_logbook(ctx, event)
+    return prune(ctx, event)
+
+
+def filter_rest_logbook(ctx: FilterContext, payload: Any) -> Any:
+    """Filter the REST `/api/logbook` response, a flat list of rows.
+
+    The REST endpoint answers with the same rows the websocket does, so it is
+    narrowed the same way -- checking both `entity_id` and `context_entity_id`,
+    since the generic walk the REST path would otherwise fall back to never
+    looked at the context field.
+    """
+    return _filter_logbook(ctx, payload)
 
 
 @REGISTRY.result("get_services")

@@ -17,6 +17,7 @@ from custom_components.ha_rbac.catalog import Catalog
 from custom_components.ha_rbac.const import TIER_OPEN
 from custom_components.ha_rbac.decide import (
     KIND_WS,
+    REASON_APP,
     REASON_DEGRADED,
     REASON_RESOURCE,
     REASON_TIER,
@@ -457,3 +458,150 @@ async def test_nested_group_membership_is_expanded(
     )
     assert decision.allowed is False
     assert "lock.front" in decision.resources
+
+
+async def _logbook_decider(hass: HomeAssistant) -> Decider:
+    """Return a decider whose catalogue knows the logbook command and panel.
+
+    The real `logbook` component pulls in `recorder`, which needs a database
+    the test harness does not stand up, and `frontend` needs a package it does
+    not have. Only two things about logbook matter to the decision: its command
+    classifies as user-tier (so the tier gate lets it through), and its panel is
+    registered (so the app gate can deny it). Both are registered directly.
+    """
+    import voluptuous as vol  # noqa: PLC0415
+    from homeassistant.components import websocket_api  # noqa: PLC0415
+    from homeassistant.components.frontend import (  # noqa: PLC0415
+        async_register_built_in_panel,
+    )
+
+    for domain in ("websocket_api", "config", "api"):
+        await async_setup_component(hass, domain, {})
+    await hass.async_block_till_done()
+
+    @websocket_api.ws_require_user()
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): "logbook/get_events",
+            vol.Required("start_time"): str,
+            vol.Optional("entity_ids"): [str],
+        }
+    )
+    def _logbook_cmd(hass, connection, msg):  # pragma: no cover - never called
+        connection.send_result(msg["id"], [])
+
+    websocket_api.async_register_command(hass, _logbook_cmd)
+    async_register_built_in_panel(
+        hass, "logbook", "Logbook", "hass:format-list-bulleted"
+    )
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    return Decider(hass, catalog, REGISTRY)
+
+
+def _logbook_only(hass: HomeAssistant, ids: list[str]) -> Permissions:
+    """Return a role that denies the Logbook app but is granted logbook of `ids`.
+
+    It can read nothing live -- an empty allow -- so logbook for the granted
+    entities can only be coming from the logbook grant, which is the point.
+    """
+    role = compile_role(
+        hass,
+        {
+            "id": "lb",
+            "name": "lb",
+            "allow": {},
+            "deny": {},
+            "tiers": {"max": TIER_OPEN, "allow": [], "deny": []},
+            "apps": {"deny": ["logbook"]},
+            "logbook": {"rules": [{"target": "entity_ids", "ids": ids}]},
+        },
+        PermissionLookup(er.async_get(hass), dr.async_get(hass)),
+    )
+    return Permissions(roles=[role])
+
+
+async def test_bounded_logbook_request_allows_a_granted_entity(
+    hass: HomeAssistant,
+) -> None:
+    """A logbook request naming a granted-but-unreadable entity is not refused."""
+    decider = await _logbook_decider(hass)
+    perms = _logbook_only(hass, ["climate.trend"])
+
+    decision = decider.decide(
+        perms,
+        KIND_WS,
+        "logbook/get_events",
+        {
+            "type": "logbook/get_events",
+            "entity_ids": ["climate.trend"],
+            "start_time": "2024-01-01T00:00:00+00:00",
+        },
+    )
+    assert decision.allowed is True, decision.detail
+    assert decision.filter_response is True
+
+
+async def test_bounded_logbook_request_still_refuses_an_ungranted_entity(
+    hass: HomeAssistant,
+) -> None:
+    """The widening is exactly the grant -- an entity outside it is still refused."""
+    decider = await _logbook_decider(hass)
+    perms = _logbook_only(hass, ["climate.trend"])
+
+    decision = decider.decide(
+        perms,
+        KIND_WS,
+        "logbook/get_events",
+        {
+            "type": "logbook/get_events",
+            "entity_ids": ["lock.secret"],
+            "start_time": "2024-01-01T00:00:00+00:00",
+        },
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_RESOURCE
+
+
+async def test_logbook_app_deny_still_refuses_without_a_grant(
+    hass: HomeAssistant,
+) -> None:
+    """Denying the Logbook app with no grant refuses its commands, as before."""
+    decider = await _logbook_decider(hass)
+    role = compile_role(
+        hass,
+        {
+            "id": "n",
+            "name": "n",
+            "allow": {CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            "tiers": {"max": TIER_OPEN, "allow": [], "deny": []},
+            "apps": {"deny": ["logbook"]},
+        },
+        PermissionLookup(er.async_get(hass), dr.async_get(hass)),
+    )
+    decision = decider.decide(
+        Permissions(roles=[role]),
+        KIND_WS,
+        "logbook/get_events",
+        {"type": "logbook/get_events", "start_time": "2024-01-01T00:00:00+00:00"},
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_APP
+
+
+async def test_a_logbook_grant_lets_the_command_past_the_app_gate(
+    hass: HomeAssistant,
+) -> None:
+    """Denying Logbook but holding a grant lets the command reach the filter."""
+    decider = await _logbook_decider(hass)
+    perms = _logbook_only(hass, ["climate.trend"])
+
+    decision = decider.decide(
+        perms,
+        KIND_WS,
+        "logbook/get_events",
+        {"type": "logbook/get_events", "start_time": "2024-01-01T00:00:00+00:00"},
+    )
+    assert decision.allowed is True, decision.detail
+    assert decision.filter_response is True

@@ -152,6 +152,21 @@ CHOICE_RULE_SCHEMA = vol.Schema(
 
 CHOICES_SCHEMA = vol.Schema({vol.Optional("rules", default=list): [CHOICE_RULE_SCHEMA]})
 
+# One rule: logbook for the entities a rule targets. Same targeting vocabulary
+# as an attribute or choice rule -- "every lock in the hallway" reads the way
+# it does everywhere else. A logbook rule grants reading a past timeline and
+# nothing else; an empty `ids` means every entity the target covers.
+LOGBOOK_RULE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("target", default=ENTITY_DOMAINS): str,
+        vol.Optional("ids", default=list): [str],
+    }
+)
+
+LOGBOOK_SCHEMA = vol.Schema(
+    {vol.Optional("rules", default=list): [LOGBOOK_RULE_SCHEMA]}
+)
+
 ATTRIBUTES_SCHEMA = vol.Schema(
     {
         vol.Optional("rules", default=list): [ATTRIBUTE_RULE_SCHEMA],
@@ -251,6 +266,7 @@ ROLE_SCHEMA = vol.Schema(
         vol.Optional("apps", default=dict): APPS_SCHEMA,
         vol.Optional("attributes", default=dict): ATTRIBUTES_SCHEMA,
         vol.Optional("choices", default=dict): CHOICES_SCHEMA,
+        vol.Optional("logbook", default=dict): LOGBOOK_SCHEMA,
         vol.Optional("schedule", default=dict): SCHEDULE_SCHEMA,
         vol.Optional("location", default=dict): LOCATION_SCHEMA,
     }
@@ -747,6 +763,54 @@ def _compile_choice_rules(
     return compiled
 
 
+@dataclass(slots=True)
+class CompiledLogbookRule:
+    """The entities whose logbook a rule grants reading of."""
+
+    # None means every entity; otherwise the exact set this rule covers.
+    entity_ids: set[str] | None
+    domains: set[str] | None
+
+    def covers(self, entity_id: str) -> bool:
+        """Return True if this rule applies to an entity."""
+        if self.entity_ids is None and self.domains is None:
+            return True
+        if self.domains is not None and entity_id.partition(".")[0] in self.domains:
+            return True
+        return self.entity_ids is not None and entity_id in self.entity_ids
+
+
+def _compile_logbook_rules(
+    hass: HomeAssistant, logbook: dict[str, Any]
+) -> list[CompiledLogbookRule]:
+    """Turn a role's logbook section into matchers.
+
+    Targeted exactly like an attribute or choice rule, and resolved through the
+    same expansion, so an area or a label means here what it means everywhere
+    else. A rule with no `ids` covers every entity its target names.
+    """
+    compiled: list[CompiledLogbookRule] = []
+    for rule in logbook.get("rules") or []:
+        ids = list(rule.get("ids") or [])
+        if not ids:
+            compiled.append(CompiledLogbookRule(None, None))
+            continue
+
+        target = rule.get("target") or ENTITY_DOMAINS
+        if target == ENTITY_DOMAINS:
+            compiled.append(CompiledLogbookRule(None, {i.lower() for i in ids}))
+            continue
+        if target == ENTITY_ENTITY_IDS:
+            compiled.append(CompiledLogbookRule({i.lower() for i in ids}, None))
+            continue
+
+        policy = desugar(hass, {CAT_ENTITIES: {target: dict.fromkeys(ids, True)}})
+        resolved = set((policy.get(CAT_ENTITIES) or {}).get(ENTITY_ENTITY_IDS) or {})
+        compiled.append(CompiledLogbookRule(resolved, None))
+
+    return compiled
+
+
 def _compile_attribute_rules(
     hass: HomeAssistant, attributes: dict[str, Any]
 ) -> list[CompiledAttributeRule]:
@@ -811,6 +875,7 @@ class CompiledRole:
     app_deny: list[str]
     attribute_rules: "list[CompiledAttributeRule]"
     choice_rules: "list[CompiledChoiceRule]"
+    logbook_rules: "list[CompiledLogbookRule]"
     schedule: dict[str, Any]
     location: dict[str, Any]
     # url_path -> level, for dashboards this role gets the contents of.
@@ -833,6 +898,16 @@ class CompiledRole:
         if self.cap_fn(entity_id, key):
             return False
         return self._granted_by_a_dashboard(entity_id, key)
+
+    def grants_logbook(self, entity_id: str) -> bool:
+        """Return True if a logbook rule on this role covers an entity.
+
+        Logbook only, and additive: it says nothing about live state, which
+        `check` decides. A denial is not consulted here because the union at
+        the `Permissions` level applies it first -- a role must not resurrect,
+        through a logbook rule, an entity another clause denied outright.
+        """
+        return any(rule.covers(entity_id) for rule in self.logbook_rules)
 
     def _granted_by_a_dashboard(self, entity_id: str, key: str) -> bool:
         """Return True if a dashboard this role gets the contents of shows it.
@@ -881,8 +956,10 @@ def compile_role(
         *capability_patterns(role.get("capabilities")),
         *(tiers.get("allow") or []),
     ]
+    logbook = role.get("logbook") or {}
     attribute_rules = _compile_attribute_rules(hass, attributes)
     choice_rules = _compile_choice_rules(hass, choices)
+    logbook_rules = _compile_logbook_rules(hass, logbook)
 
     return CompiledRole(
         role_id=role["id"],
@@ -897,6 +974,7 @@ def compile_role(
         app_deny=list(apps.get("deny") or []),
         attribute_rules=attribute_rules,
         choice_rules=choice_rules,
+        logbook_rules=logbook_rules,
         schedule=dict(role.get("schedule") or {}),
         location=dict(role.get("location") or {}),
         dashboard_levels={
@@ -921,6 +999,7 @@ def compile_role(
             and not apps.get("allow")
             and not (apps.get("dashboards") or {})
             and not attribute_rules
+            and not logbook_rules
         ),
     )
 
@@ -940,6 +1019,34 @@ class Permissions:
         if self.global_deny_fn is not None and self.global_deny_fn(entity_id, key):
             return False
         return any(role.check(entity_id, key) for role in self.roles)
+
+    def logbook_allowed(self, entity_id: str) -> bool:
+        """Return True if the user may read an entity's logbook.
+
+        The logbook is a past timeline, so anything a role can read live it can
+        read the logbook of -- `check_entity` already answers that, global deny
+        and role union included. A logbook rule then *adds* entities on top, for
+        the case this feature exists to serve: a role that may see one device's
+        timeline without being handed its current value everywhere.
+
+        Additive, but never a way around a denial. A logbook rule grants only
+        within the role that holds it, and only for an entity that same role
+        does not itself deny -- so a role cannot use a broad logbook grant to
+        resurrect what its own deny clause withheld. The household-wide deny
+        vetoes unconditionally, the way it does for live reads.
+        """
+        if self.pass_through:
+            return True
+        if self.check_entity(entity_id, POLICY_READ):
+            return True
+        if self.global_deny_fn is not None and self.global_deny_fn(
+            entity_id, POLICY_READ
+        ):
+            return False
+        return any(
+            role.grants_logbook(entity_id) and not role.deny_fn(entity_id, POLICY_READ)
+            for role in self.roles
+        )
 
     def tier_allowed(self, command: str, tier: str) -> bool:
         """Return True if any role permits a command at the given tier.
@@ -1013,6 +1120,18 @@ class Permissions:
         return not self.pass_through and any(
             role.attribute_rules for role in self.roles
         )
+
+    @property
+    def grants_any_logbook(self) -> bool:
+        """Return True if any role adds logbook for entities it cannot read.
+
+        Used by the app gate: a role that denies the Logbook panel but holds a
+        logbook rule still needs the `logbook/*` commands to reach the response
+        filter, which is what narrows them to the granted entities. Without
+        this the app gate would refuse them up front and the grant would mean
+        nothing.
+        """
+        return not self.pass_through and any(role.logbook_rules for role in self.roles)
 
     def app_allowed(self, url_path: str) -> bool:
         """Return True if any role permits this app.

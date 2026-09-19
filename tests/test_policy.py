@@ -657,3 +657,117 @@ async def test_a_role_without_choice_rules_is_unaffected(hass: HomeAssistant) ->
     assert decider.decide(
         permissions, KIND_WS, "call_service", _choose("Federico")
     ).allowed
+
+
+async def test_logbook_grant_adds_logbook_without_read(hass: HomeAssistant) -> None:
+    """A logbook rule lets a role see a timeline it cannot read live."""
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {"entity_ids": {"light.kitchen": {POLICY_READ: True}}}
+            },
+            logbook={"rules": [{"target": "entity_ids", "ids": ["climate.trend"]}]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+
+    assert perms.check_entity("light.kitchen", POLICY_READ) is True
+    assert perms.check_entity("climate.trend", POLICY_READ) is False
+
+    assert perms.logbook_allowed("light.kitchen") is True
+    assert perms.logbook_allowed("climate.trend") is True
+    assert perms.logbook_allowed("lock.secret") is False
+
+
+async def test_logbook_grant_by_domain(hass: HomeAssistant) -> None:
+    """A domain-targeted logbook rule covers the whole domain."""
+    role = compile_role(
+        hass,
+        _role(logbook={"rules": [{"target": "domains", "ids": ["sensor"]}]}),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+    assert perms.logbook_allowed("sensor.anything") is True
+    assert perms.logbook_allowed("lock.front") is False
+
+
+async def test_a_denial_beats_a_logbook_grant(hass: HomeAssistant) -> None:
+    """A logbook rule must not resurrect what the same role denies to read."""
+    role = compile_role(
+        hass,
+        _role(
+            deny={CAT_ENTITIES: {"entity_ids": {"lock.secret": True}}},
+            logbook={"rules": [{"target": "domains", "ids": ["lock"]}]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+    assert perms.logbook_allowed("lock.secret") is False, "deny wins over grant"
+    assert perms.logbook_allowed("lock.other") is True, "the rest of the grant stands"
+
+
+async def test_global_deny_beats_a_logbook_grant(hass: HomeAssistant) -> None:
+    """The household-wide deny vetoes logbook the way it vetoes a live read."""
+    lookup = _lookup(hass)
+    role = compile_role(
+        hass,
+        _role(logbook={"rules": [{"target": "domains", "ids": ["camera"]}]}),
+        lookup,
+    )
+    deny_fn = compile_entities({"entity_ids": {"camera.bedroom": True}}, lookup)
+    perms = Permissions(roles=[role], global_deny_fn=deny_fn)
+    assert perms.logbook_allowed("camera.bedroom") is False
+    assert perms.logbook_allowed("camera.porch") is True
+
+
+async def test_no_logbook_grant_means_logbook_equals_read(
+    hass: HomeAssistant,
+) -> None:
+    """A role without the section behaves exactly as before: logbook == read."""
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {"entity_ids": {"light.kitchen": {POLICY_READ: True}}}}
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+    assert perms.grants_any_logbook is False
+    assert perms.logbook_allowed("light.kitchen") is True
+    assert perms.logbook_allowed("lock.front") is False
+
+
+async def test_a_logbook_grant_does_not_make_a_role_full_access(
+    hass: HomeAssistant,
+) -> None:
+    """A logbook rule is a restriction-shaped feature; it is not "unrestricted"."""
+    role = compile_role(
+        hass,
+        {
+            "id": "r",
+            "name": "r",
+            "allow": {CAT_ENTITIES: True},
+            "tiers": {"max": TIER_ADMIN, "allow": ["*"], "deny": []},
+            "logbook": {"rules": [{"target": "domains", "ids": ["sensor"]}]},
+        },
+        _lookup(hass),
+    )
+    assert role.full_access is False
+
+
+async def test_logbook_grant_survives_a_schema_round_trip(
+    hass: HomeAssistant,
+) -> None:
+    """The logbook section is accepted, defaulted and stored like the others."""
+    stored = ROLE_SCHEMA(
+        {
+            "id": "r",
+            "name": "r",
+            "logbook": {"rules": [{"target": "entity_ids", "ids": ["climate.trend"]}]},
+        }
+    )
+    assert stored["logbook"]["rules"][0]["ids"] == ["climate.trend"]
+    empty = ROLE_SCHEMA({"id": "r2", "name": "r2"})
+    assert empty["logbook"] == {"rules": []}

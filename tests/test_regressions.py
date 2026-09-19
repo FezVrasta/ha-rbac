@@ -2092,3 +2092,48 @@ async def test_an_attribute_that_is_not_a_member_list_is_not_expanded(
         _call("light", "turn_off", "light.odd"),
     )
     assert decision.allowed is True
+
+
+async def test_logbook_context_entity_id_does_not_leak(hass: HomeAssistant) -> None:
+    """A logbook row's cause must not disclose an entity the role cannot see.
+
+    A row names an entity two ways: `entity_id` (what it is about) and
+    `context_entity_id` (what caused it). The generic walk only ever checked
+    `entity_id`, so "the front door unlocked because Alice arrived" -- door
+    readable, person denied -- disclosed the person through the context field.
+    A role that reads the lock domain but not persons must get no person id,
+    which means the whole row goes.
+    """
+    from custom_components.ha_rbac.filters import filter_rest_logbook  # noqa: PLC0415
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {"domains": {"lock": {POLICY_READ: True}}}},
+        ),
+        _lookup(hass),
+    )
+    ctx = FilterContext.for_user(hass, Permissions(roles=[role]))
+
+    rows = [
+        {
+            "entity_id": "lock.front",
+            "when": 1,
+            "state": "unlocked",
+            "context_entity_id": "person.alice",
+            "context_message": "triggered by Alice",
+        },
+        {"entity_id": "lock.back", "when": 2, "state": "locked"},
+    ]
+
+    # Websocket result path and REST path both close the leak.
+    for filtered in (
+        REGISTRY.filter_result("logbook/get_events", ctx, rows),
+        filter_rest_logbook(ctx, rows),
+    ):
+        flat = json.dumps(filtered)
+        assert "person.alice" not in flat, "the cause must not leak"
+        assert "triggered by Alice" not in flat
+        # The plain lock.back row, naming no denied cause, stays.
+        assert any(r.get("entity_id") == "lock.back" for r in filtered)
+        assert all(r.get("entity_id") != "lock.front" for r in filtered)

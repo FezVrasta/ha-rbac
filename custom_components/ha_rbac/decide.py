@@ -83,6 +83,26 @@ WRITES_ONLY_TO_THE_LOG = frozenset({"system_log.write"})
 # registry command lives under.
 CONFIG_PANEL = "config"
 
+# The Logbook panel. A role may deny it wholesale yet still be granted the
+# logbook of specific entities, in which case its commands are let through to
+# the per-entity response filter rather than refused at the app gate.
+LOGBOOK_PANEL = "logbook"
+
+# The read commands a per-entity logbook grant widens. Websocket commands are
+# matched by name; the REST logbook endpoint by its `GET /api/logbook` request
+# line.
+_LOGBOOK_READ_COMMANDS = frozenset({"logbook/get_events", "logbook/event_stream"})
+
+
+def _is_logbook_read(kind: str, name: str) -> bool:
+    """Return True if a request is a logbook read a logbook grant may widen."""
+    if kind == KIND_HTTP:
+        # `name` is "<METHOD> <path>"; the endpoint carries a timestamp tail,
+        # so it is matched by prefix on the path half.
+        parts = name.split(" ", 1)
+        return len(parts) == 2 and parts[1].startswith("/api/logbook")
+    return name in _LOGBOOK_READ_COMMANDS
+
 
 def _reads_attributes(node: Any, depth: int = 0) -> bool:
     """Return True if a payload contains a template that reads attributes.
@@ -531,10 +551,17 @@ class Decider:
         key = POLICY_CONTROL if self._is_mutation(kind, name, payload) else POLICY_READ
 
         # 3. Resource gate. Every entity the request names must be permitted.
+        #    A logbook read is widened by a logbook grant the same way a history
+        #    read is by a history grant: an entity a role may see the timeline
+        #    of, without being able to read its live state, must pass here or
+        #    the grant never reaches the response filter. The grant only ever
+        #    adds read-shaped access, so it applies to reads alone.
+        logbook_read = key == POLICY_READ and _is_logbook_read(kind, name)
         denied = sorted(
             entity_id
             for entity_id in entities
             if not permissions.check_entity(entity_id, key)
+            and not (logbook_read and permissions.logbook_allowed(entity_id))
         )
         if denied:
             return Decision(
@@ -640,6 +667,14 @@ class Decider:
 
         for app in denied:
             if not self._app_named(app, kind, name, payload):
+                continue
+            # A role can deny the Logbook panel yet still be granted the
+            # logbook of specific entities. The panel stays hidden, but its
+            # commands must reach the response filter rather than be refused
+            # here, or the filter never runs and the grant is dead letter. The
+            # filter then narrows the answer to the granted entities, so
+            # letting the command through discloses nothing wider.
+            if app["url_path"] == LOGBOOK_PANEL and permissions.grants_any_logbook:
                 continue
             what = f"the {app['title']} add-on" if app.get("addon") else app["title"]
             return Decision(

@@ -41,7 +41,12 @@ from yarl import URL
 
 from .decide import KIND_HTTP, KIND_WS, REASON_APP, Decider, Decision
 from .denylog import Denial, DenyLog
-from .filters import REGISTRY, FilterContext, strip_denied_addons
+from .filters import (
+    REGISTRY,
+    FilterContext,
+    filter_rest_logbook,
+    strip_denied_addons,
+)
 from .http_config import LOOPBACK
 from .ingress import (
     SESSION_COOKIE,
@@ -807,6 +812,13 @@ class RbacProxy:
             return None, False
 
         ctx = FilterContext.for_user(self._hass, permissions)
+        # `/api/logbook` carries a timestamp in its path, so there is no static
+        # key to register in the command-keyed registry, and its rows name an
+        # entity under `context_entity_id` as well as `entity_id` -- which the
+        # generic walk never checked. It is dispatched by path to a filter that
+        # inspects both.
+        if request.path.startswith("/api/logbook"):
+            return filter_rest_logbook(ctx, payload), True
         return (
             REGISTRY.filter_result(f"{request.method} {request.path}", ctx, payload),
             True,

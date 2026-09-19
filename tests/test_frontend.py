@@ -86,7 +86,7 @@ def test_every_editable_rule_list_is_read_back_when_a_role_is_saved() -> None:
     drafts = set(
         re.findall(r"(\w+): read(?:Attribute|Choice|Schedule)?\w*\(role\)", source)
     )
-    assert {"attrRules", "choiceRules"} <= drafts, drafts
+    assert {"attrRules", "choiceRules", "logbookRules"} <= drafts, drafts
 
     saved = source[source.index("_payload()") :]
     for draft in drafts:

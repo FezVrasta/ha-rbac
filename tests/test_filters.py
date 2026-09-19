@@ -752,3 +752,146 @@ async def test_a_custom_card_key_naming_an_entity_is_scrubbed(
 
     assert "camera.bedroom" not in json.dumps(result)
     assert "camera.hall" in json.dumps(result), "a camera they may see stays"
+
+
+def _logbook_ctx(
+    hass: HomeAssistant, readable: set[str], logbook: set[str]
+) -> FilterContext:
+    """Return a context that reads some entities and holds logbook for others.
+
+    `readable` are entities the role can read live, which carry logbook for
+    free; `logbook` are entities it may only see the timeline of. Kept separate
+    so a test can prove logbook follows the logbook grant, not the read.
+    """
+    return FilterContext(
+        hass,
+        lambda entity_id, key: entity_id in readable,
+        None,
+        None,
+        lambda entity_id: entity_id in readable or entity_id in logbook,
+    )
+
+
+async def test_logbook_drops_a_row_about_a_denied_entity(
+    hass: HomeAssistant,
+) -> None:
+    """A row whose `entity_id` the role cannot see is withheld whole."""
+    result = REGISTRY.filter_result(
+        "logbook/get_events",
+        _logbook_ctx(hass, readable={"light.kitchen"}, logbook=set()),
+        [
+            {"entity_id": "light.kitchen", "when": 1, "state": "on"},
+            {"entity_id": "lock.front", "when": 2, "state": "unlocked"},
+        ],
+    )
+    assert [r["entity_id"] for r in result] == ["light.kitchen"]
+
+
+async def test_logbook_drops_a_row_caused_by_a_denied_entity(
+    hass: HomeAssistant,
+) -> None:
+    """The context_entity_id leak is closed even for a readable entity's row.
+
+    A row about a readable entity but *caused* by a denied one must not
+    disclose the cause.
+    "The front door unlocked because Alice arrived" carries the door under
+    `entity_id` (readable) and the person under `context_entity_id` (denied).
+    The generic walk only ever checked `entity_id`, so the person leaked --
+    who came home, disclosed through a door the role may watch. The row goes
+    whole because either end naming something unseen is enough.
+    """
+    ctx = _logbook_ctx(hass, readable={"lock.front"}, logbook=set())
+    result = REGISTRY.filter_result(
+        "logbook/get_events",
+        ctx,
+        [
+            {
+                "entity_id": "lock.front",
+                "when": 1,
+                "state": "unlocked",
+                "context_entity_id": "person.alice",
+                "context_message": "triggered by Alice",
+            }
+        ],
+    )
+    assert result == [], "a row caused by a denied entity is withheld whole"
+    assert "person.alice" not in json.dumps(result)
+
+
+async def test_logbook_follows_a_grant_not_only_read(hass: HomeAssistant) -> None:
+    """An entity granted logbook but not read still comes back in the logbook."""
+    ctx = _logbook_ctx(hass, readable={"light.kitchen"}, logbook={"climate.trend"})
+    result = REGISTRY.filter_result(
+        "logbook/get_events",
+        ctx,
+        [
+            {"entity_id": "light.kitchen", "when": 1},
+            {"entity_id": "climate.trend", "when": 2},
+            {"entity_id": "lock.secret", "when": 3},
+        ],
+    )
+    assert [r["entity_id"] for r in result] == ["light.kitchen", "climate.trend"]
+
+
+async def test_logbook_context_is_allowed_when_the_cause_is_granted(
+    hass: HomeAssistant,
+) -> None:
+    """A context entity the role may see (via grant or read) does not drop the row."""
+    ctx = _logbook_ctx(hass, readable={"lock.front"}, logbook={"person.alice"})
+    result = REGISTRY.filter_result(
+        "logbook/get_events",
+        ctx,
+        [
+            {
+                "entity_id": "lock.front",
+                "when": 1,
+                "context_entity_id": "person.alice",
+            }
+        ],
+    )
+    assert len(result) == 1, "both ends are visible, so the row stays"
+
+
+async def test_logbook_event_stream_frame_is_filtered(hass: HomeAssistant) -> None:
+    """A streamed logbook frame wraps rows under `events`."""
+    ctx = _logbook_ctx(hass, readable={"light.kitchen"}, logbook=set())
+    event = REGISTRY.filter_event(
+        "logbook/event_stream",
+        ctx,
+        {
+            "events": [
+                {"entity_id": "light.kitchen", "when": 1},
+                {"entity_id": "lock.front", "when": 2},
+            ],
+            "start_time": 1,
+        },
+    )
+    assert [r["entity_id"] for r in event["events"]] == ["light.kitchen"]
+    assert event["start_time"] == 1, "the frame around it survives"
+
+
+async def test_rest_logbook_is_filtered_including_context(
+    hass: HomeAssistant,
+) -> None:
+    """The REST endpoint is narrowed the same way, context included."""
+    from custom_components.ha_rbac.filters import filter_rest_logbook  # noqa: PLC0415
+
+    ctx = _logbook_ctx(hass, readable={"lock.front"}, logbook=set())
+    payload = [
+        {"entity_id": "lock.front", "when": 1, "context_entity_id": "person.alice"},
+        {"entity_id": "sensor.ok", "when": 2},
+    ]
+    result = filter_rest_logbook(ctx, payload)
+    flat = json.dumps(result)
+    assert "person.alice" not in flat, "context leak closed on REST too"
+    assert "sensor.ok" not in flat, "sensor.ok is not readable here"
+    assert result == [], "both rows named something unseen"
+
+
+async def test_logbook_readable_falls_back_to_read_without_a_grant(
+    hass: HomeAssistant,
+) -> None:
+    """A context built with no logbook callback behaves exactly as before."""
+    ctx = _ctx(hass, {"lock.front"})
+    assert ctx.logbook_readable("light.kitchen") is True
+    assert ctx.logbook_readable("lock.front") is False

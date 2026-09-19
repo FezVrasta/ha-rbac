@@ -330,6 +330,14 @@ function readChoiceRules(role) {
   }));
 }
 
+/** Read a role's logbook section into editable rows. */
+function readLogbookRules(role) {
+  return ((role.logbook || {}).rules || []).map((rule) => ({
+    target: rule.target || "domains",
+    ids: [...(rule.ids || [])],
+  }));
+}
+
 /** Read a role's attribute section into editable rows. */
 function readAttributeRules(role) {
   const attributes = role.attributes || {};
@@ -569,6 +577,7 @@ class HaRbacPanel extends HTMLElement {
           tierDeny: [...((role.tiers || {}).deny || [])],
           attrRules: readAttributeRules(role),
           choiceRules: readChoiceRules(role),
+          logbookRules: readLogbookRules(role),
         }
       : null;
   }
@@ -779,6 +788,25 @@ class HaRbacPanel extends HTMLElement {
         </div>
       </ha-expansion-panel>
 
+      <ha-expansion-panel data-section="logbook" data-title="Logbook"
+        header="Logbook">
+        <div class="card-content">      <p class="hint">The logbook is the
+        timeline of what happened &mdash; when a light came on, who unlocked a
+        door. A role sees the logbook of whatever it can read above; this is for
+        an entity you want it to see the <em>history of events</em> for without
+        handing over the live value everywhere else. Pick the entities (or a
+        whole domain, area, label or floor) whose logbook this role may read. A
+        denial above still wins, and an entry caused by an entity the role
+        cannot see is withheld whole &mdash; so who came home is not disclosed
+        through a door it may watch. Leave it empty and the logbook follows
+        exactly what the role can read.</p>
+      <div id="logbook-rules"></div>
+      <div class="actions">
+        <ha-button id="add-logbook" ${locked ? "disabled" : ""}>Grant logbook</ha-button>
+      </div>
+        </div>
+      </ha-expansion-panel>
+
       <ha-expansion-panel data-section="admin" data-title="Administration: what this role can change"
         header="Administration: what this role can change">
         <div class="card-content">      <p class="hint">Everything in this section is an administrator's job.
@@ -944,6 +972,7 @@ class HaRbacPanel extends HTMLElement {
     this._mountRules(host.querySelector("#rules"), locked);
     this._mountAttrRules(host.querySelector("#attr-rules"), locked);
     this._mountChoiceRules(host.querySelector("#choice-rules"), locked);
+    this._mountLogbookRules(host.querySelector("#logbook-rules"), locked);
   }
 
   /**
@@ -1183,6 +1212,10 @@ class HaRbacPanel extends HTMLElement {
       case "choices": {
         const rules = draft.choiceRules.filter((r) => r.options.length).length;
         return rules ? `${rules} select${rules === 1 ? "" : "s"}` : "Anything on any";
+      }
+      case "logbook": {
+        const rules = draft.logbookRules.filter((r) => r.ids.length).length;
+        return rules ? `${rules} grant${rules === 1 ? "" : "s"}` : "Follows read";
       }
       case "admin": {
         if ((draft.tiers || {}).max === "admin") return "A full administrator";
@@ -1478,6 +1511,50 @@ class HaRbacPanel extends HTMLElement {
     this._draft.choiceRules.forEach((rule, index) => {
       host.appendChild(this._choiceRow(rule, index, locked));
     });
+  }
+
+  _mountLogbookRules(host, locked) {
+    if (!host) return;
+    host.innerHTML = "";
+    host.appendChild(
+      this._fallbackRow(
+        "The role's own entities",
+        "Logbook follows read",
+        "Unless a rule below adds one"
+      )
+    );
+    this._draft.logbookRules.forEach((rule, index) => {
+      host.appendChild(this._logbookRow(rule, index, locked));
+    });
+  }
+
+  _logbookRow(rule, index, locked) {
+    const row = document.createElement("div");
+    // A logbook grant only ever widens reading, so it reads as an allowance.
+    row.className = "rule allow";
+
+    const remount = () =>
+      this._mountLogbookRules(this.shadowRoot.getElementById("logbook-rules"), locked);
+
+    const target = this._select(TARGETS, rule.target, locked, "Applies to", (value) => {
+      rule.target = value;
+      rule.ids = [];
+      remount();
+    });
+
+    const picker = document.createElement("div");
+    picker.className = "picker";
+    picker.appendChild(this._pickerFor(rule, locked, remount));
+
+    const remove = this._removeButton(locked, () => {
+      this._draft.logbookRules.splice(index, 1);
+      remount();
+    });
+
+    target.classList.add("f-target");
+    remove.classList.add("f-remove");
+    row.append(target, picker, remove);
+    return row;
   }
 
   /**
@@ -1949,6 +2026,10 @@ class HaRbacPanel extends HTMLElement {
       this._draft.choiceRules.push({ target: "entity_ids", ids: [], options: [] });
       this._mountChoiceRules(root.getElementById("choice-rules"), false);
     });
+    on("add-logbook", () => {
+      this._draft.logbookRules.push({ target: "entity_ids", ids: [] });
+      this._mountLogbookRules(root.getElementById("logbook-rules"), false);
+    });
     on("add-attr", () => {
       this._draft.attrRules.push({ target: "domains", ids: [], names: [] });
       this._mountAttrRules(root.getElementById("attr-rules"), false);
@@ -2046,6 +2127,17 @@ class HaRbacPanel extends HTMLElement {
             options: rule.options,
           })),
       },
+      logbook: {
+        // A rule naming nothing has selected no entity yet; it grants nothing,
+        // so it is not written. A whole domain, area, label or floor is a rule
+        // that names those ids, so it is kept.
+        rules: this._draft.logbookRules
+          .filter((rule) => rule.ids.length)
+          .map((rule) => ({
+            target: rule.target,
+            ids: rule.ids,
+          })),
+      },
       schedule: {
         // Written as a list, and the older inline window is cleared so a role
         // saved after an upgrade does not carry both shapes at once.
@@ -2131,6 +2223,7 @@ class HaRbacPanel extends HTMLElement {
           apps: source.apps,
           attributes: source.attributes,
           choices: source.choices,
+          logbook: source.logbook,
           schedule: source.schedule,
         },
       });
