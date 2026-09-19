@@ -152,6 +152,21 @@ CHOICE_RULE_SCHEMA = vol.Schema(
 
 CHOICES_SCHEMA = vol.Schema({vol.Optional("rules", default=list): [CHOICE_RULE_SCHEMA]})
 
+# One rule: history for the entities a rule targets. Same targeting vocabulary
+# as an attribute rule -- "every sensor in the kitchen" reads the way it does
+# everywhere else. A history rule grants reading a past trend and nothing else;
+# an empty `ids` means every entity the target covers.
+HISTORY_RULE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("target", default=ENTITY_DOMAINS): str,
+        vol.Optional("ids", default=list): [str],
+    }
+)
+
+HISTORY_SCHEMA = vol.Schema(
+    {vol.Optional("rules", default=list): [HISTORY_RULE_SCHEMA]}
+)
+
 ATTRIBUTES_SCHEMA = vol.Schema(
     {
         vol.Optional("rules", default=list): [ATTRIBUTE_RULE_SCHEMA],
@@ -251,6 +266,7 @@ ROLE_SCHEMA = vol.Schema(
         vol.Optional("apps", default=dict): APPS_SCHEMA,
         vol.Optional("attributes", default=dict): ATTRIBUTES_SCHEMA,
         vol.Optional("choices", default=dict): CHOICES_SCHEMA,
+        vol.Optional("history", default=dict): HISTORY_SCHEMA,
         vol.Optional("schedule", default=dict): SCHEDULE_SCHEMA,
         vol.Optional("location", default=dict): LOCATION_SCHEMA,
     }
@@ -712,6 +728,57 @@ class CompiledChoiceRule:
         return self.entity_ids is not None and entity_id in self.entity_ids
 
 
+@dataclass(slots=True)
+class CompiledHistoryRule:
+    """The entities whose history a rule grants reading of."""
+
+    # None means every entity; otherwise the exact set this rule covers.
+    entity_ids: set[str] | None
+    domains: set[str] | None
+
+    def covers(self, entity_id: str) -> bool:
+        """Return True if this rule applies to an entity."""
+        if self.entity_ids is None and self.domains is None:
+            return True
+        if self.domains is not None and entity_id.partition(".")[0] in self.domains:
+            return True
+        return self.entity_ids is not None and entity_id in self.entity_ids
+
+
+def _compile_history_rules(
+    hass: HomeAssistant, history: dict[str, Any]
+) -> list[CompiledHistoryRule]:
+    """Turn a role's history section into matchers.
+
+    Targeted exactly like an attribute or choice rule, and resolved through the
+    same expansion, so an area or a label means here what it means everywhere
+    else. A rule with no `ids` covers every entity its target names -- an empty
+    `ids` under the default domain target is "every domain", i.e. all history,
+    which a role would express by simply not denying the History app; it is
+    accepted rather than special-cased.
+    """
+    compiled: list[CompiledHistoryRule] = []
+    for rule in history.get("rules") or []:
+        ids = list(rule.get("ids") or [])
+        if not ids:
+            compiled.append(CompiledHistoryRule(None, None))
+            continue
+
+        target = rule.get("target") or ENTITY_DOMAINS
+        if target == ENTITY_DOMAINS:
+            compiled.append(CompiledHistoryRule(None, {i.lower() for i in ids}))
+            continue
+        if target == ENTITY_ENTITY_IDS:
+            compiled.append(CompiledHistoryRule({i.lower() for i in ids}, None))
+            continue
+
+        policy = desugar(hass, {CAT_ENTITIES: {target: dict.fromkeys(ids, True)}})
+        resolved = set((policy.get(CAT_ENTITIES) or {}).get(ENTITY_ENTITY_IDS) or {})
+        compiled.append(CompiledHistoryRule(resolved, None))
+
+    return compiled
+
+
 def _compile_choice_rules(
     hass: HomeAssistant, choices: dict[str, Any]
 ) -> list[CompiledChoiceRule]:
@@ -811,6 +878,7 @@ class CompiledRole:
     app_deny: list[str]
     attribute_rules: "list[CompiledAttributeRule]"
     choice_rules: "list[CompiledChoiceRule]"
+    history_rules: "list[CompiledHistoryRule]"
     schedule: dict[str, Any]
     location: dict[str, Any]
     # url_path -> level, for dashboards this role gets the contents of.
@@ -833,6 +901,16 @@ class CompiledRole:
         if self.cap_fn(entity_id, key):
             return False
         return self._granted_by_a_dashboard(entity_id, key)
+
+    def grants_history(self, entity_id: str) -> bool:
+        """Return True if a history rule on this role covers an entity.
+
+        History only, and additive: this says nothing about live state, which
+        `check` decides. A denial is not consulted here because the union at
+        the `Permissions` level applies it first -- a role must not resurrect,
+        through a history rule, an entity another clause denied outright.
+        """
+        return any(rule.covers(entity_id) for rule in self.history_rules)
 
     def _granted_by_a_dashboard(self, entity_id: str, key: str) -> bool:
         """Return True if a dashboard this role gets the contents of shows it.
@@ -881,8 +959,10 @@ def compile_role(
         *capability_patterns(role.get("capabilities")),
         *(tiers.get("allow") or []),
     ]
+    history = role.get("history") or {}
     attribute_rules = _compile_attribute_rules(hass, attributes)
     choice_rules = _compile_choice_rules(hass, choices)
+    history_rules = _compile_history_rules(hass, history)
 
     return CompiledRole(
         role_id=role["id"],
@@ -897,6 +977,7 @@ def compile_role(
         app_deny=list(apps.get("deny") or []),
         attribute_rules=attribute_rules,
         choice_rules=choice_rules,
+        history_rules=history_rules,
         schedule=dict(role.get("schedule") or {}),
         location=dict(role.get("location") or {}),
         dashboard_levels={
@@ -921,6 +1002,7 @@ def compile_role(
             and not apps.get("allow")
             and not (apps.get("dashboards") or {})
             and not attribute_rules
+            and not history_rules
         ),
     )
 
@@ -940,6 +1022,34 @@ class Permissions:
         if self.global_deny_fn is not None and self.global_deny_fn(entity_id, key):
             return False
         return any(role.check(entity_id, key) for role in self.roles)
+
+    def history_allowed(self, entity_id: str) -> bool:
+        """Return True if the user may read an entity's history.
+
+        History is past state, so anything a role can read live it can read the
+        history of -- `check_entity` already answers that, global deny and role
+        union included. A history rule then *adds* entities on top, for the case
+        this feature exists to serve: a role that may see one device's trend
+        without being handed its current value everywhere.
+
+        Additive, but never a way around a denial. A history rule grants only
+        within the role that holds it, and only for an entity that same role
+        does not itself deny -- so a role cannot use a broad history grant to
+        resurrect what its own deny clause withheld. The household-wide deny
+        vetoes unconditionally, the way it does for live reads.
+        """
+        if self.pass_through:
+            return True
+        if self.check_entity(entity_id, POLICY_READ):
+            return True
+        if self.global_deny_fn is not None and self.global_deny_fn(
+            entity_id, POLICY_READ
+        ):
+            return False
+        return any(
+            role.grants_history(entity_id) and not role.deny_fn(entity_id, POLICY_READ)
+            for role in self.roles
+        )
 
     def tier_allowed(self, command: str, tier: str) -> bool:
         """Return True if any role permits a command at the given tier.
@@ -1013,6 +1123,18 @@ class Permissions:
         return not self.pass_through and any(
             role.attribute_rules for role in self.roles
         )
+
+    @property
+    def grants_any_history(self) -> bool:
+        """Return True if any role adds history for entities it cannot read.
+
+        Used by the app gate: a role that denies the History panel but holds a
+        history rule still needs the `history/*` commands to reach the response
+        filter, which is what narrows them to the granted entities. Without
+        this the app gate would refuse them up front and the grant would mean
+        nothing.
+        """
+        return not self.pass_through and any(role.history_rules for role in self.roles)
 
     def app_allowed(self, url_path: str) -> bool:
         """Return True if any role permits this app.

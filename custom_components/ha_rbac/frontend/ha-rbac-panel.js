@@ -330,6 +330,14 @@ function readChoiceRules(role) {
   }));
 }
 
+/** Read a role's history section into editable rows. */
+function readHistoryRules(role) {
+  return ((role.history || {}).rules || []).map((rule) => ({
+    target: rule.target || "domains",
+    ids: [...(rule.ids || [])],
+  }));
+}
+
 /** Read a role's attribute section into editable rows. */
 function readAttributeRules(role) {
   const attributes = role.attributes || {};
@@ -569,6 +577,7 @@ class HaRbacPanel extends HTMLElement {
           tierDeny: [...((role.tiers || {}).deny || [])],
           attrRules: readAttributeRules(role),
           choiceRules: readChoiceRules(role),
+          historyRules: readHistoryRules(role),
         }
       : null;
   }
@@ -779,6 +788,24 @@ class HaRbacPanel extends HTMLElement {
         </div>
       </ha-expansion-panel>
 
+      <ha-expansion-panel data-section="history" data-title="History"
+        header="History">
+        <div class="card-content">      <p class="hint">History is the past
+        of an entity's state. A role sees the history of whatever it can read
+        above &mdash; this is for the entity you want it to see the <em>trend</em>
+        of without handing over the live value everywhere else: the living-room
+        thermostat on a shared dashboard, say. Pick the entities (or a whole
+        domain, area, label or floor) whose history this role may read. A
+        denial above still wins &mdash; history never brings back what a role
+        is forbidden to see. Leave it empty and history follows exactly what
+        the role can read.</p>
+      <div id="history-rules"></div>
+      <div class="actions">
+        <ha-button id="add-history" ${locked ? "disabled" : ""}>Grant history</ha-button>
+      </div>
+        </div>
+      </ha-expansion-panel>
+
       <ha-expansion-panel data-section="admin" data-title="Administration: what this role can change"
         header="Administration: what this role can change">
         <div class="card-content">      <p class="hint">Everything in this section is an administrator's job.
@@ -944,6 +971,7 @@ class HaRbacPanel extends HTMLElement {
     this._mountRules(host.querySelector("#rules"), locked);
     this._mountAttrRules(host.querySelector("#attr-rules"), locked);
     this._mountChoiceRules(host.querySelector("#choice-rules"), locked);
+    this._mountHistoryRules(host.querySelector("#history-rules"), locked);
   }
 
   /**
@@ -1183,6 +1211,12 @@ class HaRbacPanel extends HTMLElement {
       case "choices": {
         const rules = draft.choiceRules.filter((r) => r.options.length).length;
         return rules ? `${rules} select${rules === 1 ? "" : "s"}` : "Anything on any";
+      }
+      case "history": {
+        const rules = draft.historyRules.filter((r) => r.ids.length).length;
+        return rules
+          ? `${rules} grant${rules === 1 ? "" : "s"}`
+          : "Follows read";
       }
       case "admin": {
         if ((draft.tiers || {}).max === "admin") return "A full administrator";
@@ -1607,6 +1641,50 @@ class HaRbacPanel extends HTMLElement {
     return row;
   }
 
+  _mountHistoryRules(host, locked) {
+    if (!host) return;
+    host.innerHTML = "";
+    host.appendChild(
+      this._fallbackRow(
+        "The role's own entities",
+        "History follows read",
+        "Unless a rule below adds one"
+      )
+    );
+    this._draft.historyRules.forEach((rule, index) => {
+      host.appendChild(this._historyRow(rule, index, locked));
+    });
+  }
+
+  _historyRow(rule, index, locked) {
+    const row = document.createElement("div");
+    // A history grant only ever widens reading, so it reads as an allowance.
+    row.className = "rule allow";
+
+    const remount = () =>
+      this._mountHistoryRules(this.shadowRoot.getElementById("history-rules"), locked);
+
+    const target = this._select(TARGETS, rule.target, locked, "Applies to", (value) => {
+      rule.target = value;
+      rule.ids = [];
+      remount();
+    });
+
+    const picker = document.createElement("div");
+    picker.className = "picker";
+    picker.appendChild(this._pickerFor(rule, locked, remount));
+
+    const remove = this._removeButton(locked, () => {
+      this._draft.historyRules.splice(index, 1);
+      remount();
+    });
+
+    target.classList.add("f-target");
+    remove.classList.add("f-remove");
+    row.append(target, picker, remove);
+    return row;
+  }
+
   _ruleRow(rule, index, locked) {
     const row = document.createElement("div");
     row.className = `rule ${TONE[rule.access] || ""}`;
@@ -1953,6 +2031,10 @@ class HaRbacPanel extends HTMLElement {
       this._draft.attrRules.push({ target: "domains", ids: [], names: [] });
       this._mountAttrRules(root.getElementById("attr-rules"), false);
     });
+    on("add-history", () => {
+      this._draft.historyRules.push({ target: "entity_ids", ids: [] });
+      this._mountHistoryRules(root.getElementById("history-rules"), false);
+    });
     on("add-rule", () => {
       this._draft.rules.push({ target: "area_ids", ids: [], access: "none" });
       this._mountRules(root.getElementById("rules"), false);
@@ -2046,6 +2128,17 @@ class HaRbacPanel extends HTMLElement {
             options: rule.options,
           })),
       },
+      history: {
+        // A rule naming nothing has selected no entity yet; it grants nothing,
+        // so it is not written. A whole domain, area, label or floor is a rule
+        // that names those ids, so it is kept.
+        rules: this._draft.historyRules
+          .filter((rule) => rule.ids.length)
+          .map((rule) => ({
+            target: rule.target,
+            ids: rule.ids,
+          })),
+      },
       schedule: {
         // Written as a list, and the older inline window is cleared so a role
         // saved after an upgrade does not carry both shapes at once.
@@ -2131,6 +2224,7 @@ class HaRbacPanel extends HTMLElement {
           apps: source.apps,
           attributes: source.attributes,
           choices: source.choices,
+          history: source.history,
           schedule: source.schedule,
         },
       });

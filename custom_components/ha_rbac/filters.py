@@ -42,12 +42,14 @@ class FilterContext:
         check: CheckFn,
         app_allowed: "Callable[[str], bool] | None" = None,
         attribute_hidden: "Callable[[str, str], bool] | None" = None,
+        history_check: "Callable[[str], bool] | None" = None,
     ) -> None:
         """Initialise the context."""
         self.hass = hass
         self.check = check
         self._app_allowed = app_allowed
         self._attribute_hidden = attribute_hidden
+        self._history_check = history_check
 
     @property
     def hides_attributes(self) -> bool:
@@ -101,6 +103,7 @@ class FilterContext:
             permissions.check_entity,
             permissions.app_allowed,
             permissions.attribute_hidden if permissions.hides_attributes else None,
+            permissions.history_allowed,
         )
 
     def app_visible(self, url_path: str) -> bool:
@@ -110,6 +113,19 @@ class FilterContext:
     def readable(self, entity_id: str) -> bool:
         """Return True if the user may read an entity."""
         return self.check(entity_id, POLICY_READ)
+
+    def history_readable(self, entity_id: str) -> bool:
+        """Return True if the user may read an entity's history.
+
+        History is past state, so anything the role can read live it can also
+        read the history of. A history grant adds entities on top of that, for
+        a role meant to see one device's trend without being handed its current
+        value everywhere else. With no history callback wired, this is exactly
+        `readable`, so a context built by hand keeps the old behaviour.
+        """
+        if self._history_check is not None:
+            return self._history_check(entity_id)
+        return self.readable(entity_id)
 
     @cached_property
     def visible_domains(self) -> set[str]:
@@ -379,7 +395,16 @@ def _filter_entity_event(ctx: FilterContext, event: Any) -> Any:
         if kept_ids:
             out[ENTITY_EVENT_REMOVE] = kept_ids
 
-    return out or None
+    # An empty diff is returned rather than dropped. `subscribe_entities` opens
+    # with one event carrying every entity's initial state, and the frontend
+    # treats that first frame as "states have loaded" -- it shows a spinner
+    # until it arrives. A role that can read nothing (a history-only grant, for
+    # instance) filters that frame to nothing, and dropping it left the frame
+    # unsent and the frontend loading forever. An empty `{}` is a valid frame
+    # meaning "nothing you may see", which lets the load finish with an empty
+    # set rather than hang. Later empty diffs cost a bare frame, which is
+    # harmless.
+    return out
 
 
 def _strip_compressed(ctx: FilterContext, entity_id: str, key: str, value: Any) -> Any:
@@ -793,7 +818,7 @@ def _filter_history_states(ctx: FilterContext, states: Any) -> Any:
         return prune(ctx, states)
     out: dict[str, Any] = {}
     for entity_id, samples in states.items():
-        if _looks_like_entity_id(entity_id) and not ctx.readable(entity_id):
+        if _looks_like_entity_id(entity_id) and not ctx.history_readable(entity_id):
             continue
         named = entity_id if _looks_like_entity_id(entity_id) else None
         if not ctx.hides_attributes or not isinstance(samples, list):
@@ -826,3 +851,103 @@ def _filter_history_event(ctx: FilterContext, event: Any) -> Any:
     if not isinstance(event, dict) or not isinstance(event.get("states"), dict):
         return prune(ctx, event)
     return {**event, "states": _filter_history_states(ctx, event["states"])}
+
+
+def _filter_statistics(ctx: FilterContext, stats: Any) -> Any:
+    """Filter a mapping of statistic id -> that statistic's rows.
+
+    Statistics are keyed the way history is: `{statistic_id: [rows]}`, where a
+    recorder statistic for an entity uses the entity id as its key and each row
+    (`{start, mean, min, max, sum, ...}`) names no entity of its own. The
+    generic walk recovered nothing from the key, so a denied entity's numbers
+    passed straight through -- the same leak history had before it got its own
+    filter. An entity-shaped key is gated on history access; an external
+    statistic id like `energy:solar` is not an entity and is left alone.
+    """
+    if not isinstance(stats, dict):
+        return prune(ctx, stats)
+    return {
+        statistic_id: rows
+        for statistic_id, rows in stats.items()
+        if not _looks_like_entity_id(statistic_id) or ctx.history_readable(statistic_id)
+    }
+
+
+@REGISTRY.result(
+    "history/statistics_during_period", "recorder/statistics_during_period"
+)
+def _filter_statistics_result(ctx: FilterContext, result: Any) -> Any:
+    """Filter the statistic-id-keyed mapping the result is."""
+    return _filter_statistics(ctx, result)
+
+
+@REGISTRY.event("history/statistics_during_period", "recorder/statistics_during_period")
+def _filter_statistics_event(ctx: FilterContext, event: Any) -> Any:
+    """Filter a streamed statistics frame, keyed the same way."""
+    if isinstance(event, dict) and isinstance(event.get("statistics"), dict):
+        return {**event, "statistics": _filter_statistics(ctx, event["statistics"])}
+    return _filter_statistics(ctx, event)
+
+
+def filter_rest_history(ctx: FilterContext, payload: Any) -> Any:
+    """Filter the REST `/api/history/period` response, whichever shape it is.
+
+    The REST endpoint answers in one of two shapes:
+
+    * A mapping `{entity_id: [samples]}`, the same shape the websocket result
+      carries, so `_filter_history_states` handles it directly.
+    * A *list of lists* -- one inner list per entity -- which is what Home
+      Assistant returns by default and always with `minimal_response`. Here the
+      entity id is not on every sample: only the FIRST object in each inner list
+      carries `entity_id`, and the rest are minimised to just a state and a
+      timestamp. The generic `prune` walk recovers an id only from a sample's
+      own key, so it dropped a denied entity's first sample and kept every
+      later one -- leaking the values, timestamps and attributes the denial was
+      meant to withhold. The whole inner list belongs to one entity, so it is
+      that entity that decides whether the list stays or goes, read from the
+      first sample that names it.
+    """
+    if isinstance(payload, dict):
+        return _filter_history_states(ctx, payload)
+    if not isinstance(payload, list):
+        return prune(ctx, payload)
+
+    out: list[Any] = []
+    for series in payload:
+        entity_id = _series_entity_id(series)
+        if entity_id is not None and not ctx.history_readable(entity_id):
+            # One entity owns the whole inner list; drop it entirely rather
+            # than sample by sample, so no minimised tail survives.
+            continue
+        if entity_id is not None and ctx.hides_attributes and isinstance(series, list):
+            out.append([_strip_rest_history_sample(ctx, entity_id, s) for s in series])
+        else:
+            out.append(series)
+    return out
+
+
+def _series_entity_id(series: Any) -> str | None:
+    """Return the entity id an inner history list belongs to, if it names one.
+
+    Only the first sample carries it under minimisation; a series that names no
+    id anywhere is left for the caller to pass through untouched rather than
+    guessed at.
+    """
+    if not isinstance(series, list):
+        return None
+    for sample in series:
+        if isinstance(sample, dict):
+            candidate = sample.get("entity_id")
+            if _looks_like_entity_id(candidate):
+                return candidate
+    return None
+
+
+def _strip_rest_history_sample(ctx: FilterContext, entity_id: str, sample: Any) -> Any:
+    """Strip withheld attributes from one uncompressed REST history sample."""
+    if not isinstance(sample, dict) or not isinstance(sample.get("attributes"), dict):
+        return sample
+    return {
+        **sample,
+        "attributes": ctx.strip_attributes(entity_id, sample["attributes"]),
+    }

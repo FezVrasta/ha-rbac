@@ -41,7 +41,12 @@ from yarl import URL
 
 from .decide import KIND_HTTP, KIND_WS, REASON_APP, Decider, Decision
 from .denylog import Denial, DenyLog
-from .filters import REGISTRY, FilterContext, strip_denied_addons
+from .filters import (
+    REGISTRY,
+    FilterContext,
+    filter_rest_history,
+    strip_denied_addons,
+)
 from .http_config import LOOPBACK
 from .ingress import (
     SESSION_COOKIE,
@@ -807,6 +812,14 @@ class RbacProxy:
             return None, False
 
         ctx = FilterContext.for_user(self._hass, permissions)
+        # `/api/history/period` answers in a shape the command-keyed registry
+        # cannot reach -- the path carries a timestamp, so there is no static
+        # key to register -- and its list-of-lists form defeats the generic
+        # walk, which recovers an entity id only from a sample's own key while
+        # Home Assistant puts it on the first sample of each series alone. It is
+        # dispatched by path to a filter that reads the id off the series.
+        if request.path.startswith("/api/history/period"):
+            return filter_rest_history(ctx, payload), True
         return (
             REGISTRY.filter_result(f"{request.method} {request.path}", ctx, payload),
             True,

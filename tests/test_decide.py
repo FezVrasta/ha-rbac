@@ -17,6 +17,7 @@ from custom_components.ha_rbac.catalog import Catalog
 from custom_components.ha_rbac.const import TIER_OPEN
 from custom_components.ha_rbac.decide import (
     KIND_WS,
+    REASON_APP,
     REASON_DEGRADED,
     REASON_RESOURCE,
     REASON_TIER,
@@ -457,3 +458,168 @@ async def test_nested_group_membership_is_expanded(
     )
     assert decision.allowed is False
     assert "lock.front" in decision.resources
+
+
+async def _history_decider(hass: HomeAssistant) -> Decider:
+    """Return a decider whose catalogue knows the history command and panel.
+
+    The real `history` component pulls in `recorder`, which needs a database
+    the test harness does not stand up. Only two things about history matter to
+    the decision: its command classifies as user-tier (so the tier gate lets it
+    through), and its panel is registered (so the app gate can deny it). Both
+    are registered here directly, which is exactly what the component would do.
+    """
+    import voluptuous as vol  # noqa: PLC0415
+    from homeassistant.components import websocket_api  # noqa: PLC0415
+    from homeassistant.components.frontend import (  # noqa: PLC0415
+        async_register_built_in_panel,
+    )
+
+    for domain in ("websocket_api", "config", "api"):
+        await async_setup_component(hass, domain, {})
+    await hass.async_block_till_done()
+
+    @websocket_api.ws_require_user()
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): "history/history_during_period",
+            vol.Required("start_time"): str,
+            vol.Optional("entity_ids"): [str],
+        }
+    )
+    def _history_cmd(hass, connection, msg):  # pragma: no cover - never called
+        connection.send_result(msg["id"], {})
+
+    websocket_api.async_register_command(hass, _history_cmd)
+
+    # `frontend` will not set up without the `hass_frontend` package, but its
+    # panel-registration helper only writes to the panel registry the app gate
+    # reads, so it works on its own -- exactly what the component would record.
+    async_register_built_in_panel(hass, "history", "History", "hass:chart-box")
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    return Decider(hass, catalog, REGISTRY)
+
+
+def _history_only(hass: HomeAssistant, ids: list[str]) -> Permissions:
+    """Return a role that denies the History app but is granted history of `ids`.
+
+    It can read nothing live -- an empty allow -- so history for the granted
+    entities can only be coming from the history grant, which is the point.
+    """
+    role = compile_role(
+        hass,
+        {
+            "id": "h",
+            "name": "h",
+            "allow": {},
+            "deny": {},
+            "tiers": {"max": TIER_OPEN, "allow": [], "deny": []},
+            "apps": {"deny": ["history"]},
+            "history": {"rules": [{"target": "entity_ids", "ids": ids}]},
+        },
+        PermissionLookup(er.async_get(hass), dr.async_get(hass)),
+    )
+    return Permissions(roles=[role])
+
+
+async def test_bounded_history_request_allows_a_granted_entity(
+    hass: HomeAssistant,
+) -> None:
+    """A history request naming a granted-but-unreadable entity is not refused.
+
+    The frontend's history card names its entities, so the request is bounded
+    and reaches the resource gate. Without widening it there, the gate refuses
+    the entity for lack of live read and the grant never reaches the response
+    filter.
+    """
+    decider = await _history_decider(hass)
+    perms = _history_only(hass, ["climate.trend"])
+
+    decision = decider.decide(
+        perms,
+        KIND_WS,
+        "history/history_during_period",
+        {
+            "type": "history/history_during_period",
+            "entity_ids": ["climate.trend"],
+            "start_time": "2024-01-01T00:00:00+00:00",
+        },
+    )
+    assert decision.allowed is True, decision.detail
+    assert decision.filter_response is True
+
+
+async def test_bounded_history_request_still_refuses_an_ungranted_entity(
+    hass: HomeAssistant,
+) -> None:
+    """The widening is exactly the grant -- an entity outside it is still refused."""
+    decider = await _history_decider(hass)
+    perms = _history_only(hass, ["climate.trend"])
+
+    decision = decider.decide(
+        perms,
+        KIND_WS,
+        "history/history_during_period",
+        {
+            "type": "history/history_during_period",
+            "entity_ids": ["lock.secret"],
+            "start_time": "2024-01-01T00:00:00+00:00",
+        },
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_RESOURCE
+
+
+async def test_history_app_deny_still_refuses_without_a_grant(
+    hass: HomeAssistant,
+) -> None:
+    """Denying the History app with no grant refuses its commands, as before."""
+    decider = await _history_decider(hass)
+    role = compile_role(
+        hass,
+        {
+            "id": "n",
+            "name": "n",
+            "allow": {CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            "tiers": {"max": TIER_OPEN, "allow": [], "deny": []},
+            "apps": {"deny": ["history"]},
+        },
+        PermissionLookup(er.async_get(hass), dr.async_get(hass)),
+    )
+    decision = decider.decide(
+        Permissions(roles=[role]),
+        KIND_WS,
+        "history/history_during_period",
+        {
+            "type": "history/history_during_period",
+            "start_time": "2024-01-01T00:00:00+00:00",
+        },
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_APP
+
+
+async def test_a_history_grant_lets_the_command_past_the_app_gate(
+    hass: HomeAssistant,
+) -> None:
+    """Denying History but holding a grant lets the command reach the filter.
+
+    The panel stays hidden; the command is allowed so the per-entity response
+    filter can narrow it. Refusing it here would make the grant dead letter.
+    """
+    decider = await _history_decider(hass)
+    perms = _history_only(hass, ["climate.trend"])
+
+    decision = decider.decide(
+        perms,
+        KIND_WS,
+        "history/history_during_period",
+        {
+            "type": "history/history_during_period",
+            "start_time": "2024-01-01T00:00:00+00:00",
+        },
+    )
+    assert decision.allowed is True, decision.detail
+    assert decision.filter_response is True

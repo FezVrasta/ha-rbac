@@ -311,6 +311,48 @@ async def test_query_string_resources_are_extracted(
     assert decision.allowed is False
 
 
+async def test_rest_history_minimal_response_does_not_leak(
+    hass: HomeAssistant,
+) -> None:
+    """The `/api/history/period` list-of-lists leak, through the real policy.
+
+    Home Assistant puts the entity id only on the first sample of each series
+    and minimises the rest to a state and a timestamp. The generic walk
+    recovered an id only from a sample's own key, so a denied entity lost its
+    first sample and kept the leaking tail. A role that reads everything but
+    the lock domain must get no lock sample at all, first or later.
+    """
+    from custom_components.ha_rbac.filters import filter_rest_history  # noqa: PLC0415
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            deny={CAT_ENTITIES: {"domains": {"lock": True}}},
+        ),
+        _lookup(hass),
+    )
+    ctx = FilterContext.for_user(hass, Permissions(roles=[role]))
+
+    payload = [
+        [
+            {"entity_id": "lock.front", "state": "locked", "last_changed": "t0"},
+            {"state": "unlocked", "last_changed": "t1"},
+            {"state": "locked", "last_changed": "t2"},
+        ],
+        [
+            {"entity_id": "sensor.temp", "state": "20", "last_changed": "t0"},
+            {"state": "21", "last_changed": "t1"},
+        ],
+    ]
+
+    result = filter_rest_history(ctx, payload)
+    flat = json.dumps(result)
+    assert "lock.front" not in flat
+    assert "unlocked" not in flat, "the minimised tail must not survive either"
+    assert "sensor.temp" in flat and "21" in flat, "an allowed series is untouched"
+
+
 async def test_route_matching_prefers_the_more_specific_url() -> None:
     """A permissive pattern from another integration must not shadow a core one.
 
