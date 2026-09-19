@@ -752,3 +752,179 @@ async def test_a_custom_card_key_naming_an_entity_is_scrubbed(
 
     assert "camera.bedroom" not in json.dumps(result)
     assert "camera.hall" in json.dumps(result), "a camera they may see stays"
+
+
+async def test_search_related_drops_denied_entities(hass: HomeAssistant) -> None:
+    """search/related lists related ids as bare strings the generic walk missed.
+
+    The response is `{item_type: [ids]}` with the ids as plain strings, so the
+    generic walk -- which only reads a dict's own `entity_id` field -- returned
+    every related entity, denied or not. Here the request names one item and is
+    gated up front, but its result enumerated things hidden everywhere else.
+    """
+    result = REGISTRY.filter_result(
+        "search/related",
+        _ctx(hass, {"lock.front", "automation.secret"}),
+        {
+            "entity": ["light.kitchen", "lock.front"],
+            "automation": ["automation.lights", "automation.secret"],
+            "config_entry": ["abc123"],
+        },
+    )
+    assert result["entity"] == ["light.kitchen"]
+    assert result["automation"] == ["automation.lights"]
+    assert result["config_entry"] == ["abc123"], "non-entity ids pass untouched"
+
+
+async def test_search_related_drops_a_type_that_empties(hass: HomeAssistant) -> None:
+    """A related type whose every id is denied is dropped, not left empty."""
+    result = REGISTRY.filter_result(
+        "search/related",
+        _ctx(hass, {"lock.front"}),
+        {"entity": ["lock.front"], "scene": []},
+    )
+    assert "entity" not in result, "emptied by filtering"
+    assert "scene" not in result, "already empty"
+
+
+async def test_search_related_hides_a_device_with_nothing_readable(
+    hass: HomeAssistant,
+) -> None:
+    """A device the role can read nothing in must not appear in results."""
+    from homeassistant.helpers import device_registry as dr  # noqa: PLC0415
+    from homeassistant.helpers import entity_registry as er  # noqa: PLC0415
+    from pytest_homeassistant_custom_component.common import (  # noqa: PLC0415
+        MockConfigEntry,
+    )
+
+    entry = MockConfigEntry(domain="demo")
+    entry.add_to_hass(hass)
+    devices = dr.async_get(hass)
+    device = devices.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("demo", "secret-device")},
+    )
+    entities = er.async_get(hass)
+    e = entities.async_get_or_create("lock", "demo", "sec1", device_id=device.id)
+
+    ctx = _ctx(hass, {e.entity_id})
+    result = REGISTRY.filter_result(
+        "search/related",
+        ctx,
+        {"device": [device.id], "entity": [e.entity_id]},
+    )
+    assert "device" not in result, "no readable entity in it, so it is hidden"
+    assert "entity" not in result
+
+
+async def test_energy_prefs_drops_a_source_naming_a_denied_stat(
+    hass: HomeAssistant,
+) -> None:
+    """Energy prefs name meters by statistic id in non-`entity_id` fields.
+
+    A recorder statistic for a sensor is its entity id, carried under
+    `stat_energy_from` and friends, so the generic walk returned the whole
+    topology -- every grid, solar and battery meter -- of things the role is
+    hidden from.
+    """
+    result = REGISTRY.filter_result(
+        "energy/get_prefs",
+        _ctx(hass, {"sensor.secret_grid"}),
+        {
+            "energy_sources": [
+                {
+                    "type": "grid",
+                    "flow_from": [{"stat_energy_from": "sensor.secret_grid"}],
+                },
+                {"type": "solar", "stat_energy_from": "sensor.public_solar"},
+            ],
+            "device_consumption": [
+                {"stat_consumption": "sensor.secret_grid", "name": "Hidden"},
+                {"stat_consumption": "sensor.public_solar", "name": "Shown"},
+            ],
+        },
+    )
+    src_types = [s["type"] for s in result["energy_sources"]]
+    assert src_types == ["solar"], "the grid source naming a denied meter is gone"
+    assert [d["name"] for d in result["device_consumption"]] == ["Shown"]
+
+
+async def test_energy_prefs_keep_an_external_statistic(hass: HomeAssistant) -> None:
+    """An external statistic id is not an entity and must not be dropped."""
+    result = REGISTRY.filter_result(
+        "energy/get_prefs",
+        _ctx(hass, set()),
+        {
+            "energy_sources": [
+                {"type": "gas", "stat_energy_from": "co2signal:intensity"}
+            ],
+            "device_consumption": [],
+        },
+    )
+    assert len(result["energy_sources"]) == 1, "external stat id left alone"
+
+
+async def test_energy_prefs_price_entity_is_gated(hass: HomeAssistant) -> None:
+    """entity_energy_price holds an entity id outright; a denied one hides the source."""
+    result = REGISTRY.filter_result(
+        "energy/get_prefs",
+        _ctx(hass, {"sensor.secret_price"}),
+        {
+            "energy_sources": [
+                {
+                    "type": "grid",
+                    "flow_from": [
+                        {
+                            "stat_energy_from": "sensor.public_meter",
+                            "entity_energy_price": "sensor.secret_price",
+                        }
+                    ],
+                }
+            ],
+            "device_consumption": [],
+        },
+    )
+    assert result["energy_sources"] == [], "a denied price entity withholds the source"
+
+
+async def test_statistic_metadata_drops_denied_rows(hass: HomeAssistant) -> None:
+    """Recorder metadata rows are keyed on `statistic_id`, not `entity_id`.
+
+    The generic walk left them, disclosing the id, name, source and unit of
+    every recorded sensor the role is hidden from.
+    """
+    result = REGISTRY.filter_result(
+        "recorder/list_statistic_ids",
+        _ctx(hass, {"sensor.secret_power"}),
+        [
+            {
+                "statistic_id": "sensor.public_power",
+                "name": "Public",
+                "source": "recorder",
+            },
+            {
+                "statistic_id": "sensor.secret_power",
+                "name": "Secret",
+                "source": "recorder",
+            },
+            {
+                "statistic_id": "co2signal:intensity",
+                "name": "CO2",
+                "source": "co2signal",
+            },
+        ],
+    )
+    ids = [r["statistic_id"] for r in result]
+    assert ids == ["sensor.public_power", "co2signal:intensity"], (
+        "denied sensor dropped; external statistic kept"
+    )
+
+
+async def test_statistic_metadata_passthrough_when_not_a_list(
+    hass: HomeAssistant,
+) -> None:
+    """A shape that is not the expected list is returned untouched."""
+    result = REGISTRY.filter_result(
+        "recorder/get_statistics_metadata", _ctx(hass, {"sensor.x"}), {"unexpected": 1}
+    )
+    assert result == {"unexpected": 1}
