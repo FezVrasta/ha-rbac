@@ -41,6 +41,7 @@ It isn't only for people. Point an **AI assistant or agent** at Home Assistant t
 | **What stays private** | Hide details: where someone is, a door code, a serial number. |
 | **Where they can go** | Which dashboards, add-ons and screens are in their sidebar. |
 | **Which options** | On a dropdown of people or modes, the ones they may choose. *The kids can announce as themselves, not as you.* |
+| **Whose past** | History and logbook per entity, on top of what they can see live. *The thermostat's trend on the shared dashboard, without the thermostat.* |
 | **When** | Days and hours. *A cleaner, weekdays 9 to 5. A babysitter, Friday evenings.* |
 | **What they can change** | Nothing, everything, or one part of the settings: automations, dashboards, helpers, users, backups. |
 
@@ -194,7 +195,24 @@ Build the narrowest role for the common case and layer a second role on top for 
 
 No. A schedule decides **when the role is in force**, not which slice of the past it can read. Give a cleaner weekday mornings and, during those mornings, they can pull the full history of every entity the role lets them see — including the evenings and weekends they were never here for.
 
-So a schedule is the right tool for "only while they're working" and the wrong one for "only what happened while they were working". If someone shouldn't see an entity's past, don't grant the entity: history is filtered by *what* the role can reach, and hidden entities are absent from it entirely.
+So a schedule is the right tool for "only while they're working" and the wrong one for "only what happened while they were working". If someone shouldn't see an entity's past, don't grant the entity: the past is filtered by *what* the role can reach, and hidden entities are absent from it entirely. Unless you hand one over deliberately, which is what the History and Logbook sections are for.
+
+</details>
+
+<details>
+<summary><strong>Can someone see an entity's history without seeing the entity?</strong></summary>
+
+<br>
+
+Yes, if you say so explicitly. That's the **History** and **Logbook** sections on a role, and they're the one place where the answer to "can they see it" differs between now and last Tuesday.
+
+The case they exist for: a thermostat on a shared dashboard. You want the family to see the week's temperature trend without handing over the live reading on every screen and in every API response. So you grant history for that one entity, and nothing else changes. The role still can't read it, control it, or find it in a search.
+
+Both are additive and read-only, and they're independent of each other. History is the chart; the logbook is the timeline of what happened and who caused it. Granting a trend doesn't grant "somebody turned the heating down at 9pm", which is often the part you meant to keep.
+
+A denial still wins, always. Neither section can bring back an entity you denied, not through the household-wide deny and not through the role's own. A grant only ever widens what the role could otherwise see, and only for the past.
+
+You can also hide the History or Logbook screen from the sidebar and still grant one entity out of it. The panel stays gone; the entity's chart still draws on a dashboard card.
 
 </details>
 
