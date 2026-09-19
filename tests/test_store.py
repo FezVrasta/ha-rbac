@@ -2,6 +2,7 @@
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from custom_components.ha_rbac.const import (
     EVENT_RBAC_DENIED,
@@ -146,6 +147,42 @@ async def test_denylog_keeps_recent_and_fires_an_event(hass: HomeAssistant) -> N
     assert len(recent) == 1
     assert recent[0]["name"] == "render_template"
     assert events and events[0]["reason"] == "unbounded"
+
+
+async def test_a_denial_is_stamped_with_when_it_happened(
+    hass: HomeAssistant,
+) -> None:
+    """The first question about a broken UI is when it broke.
+
+    Stamped by the log rather than by the caller, so every construction site gets
+    one without having to remember, and the event automations see carries the same
+    stamp the tab reads.
+    """
+    events: list[dict] = []
+    hass.bus.async_listen(EVENT_RBAC_DENIED, lambda event: events.append(event.data))
+
+    before = dt_util.utcnow().timestamp()
+    log = DenyLog(hass)
+    log.async_record(Denial("u1", "Guest", "ws", "get_states", "resource", []))
+    await hass.async_block_till_done()
+    after = dt_util.utcnow().timestamp()
+
+    stamped = log.async_recent()[0]["ts"]
+    assert before <= stamped <= after
+    assert events[0]["ts"] == stamped, "the event carries the same stamp"
+
+
+async def test_a_denial_that_already_carries_a_stamp_keeps_it(
+    hass: HomeAssistant,
+) -> None:
+    """A caller that set the time explicitly is left alone.
+
+    Nothing does today, but the alternative is a log that silently overwrites the
+    one piece of a record it is not the authority on.
+    """
+    log = DenyLog(hass)
+    log.async_record(Denial("u1", "Guest", "ws", "get_states", "resource", [], ts=1.5))
+    assert log.async_recent()[0]["ts"] == 1.5
 
 
 async def test_denylog_returns_newest_first(hass: HomeAssistant) -> None:

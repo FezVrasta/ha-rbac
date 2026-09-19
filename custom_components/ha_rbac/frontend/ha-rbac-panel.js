@@ -209,9 +209,28 @@ const STYLES = `
   }
   .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
   .actions .spacer { flex: 1; }
-  /* Unsaved changes: the Save button gains weight and its label changes to
-     "Save changes", so the state is carried by text and not by colour alone. */
-  ha-button.dirty { --mdc-theme-primary: var(--primary-color); font-weight: 600; }
+  /* Unsaved changes: the Save button's label changes to "Save changes" and it
+     gains weight, so the state is carried by text and not by colour alone. */
+  ha-button.dirty { font-weight: 600; }
+  /* The panel's own confirmation dialog. Home Assistant's dialog-box cannot be
+     reached from a custom panel (the reasoning is on _confirm), so this is built
+     here and themed from the same variables as everything else. */
+  .modal-backdrop {
+    position: fixed; inset: 0; z-index: 10; display: flex;
+    align-items: center; justify-content: center; padding: 16px;
+    background: rgba(0, 0, 0, .4);
+  }
+  .modal {
+    background: var(--card-background-color, #fff);
+    color: var(--primary-text-color);
+    border-radius: var(--ha-border-radius-md, 8px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .3);
+    padding: 20px; max-width: 420px; width: 100%;
+  }
+  .modal h2 { margin: 0 0 8px; }
+  .modal p { margin: 0; color: var(--secondary-text-color); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+  .modal-actions ha-button.destructive { --mdc-theme-primary: var(--error-color, #db4437); }
   ul.roles { list-style: none; margin: 0; padding: 0; }
   ul.roles li {
     padding: 12px; border-radius: var(--ha-border-radius-md, 8px); cursor: pointer;
@@ -559,6 +578,10 @@ class HaRbacPanel extends HTMLElement {
     // The role as it was loaded, serialized, so an edit can be told from it.
     // Null while nothing editable is mounted.
     this._baseline = null;
+    // An open confirmation dialog, kept so a render can put it back.
+    this._modal = null;
+    // A tab whose button should take focus after the next render.
+    this._focusTab = null;
     this._notice = null;
     // Set by an action that edited the draft rather than the stored role.
     this._pending = null;
@@ -722,6 +745,16 @@ class HaRbacPanel extends HTMLElement {
     else if (this._tab === "settings") this._mountSettings();
     this._wire();
     this._syncRecordPoll();
+    // A render replaces the whole shadow root, so an open confirmation has to be
+    // put back or it vanishes mid-question and its promise never settles.
+    if (this._modal) this.shadowRoot.appendChild(this._modal);
+    // Focus a tab only once the render that rebuilt it has happened; see
+    // `_selectTab`.
+    if (this._focusTab) {
+      const button = this.shadowRoot.getElementById(`tab-${this._focusTab}`);
+      this._focusTab = null;
+      if (button) button.focus();
+    }
   }
 
   _chrome() {
@@ -813,7 +846,13 @@ class HaRbacPanel extends HTMLElement {
           <div class="card-content">
             <h2>Roles</h2>
             ${rolesBlock}
-            <div class="actions"><ha-button id="new-role" raised>New role</ha-button></div>
+            <div class="actions">
+              <!-- Filled rather than plain, so with no roles yet the button reads
+                   as the thing to press. appearance is what this frontend's
+                   ha-button takes; raised is the old mwc-button attribute and is
+                   silently ignored, which made the emphasis a no-op. -->
+              <ha-button id="new-role" appearance="filled">New role</ha-button>
+            </div>
           </div>
         </ha-card>
         <ha-card><div class="card-content" id="editor"></div></ha-card>
@@ -1200,9 +1239,9 @@ class HaRbacPanel extends HTMLElement {
     const save = this.shadowRoot.getElementById("save");
     if (!save) return;
     const dirty = this._isDirty();
+    // The label carries the state, so it is not colour or weight alone that
+    // says there is something unsaved.
     save.textContent = dirty ? "Save changes" : "Save";
-    // A dot beside the label is the least noisy "unsaved" marker; the label
-    // change carries it for anyone not seeing colour.
     save.classList.toggle("dirty", dirty);
   }
 
@@ -2285,41 +2324,43 @@ class HaRbacPanel extends HTMLElement {
 
   /**
    * Switch to a tab, from a click or an arrow key. Shared so both routes leave
-   * the same state behind. `focus` asks for the newly selected tab button to
-   * take focus after the re-render -- what keyboard navigation needs, since the
-   * old button it was on has just been replaced.
+   * the same state behind.
+   *
+   * `focus` asks for the newly selected tab button to take focus, which is what
+   * keyboard navigation needs since the button it was on has just been replaced.
+   * It is recorded rather than done here: the Denials and Settings tabs fetch
+   * their own data and re-render when it lands, which is *after* this function
+   * returns, so focusing now would focus a button that is about to be thrown
+   * away -- and keyboard focus would land back on the body, one arrow key into
+   * the strip. `_render` consumes the flag once the buttons it names exist.
+   *
+   * Leaving the Roles tab abandons the draft, so it asks first, the same way
+   * picking another role does.
    */
-  _selectTab(tab, focus = false) {
+  async _selectTab(tab, focus = false) {
     if (tab === this._tab && !focus) return;
+    if (this._tab === "roles" && tab !== "roles" && !(await this._confirmDiscard())) {
+      return;
+    }
     this._tab = tab;
     this._notice = null;
     this._syncUrl();
+    if (focus) this._focusTab = tab;
     // Denials and settings fetch their own data, and `_loadForTab` re-renders
     // once it lands; everything else renders now.
     if (tab === "denials" || tab === "settings") this._loadForTab();
     else this._render();
-    if (focus) {
-      const button = this.shadowRoot.getElementById(`tab-${tab}`);
-      if (button) button.focus();
-    }
   }
 
   /**
    * Move to another role, asking first if the current one has unsaved edits.
-   * The draft lives only in the panel, so switching away without saving drops
-   * it silently -- which for an access-control change reads as "I set that"
-   * when nothing was set. The prompt is the one place that is caught.
+   * The draft lives only in the panel, so switching away without saving drops it
+   * silently -- which for an access-control change reads as "I set that" when
+   * nothing was set.
    */
-  _switchRole(roleId) {
+  async _switchRole(roleId) {
     if (roleId === this._selected) return;
-    if (
-      this._isDirty() &&
-      !window.confirm(
-        "This role has unsaved changes. Switch roles and lose them?"
-      )
-    ) {
-      return;
-    }
+    if (!(await this._confirmDiscard())) return;
     this._selected = roleId;
     this._syncUrl();
     this._loadDraft();
@@ -2344,9 +2385,10 @@ class HaRbacPanel extends HTMLElement {
         else if (event.key === "End") next = last;
         if (next === null) return;
         event.preventDefault();
-        // Focus first so the strip stays put if a tab load re-renders, then
-        // activate. The re-render rebuilds the buttons, so focus is restored
-        // to the new active tab afterwards.
+        // `true` asks for the new tab button to take focus once the render that
+        // creates it has run. It cannot be focused here: the button that exists
+        // now is about to be replaced, and for a tab that fetches its own data
+        // the replacement happens after an await.
         this._selectTab(tabButtons[next].dataset.tab, true);
       };
     });
@@ -2358,7 +2400,10 @@ class HaRbacPanel extends HTMLElement {
       const el = root.getElementById(id);
       if (el) el.addEventListener("click", handler);
     };
-    on("new-role", () => this._createRole());
+    // Creating a role selects the new one, so it abandons the draft too.
+    on("new-role", async () => {
+      if (await this._confirmDiscard()) this._createRole();
+    });
     on("toggle-sections", () => this._toggleSections());
     on("record-start", () => this._record("start"));
     on("record-stop", () => this._record("keep"));
@@ -2613,63 +2658,103 @@ class HaRbacPanel extends HTMLElement {
   }
 
   /**
-   * Ask before doing something that cannot be taken back, through Home
-   * Assistant's own confirmation dialog rather than the browser's.
+   * Ask before doing something that cannot be taken back, in a dialog built
+   * from this panel's own markup and Home Assistant's theme variables.
    *
-   * The dialog is the same one the rest of Home Assistant uses: a bubbling,
-   * composed `show-dialog` event is what a custom element fires to reach the
-   * dialog manager on the root `home-assistant` element, which lazy-loads
-   * `dialog-box` and runs `confirm`/`cancel` for us. `destructive` paints the
-   * confirm button in the warning colour, which is the whole reason to prefer
-   * it here over `window.confirm`.
+   * Not `show-dialog`. That event is how the rest of the frontend opens
+   * `dialog-box`, and reaching it from a custom panel looks like it should work
+   * and cannot: the manager only calls the `dialogImport` you hand it if the tag
+   * is not already in its cache, and what it does with the result is
+   * `element: dialogImport().then(() => createElement(tag))` followed by an
+   * `await` on that promise. A custom panel has no way to fetch the chunk that
+   * defines `dialog-box` -- the filename is content-hashed per release -- and
+   * `customElements.whenDefined("dialog-box")` never resolves, because nothing
+   * is going to define it. So the dialog never opens, *and* the manager's cache
+   * is left holding a promise that will never settle, which hangs every later
+   * `dialog-box` in the whole frontend for the life of the page: the next
+   * "Restart Home Assistant?" or "Delete this automation?" silently does
+   * nothing. Verified against the dialog manager in this version's bundle.
    *
-   * If that machinery is not reachable -- an old core, or the event never
-   * finds a manager -- this falls back to `window.confirm` rather than letting
-   * an irreversible action through unguarded. The fallback is chosen by
-   * whether the dialog element can be resolved, with a short timeout as the
-   * backstop for the case where the event is simply never handled.
+   * So the dialog is ours. It uses `ha-button`, which this panel already relies
+   * on, and the same CSS variables as everything else here, so it is themed
+   * without depending on a chunk we cannot load. Escape and the backdrop
+   * cancel, focus moves into the dialog and back out to wherever it came from,
+   * and `window.confirm` is the fallback if the DOM is not there to put it in.
    */
-  _confirm({ title, text, confirmText, dismissText }) {
+  _confirm({ title, text, confirmText, dismissText, destructive = true }) {
+    const root = this.shadowRoot;
+    if (!root) return Promise.resolve(window.confirm(`${title}\n\n${text}`));
+
     return new Promise((resolve) => {
+      const previous = root.activeElement;
+      const overlay = document.createElement("div");
+      overlay.className = "modal-backdrop";
+      overlay.innerHTML = `
+        <div class="modal" role="alertdialog" aria-modal="true"
+          aria-labelledby="modal-title" aria-describedby="modal-text">
+          <h2 id="modal-title">${esc(title)}</h2>
+          <p id="modal-text">${esc(text)}</p>
+          <div class="modal-actions">
+            <ha-button id="modal-cancel">${esc(dismissText || "Cancel")}</ha-button>
+            <ha-button id="modal-confirm" class="${destructive ? "destructive" : ""}"
+              >${esc(confirmText || "Delete")}</ha-button>
+          </div>
+        </div>`;
+
       let settled = false;
       const finish = (value) => {
         if (settled) return;
         settled = true;
+        document.removeEventListener("keydown", onKey, true);
+        overlay.remove();
+        this._modal = null;
+        // Put focus back where it was, unless that element has since gone.
+        if (previous && previous.isConnected) previous.focus();
         resolve(value);
       };
 
-      const detail = {
-        dialogTag: "dialog-box",
-        // Loaded already once any generic dialog has been shown this session;
-        // `whenDefined` resolves then. Never rejects, so a dialog that has not
-        // been loaded yet simply waits, and the timeout below covers it.
-        dialogImport: () => customElements.whenDefined("dialog-box"),
-        dialogParams: {
-          confirmation: true,
-          destructive: true,
-          title,
-          text,
-          confirmText: confirmText || "Delete",
-          dismissText: dismissText || "Cancel",
-          confirm: () => finish(true),
-          cancel: () => finish(false),
-        },
-        addHistory: false,
+      const onKey = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          finish(false);
+        }
       };
 
-      this.dispatchEvent(
-        new CustomEvent("show-dialog", { detail, bubbles: true, composed: true })
-      );
+      overlay.addEventListener("click", (event) => {
+        if (event.target === overlay) finish(false);
+      });
+      document.addEventListener("keydown", onKey, true);
 
-      // If nothing handled the event and no dialog exists to have run its
-      // callbacks, fall back rather than swallowing the action. Only fires
-      // when the promise is otherwise still pending.
-      setTimeout(() => {
-        if (settled) return;
-        if (!customElements.get("dialog-box")) {
-          finish(window.confirm(`${title}\n\n${text}`));
-        }
-      }, 500);
+      // Kept on the instance so `_render` can put it back: a render replaces the
+      // whole shadow root, and the record poll can fire one while this is open.
+      this._modal = overlay;
+      root.appendChild(overlay);
+      overlay.querySelector("#modal-cancel").addEventListener("click", () =>
+        finish(false)
+      );
+      overlay.querySelector("#modal-confirm").addEventListener("click", () =>
+        finish(true)
+      );
+      // The cancelling button takes focus, so Return on an unread dialog is the
+      // answer that changes nothing.
+      overlay.querySelector("#modal-cancel").focus();
+    });
+  }
+
+  /**
+   * Ask before throwing away an unsaved role edit, and answer True if it is
+   * fine to go ahead. Every way out of the editor goes through this: picking
+   * another role, leaving the Roles tab, and creating a role.
+   */
+  async _confirmDiscard() {
+    if (!this._isDirty()) return true;
+    return this._confirm({
+      title: "Unsaved changes",
+      text:
+        "This role has edits that have not been saved. Leave them behind?",
+      confirmText: "Discard",
+      dismissText: "Keep editing",
+      destructive: false,
     });
   }
 
