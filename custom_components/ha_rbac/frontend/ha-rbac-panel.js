@@ -330,9 +330,51 @@ function readChoiceRules(role) {
   }));
 }
 
-/** Read a role's history section into editable rows. */
-function readHistoryRules(role) {
-  return ((role.history || {}).rules || []).map((rule) => ({
+/**
+ * The role sections that grant reading an entity's recorded past.
+ *
+ * Mirrors `GRANT_SECTIONS` in const.py. One descriptor each, because the two
+ * sections differ only in the words around them: same rule shape, same editor,
+ * same read-back. `draft` is the key the rows live under on the draft, and
+ * `follows` is what the fallback row says when there are none.
+ */
+const GRANT_SECTIONS = [
+  {
+    id: "history",
+    draft: "historyRules",
+    title: "History",
+    button: "Grant history",
+    follows: "History follows read",
+    hint: `History is the past of an entity's state. A role sees the history of
+      whatever it can read above &mdash; this is for the entity you want it to see
+      the <em>trend</em> of without handing over the live value everywhere else:
+      the living-room thermostat on a shared dashboard, say. Pick the entities (or
+      a whole domain, area, label or floor) whose history this role may read. A
+      denial above still wins &mdash; history never brings back what a role is
+      forbidden to see. Leave it empty and history follows exactly what the role
+      can read.`,
+  },
+  {
+    id: "logbook",
+    draft: "logbookRules",
+    title: "Logbook",
+    button: "Grant logbook",
+    follows: "Logbook follows read",
+    hint: `The logbook is the timeline of what happened &mdash; when a light came
+      on, who unlocked a door. A role sees the logbook of whatever it can read
+      above; this is for an entity you want it to see the <em>history of
+      events</em> for without handing over the live value everywhere else. Pick
+      the entities (or a whole domain, area, label or floor) whose logbook this
+      role may read. A denial above still wins, and an entry caused by an entity
+      the role cannot see is withheld whole &mdash; so who came home is not
+      disclosed through a door it may watch. Independent of the History grant:
+      leave it empty and the logbook follows exactly what the role can read.`,
+  },
+];
+
+/** Read one of a role's grant sections into editable rows. */
+function readGrantRules(role, section) {
+  return ((role[section.id] || {}).rules || []).map((rule) => ({
     target: rule.target || "domains",
     ids: [...(rule.ids || [])],
   }));
@@ -577,7 +619,12 @@ class HaRbacPanel extends HTMLElement {
           tierDeny: [...((role.tiers || {}).deny || [])],
           attrRules: readAttributeRules(role),
           choiceRules: readChoiceRules(role),
-          historyRules: readHistoryRules(role),
+          ...Object.fromEntries(
+            GRANT_SECTIONS.map((section) => [
+              section.draft,
+              readGrantRules(role, section),
+            ])
+          ),
         }
       : null;
   }
@@ -788,23 +835,21 @@ class HaRbacPanel extends HTMLElement {
         </div>
       </ha-expansion-panel>
 
-      <ha-expansion-panel data-section="history" data-title="History"
-        header="History">
-        <div class="card-content">      <p class="hint">History is the past
-        of an entity's state. A role sees the history of whatever it can read
-        above &mdash; this is for the entity you want it to see the <em>trend</em>
-        of without handing over the live value everywhere else: the living-room
-        thermostat on a shared dashboard, say. Pick the entities (or a whole
-        domain, area, label or floor) whose history this role may read. A
-        denial above still wins &mdash; history never brings back what a role
-        is forbidden to see. Leave it empty and history follows exactly what
-        the role can read.</p>
-      <div id="history-rules"></div>
-      <div class="actions">
-        <ha-button id="add-history" ${locked ? "disabled" : ""}>Grant history</ha-button>
-      </div>
+      ${GRANT_SECTIONS.map(
+        (section) => `
+      <ha-expansion-panel data-section="${section.id}" data-title="${section.title}"
+        header="${section.title}">
+        <div class="card-content">
+          <p class="hint">${section.hint}</p>
+          <div id="${section.id}-rules"></div>
+          <div class="actions">
+            <ha-button id="add-${section.id}" ${locked ? "disabled" : ""}>${
+              section.button
+            }</ha-button>
+          </div>
         </div>
-      </ha-expansion-panel>
+      </ha-expansion-panel>`
+      ).join("")}
 
       <ha-expansion-panel data-section="admin" data-title="Administration: what this role can change"
         header="Administration: what this role can change">
@@ -971,7 +1016,13 @@ class HaRbacPanel extends HTMLElement {
     this._mountRules(host.querySelector("#rules"), locked);
     this._mountAttrRules(host.querySelector("#attr-rules"), locked);
     this._mountChoiceRules(host.querySelector("#choice-rules"), locked);
-    this._mountHistoryRules(host.querySelector("#history-rules"), locked);
+    for (const section of GRANT_SECTIONS) {
+      this._mountGrantRules(
+        section,
+        host.querySelector(`#${section.id}-rules`),
+        locked
+      );
+    }
   }
 
   /**
@@ -1212,11 +1263,11 @@ class HaRbacPanel extends HTMLElement {
         const rules = draft.choiceRules.filter((r) => r.options.length).length;
         return rules ? `${rules} select${rules === 1 ? "" : "s"}` : "Anything on any";
       }
-      case "history": {
-        const rules = draft.historyRules.filter((r) => r.ids.length).length;
-        return rules
-          ? `${rules} grant${rules === 1 ? "" : "s"}`
-          : "Follows read";
+      case "history":
+      case "logbook": {
+        const key = section === "history" ? "historyRules" : "logbookRules";
+        const rules = draft[key].filter((r) => r.ids.length).length;
+        return rules ? `${rules} grant${rules === 1 ? "" : "s"}` : "Follows read";
       }
       case "admin": {
         if ((draft.tiers || {}).max === "admin") return "A full administrator";
@@ -1641,28 +1692,32 @@ class HaRbacPanel extends HTMLElement {
     return row;
   }
 
-  _mountHistoryRules(host, locked) {
+  _mountGrantRules(section, host, locked) {
     if (!host) return;
     host.innerHTML = "";
     host.appendChild(
       this._fallbackRow(
         "The role's own entities",
-        "History follows read",
+        section.follows,
         "Unless a rule below adds one"
       )
     );
-    this._draft.historyRules.forEach((rule, index) => {
-      host.appendChild(this._historyRow(rule, index, locked));
+    this._draft[section.draft].forEach((rule, index) => {
+      host.appendChild(this._grantRow(section, rule, index, locked));
     });
   }
 
-  _historyRow(rule, index, locked) {
+  _grantRow(section, rule, index, locked) {
     const row = document.createElement("div");
-    // A history grant only ever widens reading, so it reads as an allowance.
+    // A grant only ever widens reading, so it reads as an allowance.
     row.className = "rule allow";
 
     const remount = () =>
-      this._mountHistoryRules(this.shadowRoot.getElementById("history-rules"), locked);
+      this._mountGrantRules(
+        section,
+        this.shadowRoot.getElementById(`${section.id}-rules`),
+        locked
+      );
 
     const target = this._select(TARGETS, rule.target, locked, "Applies to", (value) => {
       rule.target = value;
@@ -1675,7 +1730,7 @@ class HaRbacPanel extends HTMLElement {
     picker.appendChild(this._pickerFor(rule, locked, remount));
 
     const remove = this._removeButton(locked, () => {
-      this._draft.historyRules.splice(index, 1);
+      this._draft[section.draft].splice(index, 1);
       remount();
     });
 
@@ -2031,10 +2086,16 @@ class HaRbacPanel extends HTMLElement {
       this._draft.attrRules.push({ target: "domains", ids: [], names: [] });
       this._mountAttrRules(root.getElementById("attr-rules"), false);
     });
-    on("add-history", () => {
-      this._draft.historyRules.push({ target: "entity_ids", ids: [] });
-      this._mountHistoryRules(root.getElementById("history-rules"), false);
-    });
+    for (const section of GRANT_SECTIONS) {
+      on(`add-${section.id}`, () => {
+        this._draft[section.draft].push({ target: "entity_ids", ids: [] });
+        this._mountGrantRules(
+          section,
+          root.getElementById(`${section.id}-rules`),
+          false
+        );
+      });
+    }
     on("add-rule", () => {
       this._draft.rules.push({ target: "area_ids", ids: [], access: "none" });
       this._mountRules(root.getElementById("rules"), false);
@@ -2128,17 +2189,21 @@ class HaRbacPanel extends HTMLElement {
             options: rule.options,
           })),
       },
-      history: {
-        // A rule naming nothing has selected no entity yet; it grants nothing,
-        // so it is not written. A whole domain, area, label or floor is a rule
-        // that names those ids, so it is kept.
-        rules: this._draft.historyRules
-          .filter((rule) => rule.ids.length)
-          .map((rule) => ({
-            target: rule.target,
-            ids: rule.ids,
-          })),
-      },
+      // A rule naming nothing has selected no entity yet; it grants nothing, so
+      // it is not written -- and the compiler drops one that arrives anyway,
+      // because an unfinished rule read as "everything" is how a blank rule came
+      // to hand over the history of a whole instance. A whole domain, area, label
+      // or floor is a rule that names those ids, so it is kept.
+      ...Object.fromEntries(
+        GRANT_SECTIONS.map((section) => [
+          section.id,
+          {
+            rules: this._draft[section.draft]
+              .filter((rule) => rule.ids.length)
+              .map((rule) => ({ target: rule.target, ids: rule.ids })),
+          },
+        ])
+      ),
       schedule: {
         // Written as a list, and the older inline window is cleared so a role
         // saved after an upgrade does not carry both shapes at once.
@@ -2224,7 +2289,9 @@ class HaRbacPanel extends HTMLElement {
           apps: source.apps,
           attributes: source.attributes,
           choices: source.choices,
-          history: source.history,
+          ...Object.fromEntries(
+            GRANT_SECTIONS.map((section) => [section.id, source[section.id]])
+          ),
           schedule: source.schedule,
         },
       });

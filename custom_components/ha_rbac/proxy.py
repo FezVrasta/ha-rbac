@@ -42,10 +42,11 @@ from yarl import URL
 from .decide import KIND_HTTP, KIND_WS, REASON_APP, Decider, Decision
 from .denylog import Denial, DenyLog
 from .filters import (
-    OPENING_SNAPSHOT,
     REGISTRY,
     FilterContext,
     filter_rest_history,
+    filter_rest_logbook,
+    opening_frame,
     strip_denied_addons,
 )
 from .http_config import LOOPBACK
@@ -118,8 +119,24 @@ TYPE_AUTH_REQUIRED = "auth_required"
 TYPE_AUTH_OK = "auth_ok"
 TYPE_RESULT = "result"
 TYPE_EVENT = "event"
-# The subscription whose opening frame the frontend blocks on.
-SUBSCRIBE_ENTITIES = "subscribe_entities"
+
+# REST paths whose response shape the command-keyed registry cannot reach: each
+# carries a timestamp, so there is no static key to register, and each needs a
+# filter the generic walk cannot stand in for. `/api/history/period` answers as a
+# list of lists with the entity id on the first sample of each series alone, and
+# `/api/logbook` names an entity under `context_entity_id` as well as
+# `entity_id`. Matched by prefix, longest first, so a longer path cannot be
+# shadowed by a shorter one it starts with.
+REST_FILTERS: tuple[tuple[str, "Callable[[FilterContext, Any], Any]"], ...] = tuple(
+    sorted(
+        (
+            ("/api/history/period", filter_rest_history),
+            ("/api/logbook", filter_rest_logbook),
+        ),
+        key=lambda row: len(row[0]),
+        reverse=True,
+    )
+)
 
 ERR_UNAUTHORIZED = "unauthorized"
 
@@ -815,14 +832,9 @@ class RbacProxy:
             return None, False
 
         ctx = FilterContext.for_user(self._hass, permissions)
-        # `/api/history/period` answers in a shape the command-keyed registry
-        # cannot reach -- the path carries a timestamp, so there is no static
-        # key to register -- and its list-of-lists form defeats the generic
-        # walk, which recovers an entity id only from a sample's own key while
-        # Home Assistant puts it on the first sample of each series alone. It is
-        # dispatched by path to a filter that reads the id off the series.
-        if request.path.startswith("/api/history/period"):
-            return filter_rest_history(ctx, payload), True
+        for prefix, rest_filter in REST_FILTERS:
+            if request.path.startswith(prefix):
+                return rest_filter(ctx, payload), True
         return (
             REGISTRY.filter_result(f"{request.method} {request.path}", ctx, payload),
             True,
@@ -1317,14 +1329,17 @@ class _WsSession:
             self._streaming.setdefault(msg_id, command)
             filtered = REGISTRY.filter_event(command, ctx, message["event"])
             if filtered is None:
-                if opening and command == SUBSCRIBE_ENTITIES:
-                    # The frontend waits on this frame before it stops showing a
-                    # spinner, so a role that may read nothing is sent the empty
-                    # snapshot Home Assistant would have sent it anyway. Later
-                    # frames are still dropped: answering every emptied diff
-                    # would tell the role the instant any entity changed,
-                    # including the ones it is hidden from.
-                    return {**message, "event": OPENING_SNAPSHOT}
+                # A client waits on a subscription's first frame before it stops
+                # showing a spinner, so a role that may see nothing in it is sent
+                # the empty frame Home Assistant would have sent anyway. Later
+                # frames are still dropped: answering every emptied one would tell
+                # the role the instant any entity changed, including the ones it
+                # is hidden from.
+                if (
+                    opening
+                    and (empty := opening_frame(command, message["event"])) is not None
+                ):
+                    return {**message, "event": empty}
                 return None
             return {**message, "event": filtered}
 

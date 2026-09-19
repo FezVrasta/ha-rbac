@@ -9,13 +9,9 @@ reach a browser looking fine and render a blank page.
 import pathlib
 import re
 
-PANEL = (
-    pathlib.Path(__file__).parent.parent
-    / "custom_components"
-    / "ha_rbac"
-    / "frontend"
-    / "ha-rbac-panel.js"
-)
+_INTEGRATION = pathlib.Path(__file__).parent.parent / "custom_components" / "ha_rbac"
+PANEL = _INTEGRATION / "frontend" / "ha-rbac-panel.js"
+CONST = _INTEGRATION / "const.py"
 
 
 def _template_literal(name: str) -> str:
@@ -86,8 +82,44 @@ def test_every_editable_rule_list_is_read_back_when_a_role_is_saved() -> None:
     drafts = set(
         re.findall(r"(\w+): read(?:Attribute|Choice|Schedule)?\w*\(role\)", source)
     )
-    assert {"attrRules", "choiceRules", "historyRules"} <= drafts, drafts
+    assert {"attrRules", "choiceRules"} <= drafts, drafts
 
     saved = source[source.index("_payload()") :]
     for draft in drafts:
         assert f"this._draft.{draft}" in saved, f"{draft} is edited but never saved"
+
+    # The grant sections are declared as a list rather than one function call
+    # each, so they are read back through the list. Every `draft:` key in it has
+    # to be written on save, the same requirement by a different route.
+    grant_drafts = set(re.findall(r'draft: "(\w+)"', source))
+    assert grant_drafts, "the grant section descriptors disappeared"
+    assert "this._draft[section.draft]" in saved, (
+        "the grant sections are edited but never saved"
+    )
+
+
+def test_the_panel_offers_an_editor_for_every_grant_section() -> None:
+    """A grant section with no editor is a grant nobody can write.
+
+    The sections are declared twice by necessity -- once in const.py for the
+    schema and the gates, once in the panel for the editor -- so they are pinned
+    against each other. A section added to const.py with no descriptor here
+    validates, compiles and enforces, while being invisible and unwritable in the
+    only interface anybody uses.
+    """
+    source = PANEL.read_text()
+    declared = set(re.findall(r'\{\s*\n\s*id: "(\w+)",\s*\n\s*draft: "\w+"', source))
+    assert declared, "the grant section descriptors disappeared"
+
+    # const.py is read rather than imported: nothing in this file executes the
+    # integration, and a regex over the tuple is enough to compare two lists of
+    # names.
+    const = CONST.read_text()
+    tuple_body = const.split("GRANT_SECTIONS: Final[tuple[str, ...]] = (", 1)[1]
+    in_python = {
+        name.lower() for name in re.findall(r"GRANT_(\w+)", tuple_body.split(")", 1)[0])
+    }
+
+    assert declared == in_python, (
+        f"panel sections {sorted(declared)} do not match const.py {sorted(in_python)}"
+    )

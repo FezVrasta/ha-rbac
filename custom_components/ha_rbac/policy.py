@@ -50,6 +50,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     CAPABILITY_PATTERNS,
+    GRANT_SECTIONS,
     ROLE_ADMIN,
     ROLE_EDITOR,
     ROLE_READ_ONLY,
@@ -152,20 +153,19 @@ CHOICE_RULE_SCHEMA = vol.Schema(
 
 CHOICES_SCHEMA = vol.Schema({vol.Optional("rules", default=list): [CHOICE_RULE_SCHEMA]})
 
-# One rule: history for the entities a rule targets. Same targeting vocabulary
-# as an attribute rule -- "every sensor in the kitchen" reads the way it does
-# everywhere else. A history rule grants reading a past trend and nothing else;
-# an empty `ids` means every entity the target covers.
-HISTORY_RULE_SCHEMA = vol.Schema(
+# One rule: the recorded past of the entities a rule targets, for one of the
+# sections in GRANT_SECTIONS. Same targeting vocabulary as an attribute rule --
+# "every sensor in the kitchen" reads the way it does everywhere else -- and the
+# rule carries nothing but its target, because what it grants is named by the
+# section it sits in rather than by anything on the rule.
+GRANT_RULE_SCHEMA = vol.Schema(
     {
         vol.Optional("target", default=ENTITY_DOMAINS): str,
         vol.Optional("ids", default=list): [str],
     }
 )
 
-HISTORY_SCHEMA = vol.Schema(
-    {vol.Optional("rules", default=list): [HISTORY_RULE_SCHEMA]}
-)
+GRANT_SCHEMA = vol.Schema({vol.Optional("rules", default=list): [GRANT_RULE_SCHEMA]})
 
 ATTRIBUTES_SCHEMA = vol.Schema(
     {
@@ -266,7 +266,10 @@ ROLE_SCHEMA = vol.Schema(
         vol.Optional("apps", default=dict): APPS_SCHEMA,
         vol.Optional("attributes", default=dict): ATTRIBUTES_SCHEMA,
         vol.Optional("choices", default=dict): CHOICES_SCHEMA,
-        vol.Optional("history", default=dict): HISTORY_SCHEMA,
+        **{
+            vol.Optional(section, default=dict): GRANT_SCHEMA
+            for section in GRANT_SECTIONS
+        },
         vol.Optional("schedule", default=dict): SCHEDULE_SCHEMA,
         vol.Optional("location", default=dict): LOCATION_SCHEMA,
     }
@@ -729,14 +732,19 @@ class CompiledChoiceRule:
 
 
 @dataclass(slots=True)
-class CompiledHistoryRule:
-    """The entities whose history a rule grants reading of.
+class CompiledGrantRule:
+    """The entities whose recorded past a rule grants reading of.
+
+    One class for every section in `GRANT_SECTIONS`: a history rule and a logbook
+    rule differ in what the section means, not in what the rule says, so what
+    they grant is carried by the key they were compiled under rather than by
+    anything here.
 
     Unlike an attribute or a choice rule, this one *grants*, so it has no
     "covers everything" state: a rule that names nothing covers nothing, and
-    `_compile_history_rules` drops it rather than building one. Reading the
-    empty case as universal is how a blank rule came to hand over the history of
-    the whole instance.
+    `_compile_grant_rules` drops it rather than building one. Reading the empty
+    case as universal is how a blank rule came to hand over the history of a
+    whole instance.
     """
 
     # The exact entity ids this rule covers, or the domains it covers. Both None
@@ -751,44 +759,44 @@ class CompiledHistoryRule:
         return self.entity_ids is not None and entity_id in self.entity_ids
 
 
-def _compile_history_rules(
-    hass: HomeAssistant, history: dict[str, Any]
-) -> list[CompiledHistoryRule]:
-    """Turn a role's history section into matchers.
+def _compile_grant_rules(
+    hass: HomeAssistant, section: dict[str, Any]
+) -> list[CompiledGrantRule]:
+    """Turn one of a role's grant sections into matchers.
 
     Targeted exactly like an attribute or choice rule, and resolved through the
     same expansion, so an area or a label means here what it means everywhere
     else.
 
-    A rule naming no ids grants nothing and is dropped. It is the only rule in
-    the section with nothing else on it -- no names, no options -- so "covers
-    every entity its target names" would make an unfinished rule mean the
-    history of the whole house. The panel never writes one, filtering empty rows
-    out before it saves, but the role API accepts what it is given and a role can
-    arrive from a backup or a script: posted `{"rules": [{}]}`, a role that could
-    read nothing live came back with the recorded history of every entity on the
-    instance. The same reasoning drops a choice rule permitting no options.
+    A rule naming no ids grants nothing and is dropped. It is the only rule shape
+    with nothing else on it -- no names, no options -- so "covers every entity its
+    target names" would make an unfinished rule mean the whole house. The panel
+    never writes one, filtering empty rows out before it saves, but the role API
+    accepts what it is given and a role can arrive from a backup or a script:
+    posted `{"rules": [{}]}`, a role that could read nothing live came back with
+    the recorded history of every entity on the instance. The same reasoning
+    drops a choice rule permitting no options.
 
-    A role that wants all of it says so by not denying the History app, or by
-    naming the domains; neither needs a blank rule to mean everything.
+    A role that wants all of it says so by not denying the panel, or by naming
+    the domains; neither needs a blank rule to mean everything.
     """
-    compiled: list[CompiledHistoryRule] = []
-    for rule in history.get("rules") or []:
+    compiled: list[CompiledGrantRule] = []
+    for rule in section.get("rules") or []:
         ids = list(rule.get("ids") or [])
         if not ids:
             continue
 
         target = rule.get("target") or ENTITY_DOMAINS
         if target == ENTITY_DOMAINS:
-            compiled.append(CompiledHistoryRule(None, {i.lower() for i in ids}))
+            compiled.append(CompiledGrantRule(None, {i.lower() for i in ids}))
             continue
         if target == ENTITY_ENTITY_IDS:
-            compiled.append(CompiledHistoryRule({i.lower() for i in ids}, None))
+            compiled.append(CompiledGrantRule({i.lower() for i in ids}, None))
             continue
 
         policy = desugar(hass, {CAT_ENTITIES: {target: dict.fromkeys(ids, True)}})
         resolved = set((policy.get(CAT_ENTITIES) or {}).get(ENTITY_ENTITY_IDS) or {})
-        compiled.append(CompiledHistoryRule(resolved, None))
+        compiled.append(CompiledGrantRule(resolved, None))
 
     return compiled
 
@@ -892,7 +900,9 @@ class CompiledRole:
     app_deny: list[str]
     attribute_rules: "list[CompiledAttributeRule]"
     choice_rules: "list[CompiledChoiceRule]"
-    history_rules: "list[CompiledHistoryRule]"
+    # Grant rules per section of `GRANT_SECTIONS`, keyed by section name. Every
+    # section is present, so a lookup never has to guard for a missing one.
+    grant_rules: "dict[str, list[CompiledGrantRule]]"
     schedule: dict[str, Any]
     location: dict[str, Any]
     # url_path -> level, for dashboards this role gets the contents of.
@@ -916,15 +926,15 @@ class CompiledRole:
             return False
         return self._granted_by_a_dashboard(entity_id, key)
 
-    def grants_history(self, entity_id: str) -> bool:
-        """Return True if a history rule on this role covers an entity.
+    def grants_past(self, section: str, entity_id: str) -> bool:
+        """Return True if a grant rule in one section covers an entity.
 
-        History only, and additive: this says nothing about live state, which
-        `check` decides. A denial is not consulted here because the union at
-        the `Permissions` level applies it first -- a role must not resurrect,
-        through a history rule, an entity another clause denied outright.
+        The recorded past only, and additive: this says nothing about live state,
+        which `check` decides. A denial is not consulted here because the union
+        at the `Permissions` level applies it first -- a role must not resurrect,
+        through a grant rule, an entity another clause denied outright.
         """
-        return any(rule.covers(entity_id) for rule in self.history_rules)
+        return any(rule.covers(entity_id) for rule in self.grant_rules[section])
 
     def _granted_by_a_dashboard(self, entity_id: str, key: str) -> bool:
         """Return True if a dashboard this role gets the contents of shows it.
@@ -973,10 +983,12 @@ def compile_role(
         *capability_patterns(role.get("capabilities")),
         *(tiers.get("allow") or []),
     ]
-    history = role.get("history") or {}
     attribute_rules = _compile_attribute_rules(hass, attributes)
     choice_rules = _compile_choice_rules(hass, choices)
-    history_rules = _compile_history_rules(hass, history)
+    grant_rules = {
+        section: _compile_grant_rules(hass, role.get(section) or {})
+        for section in GRANT_SECTIONS
+    }
 
     return CompiledRole(
         role_id=role["id"],
@@ -991,7 +1003,7 @@ def compile_role(
         app_deny=list(apps.get("deny") or []),
         attribute_rules=attribute_rules,
         choice_rules=choice_rules,
-        history_rules=history_rules,
+        grant_rules=grant_rules,
         schedule=dict(role.get("schedule") or {}),
         location=dict(role.get("location") or {}),
         dashboard_levels={
@@ -1016,7 +1028,7 @@ def compile_role(
             and not apps.get("allow")
             and not (apps.get("dashboards") or {})
             and not attribute_rules
-            and not history_rules
+            and not any(grant_rules.values())
         ),
     )
 
@@ -1037,20 +1049,26 @@ class Permissions:
             return False
         return any(role.check(entity_id, key) for role in self.roles)
 
-    def history_allowed(self, entity_id: str) -> bool:
-        """Return True if the user may read an entity's history.
+    def past_allowed(self, section: str, entity_id: str) -> bool:
+        """Return True if the user may read an entity's recorded past.
 
-        History is past state, so anything a role can read live it can read the
-        history of -- `check_entity` already answers that, global deny and role
-        union included. A history rule then *adds* entities on top, for the case
-        this feature exists to serve: a role that may see one device's trend
-        without being handed its current value everywhere.
+        `section` is one of `GRANT_SECTIONS`: the history of a value, or the
+        logbook of what happened to it. Both are past state, so anything a role
+        can read live it can read the past of -- `check_entity` already answers
+        that, global deny and role union included. A grant rule then *adds*
+        entities on top, for the case these sections exist to serve: a role that
+        may see one device's trend without being handed its current value
+        everywhere.
 
-        Additive, but never a way around a denial. A history rule grants only
-        within the role that holds it, and only for an entity that same role
-        does not itself deny -- so a role cannot use a broad history grant to
-        resurrect what its own deny clause withheld. The household-wide deny
-        vetoes unconditionally, the way it does for live reads.
+        Additive, but never a way around a denial. A grant rule grants only
+        within the role that holds it, and only for an entity that same role does
+        not itself deny -- so a role cannot use a broad grant to resurrect what
+        its own deny clause withheld. The household-wide deny vetoes
+        unconditionally, the way it does for live reads.
+
+        The sections are independent: a history grant says nothing about the
+        logbook, and the other way round. A role meant to see a trend without the
+        timeline of who caused it is a role worth being able to write.
         """
         if self.pass_through:
             return True
@@ -1061,7 +1079,8 @@ class Permissions:
         ):
             return False
         return any(
-            role.grants_history(entity_id) and not role.deny_fn(entity_id, POLICY_READ)
+            role.grants_past(section, entity_id)
+            and not role.deny_fn(entity_id, POLICY_READ)
             for role in self.roles
         )
 
@@ -1138,17 +1157,17 @@ class Permissions:
             role.attribute_rules for role in self.roles
         )
 
-    @property
-    def grants_any_history(self) -> bool:
-        """Return True if any role adds history for entities it cannot read.
+    def grants_any_past(self, section: str) -> bool:
+        """Return True if any role holds a grant rule in one section.
 
         Used by the app gate: a role that denies the History panel but holds a
         history rule still needs the `history/*` commands to reach the response
-        filter, which is what narrows them to the granted entities. Without
-        this the app gate would refuse them up front and the grant would mean
-        nothing.
+        filter, which is what narrows them to the granted entities. Without this
+        the app gate would refuse them up front and the grant would mean nothing.
         """
-        return not self.pass_through and any(role.history_rules for role in self.roles)
+        return not self.pass_through and any(
+            role.grant_rules[section] for role in self.roles
+        )
 
     def app_allowed(self, url_path: str) -> bool:
         """Return True if any role permits this app.

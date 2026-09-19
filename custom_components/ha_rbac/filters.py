@@ -13,7 +13,13 @@ from typing import Any, Final
 from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.core import HomeAssistant
 
-from .const import EVENT_RBAC_DENIED, KEY_ENTITY, RESOURCE_KEYS
+from .const import (
+    EVENT_RBAC_DENIED,
+    GRANT_HISTORY,
+    GRANT_LOGBOOK,
+    KEY_ENTITY,
+    RESOURCE_KEYS,
+)
 from .extract import Extracted, entity_candidate
 
 # Keys of the compressed state-diff protocol used by subscribe_entities.
@@ -27,25 +33,44 @@ ENTITY_EVENT_ADD = "a"
 ENTITY_EVENT_CHANGE = "c"
 ENTITY_EVENT_REMOVE = "r"
 
-# What `subscribe_entities` opens with when the role may see nothing.
-#
-# The subscription's first frame carries every entity's initial state, and the
-# frontend treats it as "states have loaded" -- it sits on a spinner until it
-# arrives. A role that can read nothing, which a history-only grant makes a
-# sensible thing to configure, filters that frame down to nothing, and an event
-# filtered to nothing is not forwarded, so the session never finished loading.
-#
-# Home Assistant sends `{"a": {}}` to a user with no readable states, so that is
-# what stands in: the shape the frontend already handles, not an invention.
-#
-# Only the *first* frame, and the substitution is the proxy's because only the
-# proxy knows which frame that is. Answering every emptied diff with a bare
-# frame would hand the role a clock: one frame per state change anywhere in the
-# house, denied entities included, arriving the moment it happens. Measured on a
-# test instance, five deliberate toggles of a light the role could not read
-# produced five frames -- a real-time activity oracle for entities the role is
-# not supposed to know exist, handed to it by the code that hides them.
-OPENING_SNAPSHOT: Final[dict[str, Any]] = {ENTITY_EVENT_ADD: {}}
+# Subscriptions whose client blocks on the first frame, so that frame has to
+# arrive even when the role may see nothing in it.
+SUBSCRIBE_ENTITIES: Final = "subscribe_entities"
+LOGBOOK_EVENT_STREAM: Final = "logbook/event_stream"
+
+
+def opening_frame(command: str, event: Any) -> Any:
+    """Return the empty frame a subscription's first event must still send.
+
+    `subscribe_entities` opens with one frame carrying every entity's initial
+    state, and the frontend treats it as "states have loaded" -- it sits on a
+    spinner until it arrives. A role that can read nothing, which a history-only
+    grant makes a sensible thing to configure, filters that frame down to
+    nothing, and an event filtered to nothing is not forwarded, so the session
+    never finished loading. The logbook stream is the same shape of problem for
+    its own panel.
+
+    What stands in is what Home Assistant itself sends when there is nothing to
+    send: `{"a": {}}` for a user with no readable states, and a stream message
+    with an empty `events` list for a logbook query that filtered away -- which is
+    why the logbook frame is the real one with its rows removed rather than an
+    invention, since only the real one carries the window it covers.
+
+    Only the *first* frame, and only for these two, because answering every
+    emptied frame would hand the role a clock: one frame per state change
+    anywhere in the house, denied entities included, arriving the moment it
+    happens. Measured on a test instance, five deliberate toggles of a light the
+    role could not read produced five frames -- a real-time activity oracle for
+    entities the role is not supposed to know exist, handed to it by the code
+    that hides them. Which frame is a subscription's first is the proxy's to
+    know; what an empty one looks like is this module's.
+    """
+    if command == SUBSCRIBE_ENTITIES:
+        return {ENTITY_EVENT_ADD: {}}
+    if command == LOGBOOK_EVENT_STREAM and isinstance(event, dict):
+        return {**event, "events": []}
+    return None
+
 
 # Lovelace uses its own conventions, which are not Home Assistant resource keys.
 LOVELACE_ENTITY_KEYS = ("entity", "entities", "camera_image")
@@ -62,14 +87,14 @@ class FilterContext:
         check: CheckFn,
         app_allowed: "Callable[[str], bool] | None" = None,
         attribute_hidden: "Callable[[str, str], bool] | None" = None,
-        history_check: "Callable[[str], bool] | None" = None,
+        past_check: "Callable[[str, str], bool] | None" = None,
     ) -> None:
         """Initialise the context."""
         self.hass = hass
         self.check = check
         self._app_allowed = app_allowed
         self._attribute_hidden = attribute_hidden
-        self._history_check = history_check
+        self._past_check = past_check
 
     @property
     def hides_attributes(self) -> bool:
@@ -123,7 +148,7 @@ class FilterContext:
             permissions.check_entity,
             permissions.app_allowed,
             permissions.attribute_hidden if permissions.hides_attributes else None,
-            permissions.history_allowed,
+            permissions.past_allowed,
         )
 
     def app_visible(self, url_path: str) -> bool:
@@ -134,17 +159,18 @@ class FilterContext:
         """Return True if the user may read an entity."""
         return self.check(entity_id, POLICY_READ)
 
-    def history_readable(self, entity_id: str) -> bool:
-        """Return True if the user may read an entity's history.
+    def past_readable(self, section: str, entity_id: str) -> bool:
+        """Return True if the user may read an entity's recorded past.
 
-        History is past state, so anything the role can read live it can also
-        read the history of. A history grant adds entities on top of that, for
-        a role meant to see one device's trend without being handed its current
-        value everywhere else. With no history callback wired, this is exactly
-        `readable`, so a context built by hand keeps the old behaviour.
+        `section` is one of `GRANT_SECTIONS`: the history of a value, or the
+        logbook of what happened to it. Past state, so anything the role can read
+        live it can also read the past of; a grant in that section adds entities
+        on top, for a role meant to see one device's trend without being handed
+        its current value everywhere else. With no grant callback wired this is
+        exactly `readable`, so a context built by hand keeps the old behaviour.
         """
-        if self._history_check is not None:
-            return self._history_check(entity_id)
+        if self._past_check is not None:
+            return self._past_check(section, entity_id)
         return self.readable(entity_id)
 
     @cached_property
@@ -415,8 +441,8 @@ def _filter_entity_event(ctx: FilterContext, event: Any) -> Any:
         if kept_ids:
             out[ENTITY_EVENT_REMOVE] = kept_ids
 
-    # Nothing left means nothing is sent. The opening snapshot is the one
-    # exception and the proxy makes it, not this: see OPENING_SNAPSHOT.
+    # Nothing left means nothing is sent. A subscription's opening frame is the
+    # one exception, and the proxy makes it: see `opening_frame`.
     return out or None
 
 
@@ -824,6 +850,79 @@ def _container_id_visible(ctx: FilterContext, kind: str, container_id: Any) -> b
     return _container_visible(ctx, node)
 
 
+# The two ways a logbook row names an entity. `entity_id` is what the row is
+# about; `context_entity_id` is what *caused* it.
+LOGBOOK_ENTITY_KEYS = ("entity_id", "context_entity_id")
+
+
+def _logbook_entry_visible(ctx: FilterContext, entry: Any) -> bool:
+    """Return True if a logbook row names no entity the role cannot see.
+
+    Both ways a row names an entity matter, and only the first was ever checked.
+    "The front door unlocked because Alice arrived" carries the door under
+    `entity_id` and the person under `context_entity_id`, so a row about an
+    entity the role may watch, caused by one it may not see, disclosed the cause:
+    who moved, who came home. A door a role legitimately holds became a way to
+    read a person it is hidden from.
+
+    Withheld whole rather than stripped. A row with its context removed still
+    says the door opened at that moment for a reason the reader cannot see, and
+    the useful half of the leak is the timing.
+    """
+    if not isinstance(entry, dict):
+        return True
+    return all(
+        not _looks_like_entity_id(value := entry.get(key))
+        or ctx.past_readable(GRANT_LOGBOOK, value)
+        for key in LOGBOOK_ENTITY_KEYS
+    )
+
+
+def _filter_logbook(ctx: FilterContext, entries: Any) -> Any:
+    """Drop logbook rows naming an entity the role may not see.
+
+    Unconditional, and not a function of whether the role holds a logbook grant:
+    the `context_entity_id` gap leaked for every restricted role, grant or none.
+    """
+    if not isinstance(entries, list):
+        return prune(ctx, entries)
+    return [entry for entry in entries if _logbook_entry_visible(ctx, entry)]
+
+
+@REGISTRY.result("logbook/get_events")
+def _filter_logbook_result(ctx: FilterContext, result: Any) -> Any:
+    """Filter the flat list of logbook rows the result is."""
+    return _filter_logbook(ctx, result)
+
+
+@REGISTRY.event("logbook/event_stream")
+def _filter_logbook_event(ctx: FilterContext, event: Any) -> Any:
+    """Filter a streamed logbook frame.
+
+    A stream frame wraps its rows under `events`; older shapes stream a bare
+    list. A frame with no rows left is dropped rather than forwarded empty: the
+    logbook panel waits on its first frame, and the proxy answers that one on its
+    own, the way it does for `subscribe_entities`. Forwarding every emptied frame
+    instead would tell the role the instant anything happened in the house.
+    """
+    if isinstance(event, dict) and isinstance(event.get("events"), list):
+        kept = _filter_logbook(ctx, event["events"])
+        return {**event, "events": kept} if kept else None
+    if isinstance(event, list):
+        return _filter_logbook(ctx, event) or None
+    return prune(ctx, event)
+
+
+def filter_rest_logbook(ctx: FilterContext, payload: Any) -> Any:
+    """Filter the REST `/api/logbook` response, a flat list of rows.
+
+    The REST endpoint answers with the same rows the websocket does, and it had
+    no filter of its own -- so it fell to the generic walk, which never looked at
+    `context_entity_id` either.
+    """
+    return _filter_logbook(ctx, payload)
+
+
 @REGISTRY.result("get_services")
 def _filter_get_services(ctx: FilterContext, result: Any) -> Any:
     """Hide service domains the role has no entity in.
@@ -1001,7 +1100,9 @@ def _filter_history_states(ctx: FilterContext, states: Any) -> Any:
         return prune(ctx, states)
     out: dict[str, Any] = {}
     for entity_id, samples in states.items():
-        if _looks_like_entity_id(entity_id) and not ctx.history_readable(entity_id):
+        if _looks_like_entity_id(entity_id) and not ctx.past_readable(
+            GRANT_HISTORY, entity_id
+        ):
             continue
         named = entity_id if _looks_like_entity_id(entity_id) else None
         if not ctx.hides_attributes or not isinstance(samples, list):
@@ -1052,7 +1153,8 @@ def _filter_statistics(ctx: FilterContext, stats: Any) -> Any:
     return {
         statistic_id: rows
         for statistic_id, rows in stats.items()
-        if not _looks_like_entity_id(statistic_id) or ctx.history_readable(statistic_id)
+        if not _looks_like_entity_id(statistic_id)
+        or ctx.past_readable(GRANT_HISTORY, statistic_id)
     }
 
 
@@ -1098,7 +1200,7 @@ def filter_rest_history(ctx: FilterContext, payload: Any) -> Any:
     out: list[Any] = []
     for series in payload:
         entity_id = _series_entity_id(series)
-        if entity_id is not None and not ctx.history_readable(entity_id):
+        if entity_id is not None and not ctx.past_readable(GRANT_HISTORY, entity_id):
             # One entity owns the whole inner list; drop it entirely rather
             # than sample by sample, so no minimised tail survives.
             continue

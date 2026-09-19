@@ -14,7 +14,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 
 from custom_components.ha_rbac.catalog import Catalog
-from custom_components.ha_rbac.const import TIER_OPEN
+from custom_components.ha_rbac.const import GRANT_HISTORY, GRANT_LOGBOOK, TIER_OPEN
 from custom_components.ha_rbac.decide import (
     KIND_WS,
     REASON_APP,
@@ -460,14 +460,29 @@ async def test_nested_group_membership_is_expanded(
     assert "lock.front" in decision.resources
 
 
-async def _history_decider(hass: HomeAssistant) -> Decider:
-    """Return a decider whose catalogue knows the history command and panel.
+# The two grant sections, with the command and panel each is reached through.
+# Parameterised rather than written twice: the sections share one mechanism, so a
+# test that only ever exercised `history` would not notice `logbook` being wired
+# to the wrong section.
+_GRANT_CASES = (
+    (GRANT_HISTORY, "history/history_during_period", "History", "entity_ids"),
+    (GRANT_LOGBOOK, "logbook/get_events", "Logbook", "entity_ids"),
+)
 
-    The real `history` component pulls in `recorder`, which needs a database
-    the test harness does not stand up. Only two things about history matter to
-    the decision: its command classifies as user-tier (so the tier gate lets it
-    through), and its panel is registered (so the app gate can deny it). Both
-    are registered here directly, which is exactly what the component would do.
+
+async def _grant_decider(hass: HomeAssistant) -> Decider:
+    """Return a decider whose catalogue knows both grant commands and panels.
+
+    The real `history` and `logbook` components pull in `recorder`, which needs a
+    database the test harness does not stand up. Only two things about them matter
+    to the decision: the command classifies as user-tier, so the tier gate lets it
+    through, and the panel is registered, so the app gate can deny it. Both are
+    registered here directly, which is what the components would do.
+
+    `entity_ids` is Required here because it is Required upstream: every one of
+    these reads is bounded in real Home Assistant, which is exactly why the
+    resource gate is where the widening has to happen. Declaring it Optional would
+    let a test exercise an unbounded request that cannot occur.
     """
     import voluptuous as vol  # noqa: PLC0415
     from homeassistant.components import websocket_api  # noqa: PLC0415
@@ -479,70 +494,70 @@ async def _history_decider(hass: HomeAssistant) -> Decider:
         await async_setup_component(hass, domain, {})
     await hass.async_block_till_done()
 
-    @websocket_api.ws_require_user()
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): "history/history_during_period",
-            vol.Required("start_time"): str,
-            vol.Optional("entity_ids"): [str],
-        }
-    )
-    def _history_cmd(hass, connection, msg):  # pragma: no cover - never called
-        connection.send_result(msg["id"], {})
+    for _section, command, title, _ids_key in _GRANT_CASES:
 
-    websocket_api.async_register_command(hass, _history_cmd)
+        @websocket_api.ws_require_user()
+        @websocket_api.websocket_command(
+            {
+                vol.Required("type"): command,
+                vol.Required("start_time"): str,
+                vol.Required("entity_ids"): [str],
+            }
+        )
+        def _cmd(hass, connection, msg):  # pragma: no cover - never called
+            connection.send_result(msg["id"], {})
 
-    # `frontend` will not set up without the `hass_frontend` package, but its
-    # panel-registration helper only writes to the panel registry the app gate
-    # reads, so it works on its own -- exactly what the component would record.
-    async_register_built_in_panel(hass, "history", "History", "hass:chart-box")
+        websocket_api.async_register_command(hass, _cmd)
+        # `frontend` will not set up without the `hass_frontend` package, but its
+        # panel-registration helper only writes the panel registry the app gate
+        # reads, so it works on its own.
+        async_register_built_in_panel(hass, _section, title, "hass:chart-box")
 
     catalog = Catalog(hass)
     catalog.rebuild()
     return Decider(hass, catalog, REGISTRY)
 
 
-def _history_only(hass: HomeAssistant, ids: list[str]) -> Permissions:
-    """Return a role that denies the History app but is granted history of `ids`.
+def _granted_only(hass: HomeAssistant, section: str, ids: list[str]) -> Permissions:
+    """Return a role that denies a grant section's panel but is granted `ids`.
 
-    It can read nothing live -- an empty allow -- so history for the granted
-    entities can only be coming from the history grant, which is the point.
+    It can read nothing live -- an empty allow -- so the past of the granted
+    entities can only be coming from the grant, which is the point.
     """
     role = compile_role(
         hass,
         {
-            "id": "h",
-            "name": "h",
+            "id": "g",
+            "name": "g",
             "allow": {},
             "deny": {},
             "tiers": {"max": TIER_OPEN, "allow": [], "deny": []},
-            "apps": {"deny": ["history"]},
-            "history": {"rules": [{"target": "entity_ids", "ids": ids}]},
+            "apps": {"deny": [section]},
+            section: {"rules": [{"target": "entity_ids", "ids": ids}]},
         },
         PermissionLookup(er.async_get(hass), dr.async_get(hass)),
     )
     return Permissions(roles=[role])
 
 
-async def test_bounded_history_request_allows_a_granted_entity(
-    hass: HomeAssistant,
+@pytest.mark.parametrize(("section", "command"), [(c[0], c[1]) for c in _GRANT_CASES])
+async def test_a_grant_lets_a_bounded_request_past_the_resource_gate(
+    hass: HomeAssistant, section: str, command: str
 ) -> None:
-    """A history request naming a granted-but-unreadable entity is not refused.
+    """A request naming a granted-but-unreadable entity is not refused.
 
-    The frontend's history card names its entities, so the request is bounded
-    and reaches the resource gate. Without widening it there, the gate refuses
-    the entity for lack of live read and the grant never reaches the response
-    filter.
+    Every one of these reads names its entities -- Home Assistant requires it --
+    so the request is bounded and reaches the resource gate. Without widening it
+    there, the gate refuses the entity for lack of live read and the grant never
+    reaches the response filter that would honour it.
     """
-    decider = await _history_decider(hass)
-    perms = _history_only(hass, ["climate.trend"])
-
+    decider = await _grant_decider(hass)
     decision = decider.decide(
-        perms,
+        _granted_only(hass, section, ["climate.trend"]),
         KIND_WS,
-        "history/history_during_period",
+        command,
         {
-            "type": "history/history_during_period",
+            "type": command,
             "entity_ids": ["climate.trend"],
             "start_time": "2024-01-01T00:00:00+00:00",
         },
@@ -551,19 +566,18 @@ async def test_bounded_history_request_allows_a_granted_entity(
     assert decision.filter_response is True
 
 
-async def test_bounded_history_request_still_refuses_an_ungranted_entity(
-    hass: HomeAssistant,
+@pytest.mark.parametrize(("section", "command"), [(c[0], c[1]) for c in _GRANT_CASES])
+async def test_a_grant_still_refuses_an_entity_outside_it(
+    hass: HomeAssistant, section: str, command: str
 ) -> None:
-    """The widening is exactly the grant -- an entity outside it is still refused."""
-    decider = await _history_decider(hass)
-    perms = _history_only(hass, ["climate.trend"])
-
+    """The widening is exactly the grant, and no wider."""
+    decider = await _grant_decider(hass)
     decision = decider.decide(
-        perms,
+        _granted_only(hass, section, ["climate.trend"]),
         KIND_WS,
-        "history/history_during_period",
+        command,
         {
-            "type": "history/history_during_period",
+            "type": command,
             "entity_ids": ["lock.secret"],
             "start_time": "2024-01-01T00:00:00+00:00",
         },
@@ -572,11 +586,33 @@ async def test_bounded_history_request_still_refuses_an_ungranted_entity(
     assert decision.reason == REASON_RESOURCE
 
 
-async def test_history_app_deny_still_refuses_without_a_grant(
-    hass: HomeAssistant,
+@pytest.mark.parametrize(("section", "command"), [(c[0], c[1]) for c in _GRANT_CASES])
+async def test_a_grant_in_one_section_does_not_widen_the_other(
+    hass: HomeAssistant, section: str, command: str
 ) -> None:
-    """Denying the History app with no grant refuses its commands, as before."""
-    decider = await _history_decider(hass)
+    """A history grant must not let a logbook read past the gate, or the reverse."""
+    other = next(c for c in _GRANT_CASES if c[0] != section)
+    decider = await _grant_decider(hass)
+    decision = decider.decide(
+        _granted_only(hass, section, ["climate.trend"]),
+        KIND_WS,
+        other[1],
+        {
+            "type": other[1],
+            "entity_ids": ["climate.trend"],
+            "start_time": "2024-01-01T00:00:00+00:00",
+        },
+    )
+    assert decision.allowed is False, f"{section} grant must not widen {other[0]}"
+    assert decision.reason == REASON_RESOURCE
+
+
+@pytest.mark.parametrize(("section", "command"), [(c[0], c[1]) for c in _GRANT_CASES])
+async def test_denying_the_panel_with_no_grant_still_refuses_its_commands(
+    hass: HomeAssistant, section: str, command: str
+) -> None:
+    """Denying the panel with no grant refuses its commands, as before."""
+    decider = await _grant_decider(hass)
     role = compile_role(
         hass,
         {
@@ -584,16 +620,17 @@ async def test_history_app_deny_still_refuses_without_a_grant(
             "name": "n",
             "allow": {CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
             "tiers": {"max": TIER_OPEN, "allow": [], "deny": []},
-            "apps": {"deny": ["history"]},
+            "apps": {"deny": [section]},
         },
         PermissionLookup(er.async_get(hass), dr.async_get(hass)),
     )
     decision = decider.decide(
         Permissions(roles=[role]),
         KIND_WS,
-        "history/history_during_period",
+        command,
         {
-            "type": "history/history_during_period",
+            "type": command,
+            "entity_ids": ["light.kitchen"],
             "start_time": "2024-01-01T00:00:00+00:00",
         },
     )
@@ -601,25 +638,41 @@ async def test_history_app_deny_still_refuses_without_a_grant(
     assert decision.reason == REASON_APP
 
 
-async def test_a_history_grant_lets_the_command_past_the_app_gate(
-    hass: HomeAssistant,
+@pytest.mark.parametrize(("section", "command"), [(c[0], c[1]) for c in _GRANT_CASES])
+async def test_a_grant_lets_the_command_past_the_app_gate(
+    hass: HomeAssistant, section: str, command: str
 ) -> None:
-    """Denying History but holding a grant lets the command reach the filter.
+    """Denying the panel but holding a grant lets the command reach the filter.
 
     The panel stays hidden; the command is allowed so the per-entity response
     filter can narrow it. Refusing it here would make the grant dead letter.
     """
-    decider = await _history_decider(hass)
-    perms = _history_only(hass, ["climate.trend"])
-
+    decider = await _grant_decider(hass)
     decision = decider.decide(
-        perms,
+        _granted_only(hass, section, ["climate.trend"]),
         KIND_WS,
-        "history/history_during_period",
+        command,
         {
-            "type": "history/history_during_period",
+            "type": command,
+            "entity_ids": ["climate.trend"],
             "start_time": "2024-01-01T00:00:00+00:00",
         },
     )
     assert decision.allowed is True, decision.detail
     assert decision.filter_response is True
+
+
+def test_every_grant_section_has_a_row_in_the_table() -> None:
+    """Pin `PAST_GRANTS` against `GRANT_SECTIONS`.
+
+    A section named in const but missing from the table compiles a role whose
+    grant never widens anything: the rules are stored, the panel stays denied, and
+    the commands are refused at the app gate. Silently inert, and permissive in
+    neither direction -- just broken. A row in the table with no section is the
+    mirror mistake.
+    """
+    from custom_components.ha_rbac.const import GRANT_SECTIONS  # noqa: PLC0415
+    from custom_components.ha_rbac.decide import PAST_GRANTS  # noqa: PLC0415
+
+    assert {grant.section for grant in PAST_GRANTS} == set(GRANT_SECTIONS)
+    assert len(PAST_GRANTS) == len(GRANT_SECTIONS), "one row per section"

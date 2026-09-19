@@ -1027,22 +1027,29 @@ def test_every_search_item_type_is_classified() -> None:
     )
 
 
-def _history_ctx(
-    hass: HomeAssistant, readable: set[str], history: set[str]
+def _past_ctx(
+    hass: HomeAssistant,
+    readable: set[str],
+    history: set[str] | None = None,
+    logbook: set[str] | None = None,
 ) -> FilterContext:
-    """Return a context that reads some entities and holds history for others.
+    """Return a context that reads some entities and holds the past of others.
 
-    `readable` are entities the role can read live, which carry history for
-    free; `history` are entities it may only see the past of. The two are kept
-    separate deliberately, so a test can prove history follows the history
-    grant and not the read.
+    `readable` are entities the role can read live, which carry their past for
+    free; `history` and `logbook` are entities it may only see the recorded past
+    of, per section. Kept separate deliberately, so a test can prove the past
+    follows the grant and not the read -- and that the two sections are
+    independent of each other.
     """
+    granted = {"history": history or set(), "logbook": logbook or set()}
     return FilterContext(
         hass,
         lambda entity_id, key: entity_id in readable,
         None,
         None,
-        lambda entity_id: entity_id in readable or entity_id in history,
+        lambda section, entity_id: (
+            entity_id in readable or entity_id in granted[section]
+        ),
     )
 
 
@@ -1056,7 +1063,7 @@ async def test_history_follows_a_history_grant_not_only_read(
     filter must keep such an entity while still dropping one the role can
     neither read nor has been granted.
     """
-    ctx = _history_ctx(hass, readable={"light.kitchen"}, history={"climate.trend"})
+    ctx = _past_ctx(hass, readable={"light.kitchen"}, history={"climate.trend"})
     states = {
         "light.kitchen": [{"s": "on", "a": {}, "lu": 1}],
         "climate.trend": [{"s": "20", "a": {}, "lu": 1}],
@@ -1082,7 +1089,7 @@ async def test_rest_history_drops_a_denied_series_whole(
     """
     from custom_components.ha_rbac.filters import filter_rest_history  # noqa: PLC0415
 
-    ctx = _history_ctx(hass, readable={"sensor.ok"}, history=set())
+    ctx = _past_ctx(hass, readable={"sensor.ok"}, history=set())
     payload = [
         [
             {"entity_id": "lock.secret", "state": "locked", "last_changed": "t0"},
@@ -1110,7 +1117,7 @@ async def test_rest_history_grant_keeps_a_granted_series(
     """A history-granted entity's REST series survives even without read."""
     from custom_components.ha_rbac.filters import filter_rest_history  # noqa: PLC0415
 
-    ctx = _history_ctx(hass, readable=set(), history={"climate.trend"})
+    ctx = _past_ctx(hass, readable=set(), history={"climate.trend"})
     payload = [
         [
             {"entity_id": "climate.trend", "state": "20", "last_changed": "t0"},
@@ -1134,7 +1141,7 @@ async def test_rest_history_also_handles_the_dict_shape(
     """The REST endpoint can also answer in the entity-keyed mapping shape."""
     from custom_components.ha_rbac.filters import filter_rest_history  # noqa: PLC0415
 
-    ctx = _history_ctx(hass, readable={"sensor.ok"}, history=set())
+    ctx = _past_ctx(hass, readable={"sensor.ok"}, history=set())
     payload = {
         "sensor.ok": [{"s": "1", "a": {}, "lu": 1}],
         "lock.secret": [{"s": "locked", "a": {}, "lu": 1}],
@@ -1151,7 +1158,7 @@ async def test_statistics_drop_a_denied_entity(hass: HomeAssistant) -> None:
     row names no entity of its own. The generic walk recovered nothing from the
     key, so a denied entity's numbers passed straight through.
     """
-    ctx = _history_ctx(hass, readable={"sensor.power_ok"}, history=set())
+    ctx = _past_ctx(hass, readable={"sensor.power_ok"}, history=set())
     stats = {
         "sensor.power_ok": [{"start": "t0", "mean": 1.0}],
         "sensor.power_secret": [{"start": "t0", "mean": 9.0}],
@@ -1164,7 +1171,7 @@ async def test_statistics_leave_an_external_statistic_alone(
     hass: HomeAssistant,
 ) -> None:
     """An external statistic id like `energy:solar` is not an entity to gate."""
-    ctx = _history_ctx(hass, readable=set(), history=set())
+    ctx = _past_ctx(hass, readable=set(), history=set())
     stats = {
         "energy:solar": [{"start": "t0", "sum": 5.0}],
         "sensor.secret": [{"start": "t0", "mean": 9.0}],
@@ -1178,7 +1185,7 @@ async def test_statistics_grant_keeps_a_granted_entity(
     hass: HomeAssistant,
 ) -> None:
     """A history grant covers the downsampled statistic as well as raw history."""
-    ctx = _history_ctx(hass, readable=set(), history={"sensor.power_trend"})
+    ctx = _past_ctx(hass, readable=set(), history={"sensor.power_trend"})
     stats = {
         "sensor.power_trend": [{"start": "t0", "mean": 1.0}],
         "sensor.power_secret": [{"start": "t0", "mean": 9.0}],
@@ -1187,7 +1194,7 @@ async def test_statistics_grant_keeps_a_granted_entity(
     assert set(result) == {"sensor.power_trend"}
 
 
-async def test_history_readable_falls_back_to_read_without_a_grant(
+async def test_past_readable_falls_back_to_read_without_a_grant(
     hass: HomeAssistant,
 ) -> None:
     """A context built with no history callback behaves exactly as before.
@@ -1197,5 +1204,191 @@ async def test_history_readable_falls_back_to_read_without_a_grant(
     additive, never a silent widening.
     """
     ctx = _ctx(hass, {"lock.front"})
-    assert ctx.history_readable("light.kitchen") is True
-    assert ctx.history_readable("lock.front") is False
+    assert ctx.past_readable("history", "light.kitchen") is True
+    assert ctx.past_readable("history", "lock.front") is False
+    assert ctx.past_readable("logbook", "light.kitchen") is True
+    assert ctx.past_readable("logbook", "lock.front") is False
+
+
+async def test_logbook_drops_a_row_about_a_denied_entity(
+    hass: HomeAssistant,
+) -> None:
+    """A row whose `entity_id` the role cannot see is withheld whole."""
+    result = REGISTRY.filter_result(
+        "logbook/get_events",
+        _past_ctx(hass, readable={"light.kitchen"}),
+        [
+            {"entity_id": "light.kitchen", "when": 1, "state": "on"},
+            {"entity_id": "lock.front", "when": 2, "state": "unlocked"},
+        ],
+    )
+    assert [r["entity_id"] for r in result] == ["light.kitchen"]
+
+
+async def test_logbook_drops_a_row_caused_by_a_denied_entity(
+    hass: HomeAssistant,
+) -> None:
+    """The `context_entity_id` leak, closed for every role whether it grants or not.
+
+    A row names an entity twice: `entity_id` is what it is about, and
+    `context_entity_id` is what caused it. "The front door unlocked because Alice
+    arrived" carries the door under the first, readable, and the person under the
+    second, denied. The generic walk only ever looked at the first, so the person
+    leaked -- who came home, disclosed through a door the role legitimately
+    watches. The row goes whole, because either end naming something unseen is
+    enough and a row stripped of its cause still discloses the timing.
+    """
+    result = REGISTRY.filter_result(
+        "logbook/get_events",
+        _past_ctx(hass, readable={"lock.front"}),
+        [
+            {
+                "entity_id": "lock.front",
+                "when": 1,
+                "state": "unlocked",
+                "context_entity_id": "person.alice",
+                "context_message": "triggered by Alice",
+            }
+        ],
+    )
+    assert result == [], "a row caused by a denied entity is withheld whole"
+    assert "person.alice" not in json.dumps(result)
+
+
+async def test_logbook_follows_a_grant_not_only_read(hass: HomeAssistant) -> None:
+    """An entity granted logbook but not read still comes back in the logbook."""
+    result = REGISTRY.filter_result(
+        "logbook/get_events",
+        _past_ctx(hass, readable={"light.kitchen"}, logbook={"climate.trend"}),
+        [
+            {"entity_id": "light.kitchen", "when": 1},
+            {"entity_id": "climate.trend", "when": 2},
+            {"entity_id": "lock.secret", "when": 3},
+        ],
+    )
+    assert [r["entity_id"] for r in result] == ["light.kitchen", "climate.trend"]
+
+
+async def test_logbook_context_is_allowed_when_the_cause_is_granted(
+    hass: HomeAssistant,
+) -> None:
+    """A cause the role may see, by grant or by read, does not drop the row."""
+    result = REGISTRY.filter_result(
+        "logbook/get_events",
+        _past_ctx(hass, readable={"lock.front"}, logbook={"person.alice"}),
+        [{"entity_id": "lock.front", "when": 1, "context_entity_id": "person.alice"}],
+    )
+    assert len(result) == 1, "both ends are visible, so the row stays"
+
+
+async def test_the_two_grant_sections_are_independent(hass: HomeAssistant) -> None:
+    """A history grant is not a logbook grant, and the other way round.
+
+    They are separate sections precisely so a role can be shown a trend without
+    the timeline of who caused it, which is the difference between "the house was
+    cold on Tuesday" and "somebody turned the heating down at 9pm". Sharing one
+    compiler must not quietly merge them.
+    """
+    ctx = _past_ctx(
+        hass, readable=set(), history={"climate.trend"}, logbook={"lock.front"}
+    )
+
+    history = REGISTRY.filter_result(
+        "history/history_during_period",
+        ctx,
+        {"climate.trend": [{"s": "20"}], "lock.front": [{"s": "locked"}]},
+    )
+    assert set(history) == {"climate.trend"}, "the logbook grant buys no history"
+
+    logbook = REGISTRY.filter_result(
+        "logbook/get_events",
+        ctx,
+        [
+            {"entity_id": "climate.trend", "when": 1},
+            {"entity_id": "lock.front", "when": 2},
+        ],
+    )
+    assert [r["entity_id"] for r in logbook] == ["lock.front"], (
+        "and the history grant buys no logbook"
+    )
+
+
+async def test_logbook_event_stream_frame_is_filtered(hass: HomeAssistant) -> None:
+    """A streamed logbook frame wraps its rows under `events`."""
+    event = REGISTRY.filter_event(
+        "logbook/event_stream",
+        _past_ctx(hass, readable={"light.kitchen"}),
+        {
+            "events": [
+                {"entity_id": "light.kitchen", "when": 1},
+                {"entity_id": "lock.front", "when": 2},
+            ],
+            "start_time": 1,
+        },
+    )
+    assert [r["entity_id"] for r in event["events"]] == ["light.kitchen"]
+    assert event["start_time"] == 1, "the frame around it survives"
+
+
+async def test_a_logbook_frame_emptied_by_filtering_is_dropped(
+    hass: HomeAssistant,
+) -> None:
+    """A frame with no rows left is not forwarded as an empty one.
+
+    Same reasoning as an emptied state diff: forwarding the husk tells the role
+    that something happened, and when. The panel's first frame is the exception
+    and the proxy makes it -- see `opening_frame`.
+    """
+    event = REGISTRY.filter_event(
+        "logbook/event_stream",
+        _past_ctx(hass, readable=set()),
+        {"events": [{"entity_id": "lock.front", "when": 1}], "start_time": 1},
+    )
+    assert event is None
+
+
+async def test_rest_logbook_is_filtered_including_context(
+    hass: HomeAssistant,
+) -> None:
+    """The REST endpoint is narrowed the same way, context included.
+
+    It had no filter of its own, so it fell to the generic walk -- which never
+    looked at `context_entity_id` either.
+    """
+    from custom_components.ha_rbac.filters import filter_rest_logbook  # noqa: PLC0415
+
+    result = filter_rest_logbook(
+        _past_ctx(hass, readable={"lock.front"}),
+        [
+            {"entity_id": "lock.front", "when": 1},
+            {"entity_id": "lock.front", "when": 2, "context_entity_id": "person.alice"},
+            {"entity_id": "camera.hall", "when": 3},
+            {"when": 4, "name": "Home Assistant", "message": "started"},
+        ],
+    )
+    assert [r.get("entity_id") for r in result] == ["lock.front", None], (
+        "the row it may see and the entity-less system row stay"
+    )
+    assert "person.alice" not in json.dumps(result)
+
+
+def test_the_opening_frame_of_each_blocking_subscription_has_a_shape() -> None:
+    """Pin what stands in for an emptied opening frame, per subscription.
+
+    `subscribe_entities` gets the `{"a": {}}` Home Assistant sends a user with no
+    readable states. The logbook stream gets the real frame with its rows removed,
+    because only the real one carries the window it covers -- inventing a
+    `start_time` would be inventing an answer. Everything else gets nothing,
+    which is what keeps an emptied frame from becoming a clock.
+    """
+    from custom_components.ha_rbac.filters import opening_frame  # noqa: PLC0415
+
+    assert opening_frame(
+        "subscribe_entities", {"a": {"lock.front": {"s": "locked"}}}
+    ) == {"a": {}}
+    assert opening_frame(
+        "logbook/event_stream",
+        {"events": [{"entity_id": "lock.front"}], "start_time": 7},
+    ) == {"events": [], "start_time": 7}
+    assert opening_frame("subscribe_events", {"event_type": "state_changed"}) is None
+    assert opening_frame("history/stream", {"states": {}}) is None

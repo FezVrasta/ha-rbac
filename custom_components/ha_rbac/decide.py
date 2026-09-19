@@ -33,6 +33,8 @@ from homeassistant.helpers import (
 from .catalog import Catalog
 from .const import (
     CAPABILITY_PATTERNS,
+    GRANT_HISTORY,
+    GRANT_LOGBOOK,
     MAX_WALK_DEPTH,
     RESOURCE_KEYS,
     TIER_ADMIN,
@@ -83,33 +85,67 @@ WRITES_ONLY_TO_THE_LOG = frozenset({"system_log.write"})
 # registry command lives under.
 CONFIG_PANEL = "config"
 
-# The History panel. A role may deny it wholesale yet still be granted the
-# history of specific entities, in which case its commands are let through to
-# the per-entity response filter rather than refused at the app gate.
-HISTORY_PANEL = "history"
 
-# The read commands a per-entity history grant widens. Websocket commands are
-# matched by name; the REST period endpoint by its `GET /api/history/period`
-# request line. Statistics are included because the same grant covers a trend
-# whether it is read as raw history or as a downsampled statistic.
-_HISTORY_READ_COMMANDS = frozenset(
-    {
-        "history/history_during_period",
-        "history/stream",
-        "history/statistics_during_period",
-        "recorder/statistics_during_period",
-    }
+@dataclass(frozen=True, slots=True)
+class PastGrant:
+    """What one grant section widens, and the panel it belongs to.
+
+    A role may deny the panel wholesale yet still be granted the recorded past of
+    specific entities, in which case the section's reads are let through to the
+    per-entity response filter rather than refused at the app gate. The filter
+    then narrows the answer to the granted entities, so letting them through
+    discloses nothing wider.
+    """
+
+    # The role section the grant is written in, and the panel it hides behind.
+    # The same string, because a section is named after its panel.
+    section: str
+    # Websocket commands the grant widens, matched by name.
+    commands: frozenset[str]
+    # REST path the grant widens, matched by prefix because the path carries a
+    # timestamp tail and there is no static key to match whole.
+    rest_prefix: str
+
+
+# Statistics ride with history: the same grant covers a trend whether it is read
+# as raw history or as a downsampled statistic, and refusing the downsampled one
+# would leave a granted chart half drawn.
+PAST_GRANTS: tuple[PastGrant, ...] = (
+    PastGrant(
+        section=GRANT_HISTORY,
+        commands=frozenset(
+            {
+                "history/history_during_period",
+                "history/stream",
+                "history/statistics_during_period",
+                "recorder/statistics_during_period",
+            }
+        ),
+        rest_prefix="/api/history/period",
+    ),
+    PastGrant(
+        section=GRANT_LOGBOOK,
+        commands=frozenset({"logbook/get_events", "logbook/event_stream"}),
+        rest_prefix="/api/logbook",
+    ),
 )
 
+PAST_GRANT_BY_PANEL: dict[str, PastGrant] = {
+    grant.section: grant for grant in PAST_GRANTS
+}
 
-def _is_history_read(kind: str, name: str) -> bool:
-    """Return True if a request is a history read a history grant may widen."""
+
+def _widened_by(kind: str, name: str) -> "PastGrant | None":
+    """Return the grant section a request belongs to, if any widens it."""
     if kind == KIND_HTTP:
-        # `name` is "<METHOD> <path>"; the period endpoint carries a timestamp
-        # tail, so it is matched by prefix on the path half.
+        # `name` is "<METHOD> <path>"; only the path half is matched.
         parts = name.split(" ", 1)
-        return len(parts) == 2 and parts[1].startswith("/api/history/period")
-    return name in _HISTORY_READ_COMMANDS
+        if len(parts) != 2:
+            return None
+        return next(
+            (g for g in PAST_GRANTS if parts[1].startswith(g.rest_prefix)), None
+        )
+    return next((g for g in PAST_GRANTS if name in g.commands), None)
 
 
 def _reads_attributes(node: Any, depth: int = 0) -> bool:
@@ -559,17 +595,21 @@ class Decider:
         key = POLICY_CONTROL if self._is_mutation(kind, name, payload) else POLICY_READ
 
         # 3. Resource gate. Every entity the request names must be permitted.
-        #    A history read is the one read that a history grant widens: an
-        #    entity a role may see the trend of, without being able to read its
-        #    live state, must pass here or the grant never reaches the response
-        #    filter. The grant only ever adds read-shaped access, so it applies
-        #    to reads alone -- a mutation is judged by `check_entity` as before.
-        history_read = key == POLICY_READ and _is_history_read(kind, name)
+        #    A read of the recorded past is the one read a grant widens: an
+        #    entity a role may see the trend or the timeline of, without being
+        #    able to read its live state, must pass here or the grant never
+        #    reaches the response filter. A grant only ever adds read-shaped
+        #    access, so it applies to reads alone -- a mutation is judged by
+        #    `check_entity` as before.
+        widened = _widened_by(kind, name) if key == POLICY_READ else None
         denied = sorted(
             entity_id
             for entity_id in entities
             if not permissions.check_entity(entity_id, key)
-            and not (history_read and permissions.history_allowed(entity_id))
+            and not (
+                widened is not None
+                and permissions.past_allowed(widened.section, entity_id)
+            )
         )
         if denied:
             return Decision(
@@ -676,13 +716,13 @@ class Decider:
         for app in denied:
             if not self._app_named(app, kind, name, payload):
                 continue
-            # A role can deny the History panel yet still be granted the
-            # history of specific entities. The panel stays hidden, but its
-            # commands must reach the response filter rather than be refused
-            # here, or the filter never runs and the grant is dead letter. The
-            # filter then narrows the answer to the granted entities, so
-            # letting the command through discloses nothing wider.
-            if app["url_path"] == HISTORY_PANEL and permissions.grants_any_history:
+            # A role can deny the History or Logbook panel yet still be granted
+            # the recorded past of specific entities. The panel stays hidden, but
+            # its commands must reach the response filter rather than be refused
+            # here, or the filter never runs and the grant is dead letter.
+            if (grant := PAST_GRANT_BY_PANEL.get(app["url_path"])) is not None and (
+                permissions.grants_any_past(grant.section)
+            ):
                 continue
             what = f"the {app['title']} add-on" if app.get("addon") else app["title"]
             return Decision(

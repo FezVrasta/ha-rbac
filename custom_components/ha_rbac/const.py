@@ -170,6 +170,21 @@ CAPABILITY_PATTERNS: Final[dict[str, tuple[str, ...]]] = {
     capability["id"]: capability["patterns"] for capability in CAPABILITIES
 }
 
+# Role sections that grant reading an entity's recorded *past* without granting
+# its live state: the trend on a chart, the timeline of what happened. Both work
+# the same way, so they share one rule shape, one compiler and one union at the
+# `Permissions` level, and the section name is what distinguishes them -- adding
+# a third means naming it here and giving it a row in `decide.PAST_GRANTS`.
+#
+# A grant is additive and read-only. It can only ever widen reading, never
+# control, and a denial still wins: the household-wide deny vetoes it outright,
+# and within a role its own deny clause does. The section name is also the
+# Home Assistant panel the grant belongs to, which is what lets a role hide the
+# panel while still being handed one entity out of it.
+GRANT_HISTORY: Final = "history"
+GRANT_LOGBOOK: Final = "logbook"
+GRANT_SECTIONS: Final[tuple[str, ...]] = (GRANT_HISTORY, GRANT_LOGBOOK)
+
 # Resource keys the extractor collects. Each accepts str | list[str].
 KEY_ENTITY: Final = "entity"
 KEY_DEVICE: Final = "device"
