@@ -52,14 +52,23 @@ async def test_compressed_state_change_and_remove_are_filtered(
     assert event["r"] == ["light.b"]
 
 
-async def test_event_filtered_to_nothing_is_dropped(hass: HomeAssistant) -> None:
-    """An event whose every entity was denied must not be forwarded at all."""
+async def test_event_filtered_to_nothing_is_empty_not_dropped(
+    hass: HomeAssistant,
+) -> None:
+    """An event whose every entity was denied is emptied, not dropped.
+
+    `subscribe_entities` opens with one event carrying every entity's state,
+    and the frontend waits on that first frame before it finishes loading. A
+    role that can read nothing filters it to nothing; dropping it left the
+    frame unsent and the frontend loading forever. An empty diff is a valid
+    frame meaning "nothing you may see", which lets the load complete.
+    """
     event = REGISTRY.filter_event(
         "subscribe_entities",
         _ctx(hass, {"lock.front"}),
         {"a": {"lock.front": {"s": "unlocked"}}},
     )
-    assert event is None
+    assert event == {}, "empty, but a frame -- not None"
 
 
 async def test_camera_token_goes_with_the_entity(hass: HomeAssistant) -> None:
@@ -78,7 +87,8 @@ async def test_camera_token_goes_with_the_entity(hass: HomeAssistant) -> None:
             }
         },
     )
-    assert event is None
+    assert event == {}, "the denied camera, token and all, is gone; the frame is empty"
+    assert "s3cret" not in json.dumps(event)
 
 
 async def test_state_changed_events_are_dropped(hass: HomeAssistant) -> None:
@@ -1017,3 +1027,177 @@ def test_every_search_item_type_is_classified() -> None:
     assert classified <= upstream, (
         f"search keys Home Assistant never sends: {classified - upstream}"
     )
+
+
+def _history_ctx(
+    hass: HomeAssistant, readable: set[str], history: set[str]
+) -> FilterContext:
+    """Return a context that reads some entities and holds history for others.
+
+    `readable` are entities the role can read live, which carry history for
+    free; `history` are entities it may only see the past of. The two are kept
+    separate deliberately, so a test can prove history follows the history
+    grant and not the read.
+    """
+    return FilterContext(
+        hass,
+        lambda entity_id, key: entity_id in readable,
+        None,
+        None,
+        lambda entity_id: entity_id in readable or entity_id in history,
+    )
+
+
+async def test_history_follows_a_history_grant_not_only_read(
+    hass: HomeAssistant,
+) -> None:
+    """An entity granted history but not read still comes back in history.
+
+    The whole point of the fine-grained grant: a role that may see one device's
+    trend without being handed its live state everywhere. The websocket history
+    filter must keep such an entity while still dropping one the role can
+    neither read nor has been granted.
+    """
+    ctx = _history_ctx(hass, readable={"light.kitchen"}, history={"climate.trend"})
+    states = {
+        "light.kitchen": [{"s": "on", "a": {}, "lu": 1}],
+        "climate.trend": [{"s": "20", "a": {}, "lu": 1}],
+        "lock.secret": [{"s": "locked", "a": {}, "lu": 1}],
+    }
+
+    result = REGISTRY.filter_result("history/history_during_period", ctx, states)
+    assert set(result) == {"light.kitchen", "climate.trend"}
+    assert "lock.secret" not in result, "neither readable nor history-granted"
+
+
+async def test_rest_history_drops_a_denied_series_whole(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA REST leak: minimised samples of a denied entity must not survive.
+
+    `/api/history/period` answers as a list of lists, and Home Assistant puts
+    the entity id only on the FIRST sample of each series -- the rest are
+    minimised to a state and a timestamp. The generic walk recovered an id only
+    from a sample's own key, so it dropped a denied entity's first sample and
+    kept every later one, leaking its values and timestamps. The whole series
+    belongs to one entity, so it is dropped whole.
+    """
+    from custom_components.ha_rbac.filters import filter_rest_history  # noqa: PLC0415
+
+    ctx = _history_ctx(hass, readable={"sensor.ok"}, history=set())
+    payload = [
+        [
+            {"entity_id": "lock.secret", "state": "locked", "last_changed": "t0"},
+            {"state": "unlocked", "last_changed": "t1"},
+            {"state": "locked", "last_changed": "t2"},
+        ],
+        [
+            {"entity_id": "sensor.ok", "state": "1", "last_changed": "t0"},
+            {"state": "2", "last_changed": "t1"},
+        ],
+    ]
+
+    result = filter_rest_history(ctx, payload)
+    flat = json.dumps(result)
+    assert "lock.secret" not in flat, "the id is gone"
+    assert "unlocked" not in flat, "and so are its later, minimised samples"
+    assert len(result) == 1
+    assert result[0][0]["entity_id"] == "sensor.ok"
+    assert len(result[0]) == 2, "the allowed series is untouched"
+
+
+async def test_rest_history_grant_keeps_a_granted_series(
+    hass: HomeAssistant,
+) -> None:
+    """A history-granted entity's REST series survives even without read."""
+    from custom_components.ha_rbac.filters import filter_rest_history  # noqa: PLC0415
+
+    ctx = _history_ctx(hass, readable=set(), history={"climate.trend"})
+    payload = [
+        [
+            {"entity_id": "climate.trend", "state": "20", "last_changed": "t0"},
+            {"state": "21", "last_changed": "t1"},
+        ],
+        [
+            {"entity_id": "lock.secret", "state": "locked", "last_changed": "t0"},
+            {"state": "unlocked", "last_changed": "t1"},
+        ],
+    ]
+
+    result = filter_rest_history(ctx, payload)
+    flat = json.dumps(result)
+    assert "climate.trend" in flat and "21" in flat, "granted series kept whole"
+    assert "lock.secret" not in flat and "unlocked" not in flat, "denied gone whole"
+
+
+async def test_rest_history_also_handles_the_dict_shape(
+    hass: HomeAssistant,
+) -> None:
+    """The REST endpoint can also answer in the entity-keyed mapping shape."""
+    from custom_components.ha_rbac.filters import filter_rest_history  # noqa: PLC0415
+
+    ctx = _history_ctx(hass, readable={"sensor.ok"}, history=set())
+    payload = {
+        "sensor.ok": [{"s": "1", "a": {}, "lu": 1}],
+        "lock.secret": [{"s": "locked", "a": {}, "lu": 1}],
+    }
+    result = filter_rest_history(ctx, payload)
+    assert set(result) == {"sensor.ok"}
+
+
+async def test_statistics_drop_a_denied_entity(hass: HomeAssistant) -> None:
+    """Statistics were keyed like history and left unfiltered -- a second leak.
+
+    `history/statistics_during_period` answers `{statistic_id: [rows]}`, and a
+    recorder statistic for an entity uses the entity id as its key while each
+    row names no entity of its own. The generic walk recovered nothing from the
+    key, so a denied entity's numbers passed straight through.
+    """
+    ctx = _history_ctx(hass, readable={"sensor.power_ok"}, history=set())
+    stats = {
+        "sensor.power_ok": [{"start": "t0", "mean": 1.0}],
+        "sensor.power_secret": [{"start": "t0", "mean": 9.0}],
+    }
+    result = REGISTRY.filter_result("history/statistics_during_period", ctx, stats)
+    assert set(result) == {"sensor.power_ok"}
+
+
+async def test_statistics_leave_an_external_statistic_alone(
+    hass: HomeAssistant,
+) -> None:
+    """An external statistic id like `energy:solar` is not an entity to gate."""
+    ctx = _history_ctx(hass, readable=set(), history=set())
+    stats = {
+        "energy:solar": [{"start": "t0", "sum": 5.0}],
+        "sensor.secret": [{"start": "t0", "mean": 9.0}],
+    }
+    result = REGISTRY.filter_result("recorder/statistics_during_period", ctx, stats)
+    assert "energy:solar" in result, "not an entity; left alone"
+    assert "sensor.secret" not in result, "an entity, and denied"
+
+
+async def test_statistics_grant_keeps_a_granted_entity(
+    hass: HomeAssistant,
+) -> None:
+    """A history grant covers the downsampled statistic as well as raw history."""
+    ctx = _history_ctx(hass, readable=set(), history={"sensor.power_trend"})
+    stats = {
+        "sensor.power_trend": [{"start": "t0", "mean": 1.0}],
+        "sensor.power_secret": [{"start": "t0", "mean": 9.0}],
+    }
+    result = REGISTRY.filter_result("history/statistics_during_period", ctx, stats)
+    assert set(result) == {"sensor.power_trend"}
+
+
+async def test_history_readable_falls_back_to_read_without_a_grant(
+    hass: HomeAssistant,
+) -> None:
+    """A context built with no history callback behaves exactly as before.
+
+    Every hand-built `FilterContext` in the codebase omits the history check,
+    so history there must remain "whatever the role can read" -- the change is
+    additive, never a silent widening.
+    """
+    ctx = _ctx(hass, {"lock.front"})
+    assert ctx.history_readable("light.kitchen") is True
+    assert ctx.history_readable("lock.front") is False
