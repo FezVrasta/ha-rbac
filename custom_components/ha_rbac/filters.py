@@ -616,6 +616,162 @@ def _filter_media(ctx: FilterContext, result: Any) -> Any:
     return filtered
 
 
+# Fields in the energy preferences that name a statistic or an entity. A
+# recorder statistic id for a sensor is that sensor's entity id, and the price
+# fields hold an entity id outright, so all of them gate on readability. Listed
+# because none is spelled `entity_id`, so the generic walk passes them by.
+_ENERGY_STAT_FIELDS = (
+    "stat_energy_from",
+    "stat_energy_to",
+    "stat_cost",
+    "stat_compensation",
+    "stat_rate",
+    "stat_rate_from",
+    "stat_rate_to",
+    "stat_rate_inverted",
+    "stat_consumption",
+    "stat_soc",
+    "included_in_stat",
+    "entity_energy_price",
+    "entity_energy_price_export",
+)
+
+
+def _energy_ref_readable(ctx: FilterContext, value: Any) -> bool:
+    """Return True unless a value is an entity id the role cannot read.
+
+    An external statistic id like `co2signal:co2_intensity` is not an entity
+    and is left alone; only an entity-shaped id is gated.
+    """
+    return not _looks_like_entity_id(value) or ctx.readable(value)
+
+
+def _energy_source_visible(ctx: FilterContext, source: Any) -> bool:
+    """Return True unless an energy source names a statistic the role can't read.
+
+    A source is dropped whole if any statistic or price field on it points at an
+    entity the role cannot see: keeping a source with its meter stripped out
+    would still disclose the topology -- that a grid, a battery or a solar array
+    exists -- which is what this withholds.
+    """
+    if not isinstance(source, dict):
+        return True
+    for field in _ENERGY_STAT_FIELDS:
+        if not _energy_ref_readable(ctx, source.get(field)):
+            return False
+    # A grid source nests its meters under flow_from/flow_to lists.
+    for flow_key in ("flow_from", "flow_to"):
+        flows = source.get(flow_key)
+        if isinstance(flows, list) and not all(
+            _energy_source_visible(ctx, flow) for flow in flows
+        ):
+            return False
+    return True
+
+
+@REGISTRY.result("energy/get_prefs")
+def _filter_energy_prefs(ctx: FilterContext, result: Any) -> Any:
+    """Drop energy sources and devices naming statistics the role cannot read.
+
+    The prefs enumerate every meter, battery, solar array and monitored device
+    by its recorder statistic id -- which for a sensor is its entity id -- under
+    fields (`stat_energy_from`, `entity_energy_price`, `stat_consumption`, ...)
+    that are not spelled `entity_id`, so the generic walk returned the lot. A
+    restricted user learned every energy sensor, the grid/solar/battery topology
+    and the price-entity ids of things hidden everywhere else.
+    """
+    if not isinstance(result, dict):
+        return result
+    filtered = dict(result)
+    if isinstance(sources := filtered.get("energy_sources"), list):
+        filtered["energy_sources"] = [
+            source for source in sources if _energy_source_visible(ctx, source)
+        ]
+    for devices_key in ("device_consumption", "device_consumption_water"):
+        if isinstance(devices := filtered.get(devices_key), list):
+            filtered[devices_key] = [
+                device for device in devices if _energy_source_visible(ctx, device)
+            ]
+    return filtered
+
+
+def _statistic_id_readable(ctx: FilterContext, statistic_id: Any) -> bool:
+    """Return True unless a statistic id is an entity the role cannot read.
+
+    External statistics (`co2signal:...`, `tibber:...`) are not entities and
+    pass; a recorder statistic for a sensor uses the entity id as its id, so it
+    is gated.
+    """
+    return not _looks_like_entity_id(statistic_id) or ctx.readable(statistic_id)
+
+
+@REGISTRY.result("recorder/list_statistic_ids", "recorder/get_statistics_metadata")
+def _filter_statistic_metadata(ctx: FilterContext, result: Any) -> Any:
+    """Drop statistic metadata for entities the role cannot read.
+
+    Each row is keyed on a `statistic_id` field -- not `entity_id` -- so the
+    generic walk left them, disclosing the id, friendly name, source and unit of
+    every recorded sensor the role is hidden from. An entity-shaped statistic id
+    is gated; an external one is left alone.
+    """
+    if not isinstance(result, list):
+        return result
+    return [
+        row
+        for row in result
+        if not isinstance(row, dict)
+        or _statistic_id_readable(ctx, row.get("statistic_id"))
+    ]
+
+
+# Search result keys whose values are entity ids (bare strings, not objects),
+# so the generic walk -- which only inspects a dict's own `entity_id` field --
+# never checked them. `device` and `area` are containers, filtered by whether
+# the role can read anything inside.
+_SEARCH_ENTITY_KEYS = ("entity", "automation", "scene", "script", "person", "group")
+
+
+@REGISTRY.result("search/related")
+def _filter_search_related(ctx: FilterContext, result: Any) -> Any:
+    """Drop related items the role cannot see from a search result.
+
+    `search/related` answers `{item_type: [ids]}` with the ids as bare strings
+    -- `{"entity": ["lock.front"], "device": [...], "area": [...]}` -- so the
+    generic walk, which looks only for an object's own `entity_id` field, passed
+    the lot. The request names one item and is gated up front, but the response
+    enumerates every entity, device and area related to it, hidden or not.
+    """
+    if not isinstance(result, dict):
+        return result
+    out: dict[str, Any] = {}
+    for key, ids in result.items():
+        if not isinstance(ids, list):
+            out[key] = ids
+            continue
+        if key in _SEARCH_ENTITY_KEYS:
+            kept = [i for i in ids if not _looks_like_entity_id(i) or ctx.readable(i)]
+        elif key in ("device", "area"):
+            kept = [i for i in ids if _container_id_visible(ctx, key, i)]
+        else:
+            kept = ids
+        if kept:
+            out[key] = kept
+    return out
+
+
+def _container_id_visible(ctx: FilterContext, kind: str, container_id: Any) -> bool:
+    """Return True if the role can read any entity in a device or area.
+
+    A device or area the role can see nothing in is one it is not meant to know
+    exists, so its id is withheld -- the same rule `_container_visible` applies
+    to objects that name one.
+    """
+    if not isinstance(container_id, str):
+        return True
+    node = {f"{kind}_id": container_id}
+    return _container_visible(ctx, node)
+
+
 @REGISTRY.result("get_services")
 def _filter_get_services(ctx: FilterContext, result: Any) -> Any:
     """Hide service domains the role has no entity in.
