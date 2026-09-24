@@ -46,6 +46,7 @@ from .filters import (
     FilterContext,
     filter_rest_history,
     filter_rest_logbook,
+    filter_rest_lovelace,
     opening_frame,
     strip_denied_addons,
 )
@@ -132,6 +133,7 @@ REST_FILTERS: tuple[tuple[str, "Callable[[FilterContext, Any], Any]"], ...] = tu
         (
             ("/api/history/period", filter_rest_history),
             ("/api/logbook", filter_rest_logbook),
+            ("/api/lovelace/dashboard/", filter_rest_lovelace),
         ),
         key=lambda row: len(row[0]),
         reverse=True,

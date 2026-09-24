@@ -753,8 +753,14 @@ class Decider:
 
         # Dashboards all share the `lovelace/` commands, so the prefix rule
         # would take every dashboard down with one of them. They are covered by
-        # the `url_path` check above instead.
+        # the `url_path` check above instead -- and over REST, where the
+        # dashboard is named in the path rather than the payload.
         if app.get("kind") == DASHBOARD_KIND:
+            if kind == KIND_HTTP:
+                _, _, path = name.partition(" ")
+                rest_prefix = "/api/lovelace/dashboard/"
+                if path.startswith(rest_prefix):
+                    return path[len(rest_prefix) :].split("/", 1)[0] == url_path
             return False
 
         prefix = url_path.replace("-", "_")

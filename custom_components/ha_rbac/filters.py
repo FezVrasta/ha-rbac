@@ -1009,6 +1009,16 @@ def _filter_lovelace(ctx: FilterContext, result: Any) -> Any:
     return scrub(result)
 
 
+def filter_rest_lovelace(ctx: FilterContext, payload: Any) -> Any:
+    """Scrub a dashboard config fetched over REST like its websocket spelling.
+
+    `GET /api/lovelace/dashboard/<url_path>` answers with the same config as
+    `lovelace/config`, so it gets the same scrubber rather than the generic
+    walk, which does not recognise Lovelace's `entity`/`entities` keys.
+    """
+    return _filter_lovelace(ctx, payload)
+
+
 @REGISTRY.result("auth/current_user")
 def _filter_current_user(ctx: FilterContext, result: Any) -> Any:
     """Report a restricted user as non-admin so the frontend hides admin UI.

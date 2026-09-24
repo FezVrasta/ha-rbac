@@ -107,7 +107,15 @@ CAPABILITIES: Final = (
         # `lovelace/resources/*` is deliberately absent: a resource is
         # JavaScript loaded into every browser including an owner's, so granting
         # it hands over a good deal more than dashboards.
-        "patterns": ("lovelace/config/*", "lovelace/dashboards/*"),
+        # The frontend reads the same config over REST
+        # (`GET /api/lovelace/dashboard/<url_path>`); without the REST spelling
+        # the capability grants the data over one transport and refuses it over
+        # the other.
+        "patterns": (
+            "lovelace/config/*",
+            "lovelace/dashboards/*",
+            "* /api/lovelace/dashboard/*",
+        ),
     },
     {
         "id": "helpers",
