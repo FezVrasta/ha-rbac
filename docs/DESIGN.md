@@ -172,6 +172,18 @@ not a correctness boundary, so it fails closed.
   consulted on the hottest path there is. A denial is checked first, so putting
   a forbidden entity on a granted dashboard does not unlock it, which would
   otherwise hand a grant to anyone who can edit a dashboard.
+
+  A role may also be handed specific dashboards to *edit* -- change the
+  views and cards on, not just see -- without the "dashboards" capability,
+  which would hand over every one. Matched by `url_path` the same way a
+  denial is, so one dashboard being granted says nothing about any other.
+  This is also the one case where `auth/current_user` reports a restricted
+  role as an administrator: Home Assistant's own dashboard editor is shown or
+  hidden by that single flag, with nothing finer underneath it, so a role
+  with no other grant still has to pass for one to get its editor at all.
+  Every other gate runs exactly as it did before underneath that flag, so the
+  extra visibility this buys in Home Assistant's own UI (the Settings sidebar
+  entry appears) is never backed by access the role does not otherwise have.
 - **Commands**: ordinary use, or everything including settings, plus any
   *capabilities* — named parts of the administrative surface, so that granting
   automations or dashboards does not mean writing a glob. A role stores the

@@ -42,12 +42,14 @@ class FilterContext:
         check: CheckFn,
         app_allowed: "Callable[[str], bool] | None" = None,
         attribute_hidden: "Callable[[str, str], bool] | None" = None,
+        can_edit_dashboards: bool = False,
     ) -> None:
         """Initialise the context."""
         self.hass = hass
         self.check = check
         self._app_allowed = app_allowed
         self._attribute_hidden = attribute_hidden
+        self.can_edit_dashboards = can_edit_dashboards
 
     @property
     def hides_attributes(self) -> bool:
@@ -101,6 +103,7 @@ class FilterContext:
             permissions.check_entity,
             permissions.app_allowed,
             permissions.attribute_hidden if permissions.hides_attributes else None,
+            permissions.has_dashboard_edit,
         )
 
     def app_visible(self, url_path: str) -> bool:
@@ -706,11 +709,19 @@ def _filter_lovelace(ctx: FilterContext, result: Any) -> Any:
 def _filter_current_user(ctx: FilterContext, result: Any) -> Any:
     """Report a restricted user as non-admin so the frontend hides admin UI.
 
-    Cosmetic only. The enforcement is the tier gate; this just stops the UI
-    offering things that will fail.
+    Cosmetic only in the usual case. The real enforcement is the tier and
+    resource gates; this just stops the UI offering things that will fail.
+
+    The one exception is a role holding a dashboard-edit grant: Home
+    Assistant's own dashboard editor is shown or hidden by this flag alone,
+    with nothing finer underneath it, so a role that may edit no entity and no
+    setting still has to be reported as an administrator for its one granted
+    dashboard's "Edit" button to appear at all. Every other gate still runs
+    behind that flag exactly as it did before -- this changes what the person
+    sees offered, not what the proxy will actually let through.
     """
     if isinstance(result, dict):
-        return {**result, "is_admin": False}
+        return {**result, "is_admin": ctx.can_edit_dashboards}
     return result
 
 

@@ -211,6 +211,11 @@ APPS_SCHEMA = vol.Schema(
         vol.Optional("allow", default=list): [str],
         vol.Optional("deny", default=list): [str],
         vol.Optional("dashboards", default=dict): {str: vol.In(DASHBOARD_LEVELS)},
+        # Dashboards this role may edit the layout of -- url_path globs, so "*"
+        # covers every one. Separate from `dashboards` above, which is about
+        # what a role *sees* on a dashboard it opens, not whether it may change
+        # the dashboard's own configuration.
+        vol.Optional("dashboard_edit", default=list): [str],
     }
 )
 
@@ -789,6 +794,10 @@ class CompiledRole:
     tier_deny: list[str]
     app_allow: list[str]
     app_deny: list[str]
+    # url_path globs this role may edit the configuration of, independent of
+    # the tier gate -- a role need not hold the "dashboards" capability, which
+    # would hand it every dashboard, just to be given one of its own.
+    dashboard_edit: list[str]
     attribute_rules: "list[CompiledAttributeRule]"
     choice_rules: "list[CompiledChoiceRule]"
     schedule: dict[str, Any]
@@ -868,6 +877,7 @@ def compile_role(
         tier_deny=[*BASELINE_DENY, *(tiers.get("deny") or [])],
         app_allow=list(apps.get("allow") or []),
         app_deny=list(apps.get("deny") or []),
+        dashboard_edit=list(apps.get("dashboard_edit") or []),
         attribute_rules=attribute_rules,
         choice_rules=choice_rules,
         schedule=dict(role.get("schedule") or {}),
@@ -1009,6 +1019,33 @@ class Permissions:
             for patterns in allow_lists
             for pattern in patterns
         )
+
+    def dashboard_editable(self, url_path: str) -> bool:
+        """Return True if any role may edit a dashboard's own configuration.
+
+        Kept apart from `check_entity`: changing a dashboard's layout is not
+        control of an entity, and apart from the tier gate: a role scoped to
+        one dashboard should not need the "dashboards" capability, which hands
+        over every dashboard, just to be given the one it actually holds.
+        """
+        if self.pass_through:
+            return True
+        return any(
+            fnmatch(url_path, pattern)
+            for role in self.roles
+            for pattern in role.dashboard_edit
+        )
+
+    @property
+    def has_dashboard_edit(self) -> bool:
+        """Return True if any role may edit at least one dashboard.
+
+        Consulted only to decide what `auth/current_user` reports: a role
+        granted a dashboard to edit needs Home Assistant's own editor UI to
+        show up, which the frontend offers only to someone it believes is an
+        administrator.
+        """
+        return not self.pass_through and any(role.dashboard_edit for role in self.roles)
 
     @property
     def full_access(self) -> bool:
