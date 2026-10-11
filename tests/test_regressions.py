@@ -892,7 +892,12 @@ async def test_a_dashboard_edit_grant_unlocks_only_that_dashboard(
     catalog = Catalog(hass)
     catalog.rebuild()
     catalog.apps = lambda: [
-        {"url_path": "lovelace", "title": "Overview", "kind": "lovelace", "addon": None},
+        {
+            "url_path": "lovelace",
+            "title": "Overview",
+            "kind": "lovelace",
+            "addon": None,
+        },
         {"url_path": "map", "title": "Map", "kind": "lovelace", "addon": None},
     ]
     catalog.tier_for = lambda command: TIER_ADMIN
@@ -901,7 +906,9 @@ async def test_a_dashboard_edit_grant_unlocks_only_that_dashboard(
     role = compile_role(
         hass,
         _role(
-            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}}},
+            allow={
+                CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}}
+            },
             apps={"allow": [], "deny": [], "dashboard_edit": ["map"]},
         ),
         _lookup(hass),

@@ -537,9 +537,9 @@ class Decider:
             if kind == KIND_HTTP
             else self._catalog.tier_for(name)
         )
-        if not permissions.tier_allowed(name, tier) and not self._dashboard_edit_allowed(
-            permissions, kind, name, payload
-        ):
+        if not permissions.tier_allowed(
+            name, tier
+        ) and not self._dashboard_edit_allowed(permissions, kind, name, payload):
             return Decision(
                 allowed=False,
                 reason=REASON_TIER,
