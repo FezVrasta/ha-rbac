@@ -878,9 +878,9 @@ async def test_the_default_dashboard_is_not_refused_by_accident(
 async def test_a_dashboard_edit_grant_unlocks_only_that_dashboard(
     hass: HomeAssistant,
 ) -> None:
-    """A role may be handed one dashboard to edit without the "dashboards"
-    capability, which would hand the tier gate every dashboard at once.
+    """A role may be handed one dashboard to edit without the "dashboards" capability.
 
+    That capability would hand the tier gate every dashboard at once.
     `lovelace/config/save` is forced to the admin tier here, the same as Home
     Assistant marks it, so this proves the per-dashboard grant -- not the
     tier ceiling -- is what lets the request through, and only for the
