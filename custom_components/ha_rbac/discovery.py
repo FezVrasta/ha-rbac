@@ -1,13 +1,13 @@
-"""Advertise the proxy's port over zeroconf.
+"""Advertise the proxy's port to whatever would otherwise be handed the hidden one.
 
-Moving Home Assistant to a hidden loopback port takes its own
-`_home-assistant._tcp.local.` broadcast with it: Home Assistant advertises the
-port it binds, which is now the one nothing off the machine can reach. The
-companion apps discover that port and offer it, so a fresh install auto-detects
-an address it cannot connect to.
+Moving Home Assistant to a hidden loopback port takes two different broadcasts
+of that port with it. Zeroconf's `_home-assistant._tcp.local.` record is one:
+the companion apps discover it and offer a port they cannot connect to. Home
+Assistant's own auto-detected internal URL is the other, read by anything that
+needs to hand a device a URL rather than have a browser type one in -- an
+ESPHome voice satellite fetching the audio for its own spoken reply among them.
 
-This corrects the record Home Assistant already registered so it names the port
-the proxy actually answers on. None of the API is public, so every entry point
+Both are corrected here. None of the zeroconf API is public, so that half
 degrades to "left it alone" rather than raising: a broken advertisement is a
 worse setup experience, not a broken instance.
 """
@@ -15,7 +15,10 @@ worse setup experience, not a broken instance.
 import logging
 from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from yarl import URL
+
+from .const import DATA_SET_INTERNAL_URL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,15 +42,54 @@ def _api() -> Any:
     return zeroconf, ZEROCONF_TYPE, AsyncServiceInfo
 
 
-def _rewrite_port(value: str, hidden_port: int, proxy_port: int) -> str:
-    """Return a URL property with the hidden port swapped for the proxy port.
+# The TXT properties naming a URL that points at this instance. `external_url`
+# is deliberately absent: it names how the instance is reached from outside,
+# which is never the proxy's LAN port.
+_LOCAL_URL_PROPERTIES = ("internal_url", "base_url")
 
-    Only a URL that names the hidden port is touched. A user who configured an
-    explicit internal or external URL meant it, and it is left as it stands.
+
+def _rewrite_port(key: str, value: str, hidden_port: int, proxy_port: int) -> str:
+    """Return a URL property pointing at the proxy port.
+
+    The zeroconf record carries the port in two shapes. The SRV record has it
+    as a number, corrected on the rebuilt `ServiceInfo`. The TXT properties
+    carry it inside URL strings -- `internal_url` and `base_url` -- and those
+    are what the companion apps read to build the connection they keep open.
+
+    An earlier form only swapped an explicit `:hidden_port`, which missed the
+    case that actually breaks the apps: Home Assistant advertises those URLs
+    with *no port at all* (`http://192.168.178.10`), so there was nothing to
+    replace and the app was handed a portless URL. It then falls back to the
+    scheme default -- port 80 -- which the proxy does not answer on, and the
+    app hangs after login.
+
+    So the whole authority is rebuilt to name the proxy port, whether the URL
+    carried the hidden port or none at all. Rewriting a *portless* URL is much
+    the blunter instrument of the two, though, so what it may touch is fenced
+    three ways, because each fence rules out a URL that is not the proxy's:
+
+    - the property has to be one that names this instance locally. Home
+      Assistant broadcasts `external_url` too, and sets `base_url` to it when
+      there is one; that names how the instance is reached from outside, and a
+      LAN port has no business in it.
+    - the scheme has to be `http`. The proxy listens without an SSL context and
+      setup refuses an instance that terminates TLS itself, so an `https` URL
+      here describes something else -- a reverse proxy, or Nabu Casa -- and
+      appending the proxy port to it produces an address nothing answers on.
+    - the port has to be absent or the hidden one. Any other explicit port was
+      configured on purpose.
+
+    Anything else, including a property that is not a URL at all, is returned
+    as it stands.
     """
-    if not value:
+    if not value or key not in _LOCAL_URL_PROPERTIES:
         return value
-    return value.replace(f":{hidden_port}", f":{proxy_port}")
+    parsed = URL(value)
+    if parsed.scheme != "http" or not parsed.host:
+        return value
+    if parsed.explicit_port not in (None, hidden_port):
+        return value
+    return str(parsed.with_port(proxy_port))
 
 
 def _registered(aio_zc: Any, zeroconf_type: str) -> Any:
@@ -77,13 +119,18 @@ async def async_advertise_proxy_port(hass: HomeAssistant, proxy_port: int) -> bo
         if info.port == proxy_port:
             return False
 
+        published = dict(info.decoded_properties)
+        # Home Assistant sets `base_url` to the external URL when there is one,
+        # so a `base_url` that *is* the external URL is the external URL under
+        # another name and is not the proxy's to correct.
+        external = published.get("external_url") or None
         properties = {
             key: (
-                _rewrite_port(value, info.port, proxy_port)
-                if isinstance(value, str)
+                _rewrite_port(key, value, info.port, proxy_port)
+                if isinstance(value, str) and value != external
                 else value
             )
-            for key, value in dict(info.decoded_properties).items()
+            for key, value in published.items()
         }
 
         corrected = service_info_cls(
@@ -108,4 +155,78 @@ async def async_advertise_proxy_port(hass: HomeAssistant, proxy_port: int) -> bo
         _LOGGER.debug("Could not advertise the proxy port over zeroconf: %s", err)
         return False
     _LOGGER.info("Advertising Home Assistant on port %s over zeroconf", proxy_port)
+    return True
+
+
+@callback
+def async_correct_internal_url(hass: HomeAssistant, proxy_port: int) -> bool:
+    """Point Home Assistant's auto-detected internal URL at the proxy port.
+
+    `homeassistant.helpers.network.get_url()` returns `hass.config.internal_url`
+    outright when one is configured, and only falls back to
+    `hass.config.api.local_ip` and `hass.config.api.port` when it is not. That
+    fallback port is Home Assistant's own -- now the hidden loopback port this
+    integration moved it to -- so anything handed a URL rather than one a
+    person typed in gets an address nothing off the machine can reach. An
+    ESPHome voice satellite fetching the audio for its own spoken reply is
+    exactly this: the reply is generated, the proxy is never asked for it, and
+    the satellite gets nothing.
+
+    Left alone if an internal URL is already configured, unless this module is
+    the one that configured it. A URL entered under Settings > System > Network
+    on purpose is not ours to second-guess; the one we wrote last time is, and
+    has to be rewritten or a reconfigured proxy port would keep naming the old
+    one -- the entry reloads in place, so "it is reapplied on every start" is
+    not true of a port changed while Home Assistant is running.
+
+    Always `http`. The proxy listens without an SSL context, and setup refuses
+    an instance holding its own certificate, so `api.use_ssl` is false whenever
+    this runs -- and following it would be wrong in the one case it were not,
+    since the scheme has to describe the proxy rather than what is behind it.
+
+    Set directly on `hass.config` rather than through `async_update`, so nothing
+    is written to storage: a person who never chose an internal URL should not
+    find one saved in theirs.
+    """
+    current = hass.config.internal_url
+    if current and current != hass.data.get(DATA_SET_INTERNAL_URL):
+        return False
+    api = hass.config.api
+    if api is None or not api.local_ip:
+        return False
+
+    corrected = f"http://{api.local_ip}:{proxy_port}"
+    if corrected == current:
+        return False
+    hass.config.internal_url = corrected
+    hass.data[DATA_SET_INTERNAL_URL] = corrected
+    _LOGGER.info(
+        "Setting Home Assistant's internal URL to %s, so devices such as "
+        "ESPHome voice satellites can reach media the proxy serves",
+        corrected,
+    )
+    return True
+
+
+@callback
+def async_restore_internal_url(hass: HomeAssistant) -> bool:
+    """Clear the internal URL this module set, if it is still the one set.
+
+    The correction describes a proxy that is answering. Once it is not -- the
+    entry disabled or removed -- a URL naming its port is worse than none at
+    all, because the fallback it replaced would name the port Home Assistant is
+    being put back on. Nothing was written to storage, so this only has to undo
+    the attribute.
+
+    A URL a person set since is left alone, which is the same rule the
+    correction follows.
+    """
+    ours = hass.data.pop(DATA_SET_INTERNAL_URL, None)
+    if ours is None:
+        return False
+    if hass.config.internal_url != ours:
+        # Somebody set their own since, which outranks ours.
+        return False
+    hass.config.internal_url = None
+    _LOGGER.info("Cleared the internal URL this integration set")
     return True

@@ -26,12 +26,19 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ha_rbac.catalog import Catalog
 from custom_components.ha_rbac.const import (
+    GRANT_HISTORY,
+    GRANT_LOGBOOK,
     ROLE_EDITOR,
     TIER_ADMIN,
     TIER_OPEN,
     TIER_USER,
 )
-from custom_components.ha_rbac.decide import KIND_WS, REASON_RESOURCE, Decider
+from custom_components.ha_rbac.decide import (
+    KIND_HTTP,
+    KIND_WS,
+    REASON_RESOURCE,
+    Decider,
+)
 from custom_components.ha_rbac.filters import REGISTRY
 from custom_components.ha_rbac.policy import (
     ROLE_SCHEMA,
@@ -451,6 +458,51 @@ async def test_a_role_may_be_given_only_some_of_a_selects_options(
     assert "Federico" not in refused.message, "the option is a diagnostic, not a reply"
 
 
+async def test_the_rest_spelling_of_a_choice_is_judged_the_same_way(
+    hass: HomeAssistant,
+) -> None:
+    """The service is in the URL there, where walking the body cannot reach it.
+
+    The gate read the payload for the call it was judging, which is where the
+    websocket puts it. Over REST the two halves of the name are path segments
+    and the body carries only the option -- so the walk found no call, the gate
+    returned early, and one curl chose any option the role was refused. The
+    same request has to get the same answer whichever way it arrives.
+    """
+    decider = await _select_decider(hass)
+    permissions = _may_announce_as(hass, "Jan")
+    path = "POST /api/services/input_select/select_option"
+
+    allowed = decider.decide(
+        permissions,
+        KIND_HTTP,
+        path,
+        {"entity_id": "input_select.announcing", "option": "Jan"},
+    )
+    assert allowed.allowed is True
+
+    refused = decider.decide(
+        permissions,
+        KIND_HTTP,
+        path,
+        {"entity_id": "input_select.announcing", "option": "Federico"},
+    )
+    assert refused.allowed is False
+    assert refused.reason == REASON_RESOURCE
+    assert refused.message == "You can only choose certain options there."
+
+    # And the two that reach an option without naming one are refused over REST
+    # for the same reason they are over the websocket.
+    for service in ("select_next", "set_options"):
+        decision = decider.decide(
+            permissions,
+            KIND_HTTP,
+            f"POST /api/services/input_select/{service}",
+            {"entity_id": "input_select.announcing"},
+        )
+        assert decision.allowed is False, service
+
+
 async def test_cycling_a_select_cannot_walk_past_the_rule(hass: HomeAssistant) -> None:
     """The four that name no option would reach every one of them.
 
@@ -607,3 +659,283 @@ async def test_a_role_without_choice_rules_is_unaffected(hass: HomeAssistant) ->
     assert decider.decide(
         permissions, KIND_WS, "call_service", _choose("Federico")
     ).allowed
+
+
+async def test_history_grant_adds_history_without_read(hass: HomeAssistant) -> None:
+    """A history rule lets a role see a trend it cannot read live."""
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {"entity_ids": {"light.kitchen": {POLICY_READ: True}}}
+            },
+            history={"rules": [{"target": "entity_ids", "ids": ["climate.trend"]}]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+
+    # Live read is unchanged: only the one entity the allow list names.
+    assert perms.check_entity("light.kitchen", POLICY_READ) is True
+    assert perms.check_entity("climate.trend", POLICY_READ) is False
+
+    # History follows read AND the grant, and nothing else.
+    assert perms.past_allowed(GRANT_HISTORY, "light.kitchen") is True
+    assert perms.past_allowed(GRANT_HISTORY, "climate.trend") is True
+    assert perms.past_allowed(GRANT_HISTORY, "lock.secret") is False
+
+
+async def test_history_grant_by_domain(hass: HomeAssistant) -> None:
+    """A domain-targeted history rule covers the whole domain, present or not."""
+    role = compile_role(
+        hass,
+        _role(history={"rules": [{"target": "domains", "ids": ["sensor"]}]}),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+    assert perms.past_allowed(GRANT_HISTORY, "sensor.anything") is True
+    assert perms.past_allowed(GRANT_HISTORY, "lock.front") is False
+
+
+async def test_a_denial_beats_a_history_grant(hass: HomeAssistant) -> None:
+    """A history rule must not resurrect what the same role denies to read.
+
+    History is past state; letting a grant override a read denial would leak
+    the very values the denial withholds.
+    """
+    role = compile_role(
+        hass,
+        _role(
+            deny={CAT_ENTITIES: {"entity_ids": {"lock.secret": True}}},
+            history={"rules": [{"target": "domains", "ids": ["lock"]}]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+    assert perms.past_allowed(GRANT_HISTORY, "lock.secret") is False, (
+        "deny wins over grant"
+    )
+    assert perms.past_allowed(GRANT_HISTORY, "lock.other") is True, (
+        "the rest of the grant stands"
+    )
+
+
+async def test_global_deny_beats_a_history_grant(hass: HomeAssistant) -> None:
+    """The household-wide deny vetoes history the way it vetoes a live read."""
+    lookup = _lookup(hass)
+    role = compile_role(
+        hass,
+        _role(history={"rules": [{"target": "domains", "ids": ["camera"]}]}),
+        lookup,
+    )
+    deny_fn = compile_entities({"entity_ids": {"camera.bedroom": True}}, lookup)
+    perms = Permissions(roles=[role], global_deny_fn=deny_fn)
+    assert perms.past_allowed(GRANT_HISTORY, "camera.bedroom") is False
+    assert perms.past_allowed(GRANT_HISTORY, "camera.porch") is True
+
+
+async def test_no_history_grant_means_history_equals_read(
+    hass: HomeAssistant,
+) -> None:
+    """A role without the section behaves exactly as before: history == read."""
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {"entity_ids": {"light.kitchen": {POLICY_READ: True}}}}
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+    assert perms.grants_any_past(GRANT_HISTORY) is False
+    assert perms.past_allowed(GRANT_HISTORY, "light.kitchen") is True
+    assert perms.past_allowed(GRANT_HISTORY, "lock.front") is False
+
+
+async def test_a_history_grant_does_not_make_a_role_full_access(
+    hass: HomeAssistant,
+) -> None:
+    """A history rule is a restriction-shaped feature; it is not "unrestricted"."""
+    role = compile_role(
+        hass,
+        {
+            "id": "r",
+            "name": "r",
+            "allow": {CAT_ENTITIES: True},
+            "tiers": {"max": TIER_ADMIN, "allow": ["*"], "deny": []},
+            "history": {"rules": [{"target": "domains", "ids": ["sensor"]}]},
+        },
+        _lookup(hass),
+    )
+    assert role.full_access is False
+
+
+async def test_history_grant_survives_a_schema_round_trip(
+    hass: HomeAssistant,
+) -> None:
+    """The history section is accepted, defaulted and stored like the others."""
+    stored = ROLE_SCHEMA(
+        {
+            "id": "r",
+            "name": "r",
+            "history": {"rules": [{"target": "entity_ids", "ids": ["climate.trend"]}]},
+        }
+    )
+    assert stored["history"]["rules"][0]["ids"] == ["climate.trend"]
+    # A role with no history section defaults to an empty one, not an error.
+    empty = ROLE_SCHEMA({"id": "r2", "name": "r2"})
+    assert empty["history"] == {"rules": []}
+
+
+async def test_a_history_rule_naming_nothing_grants_nothing(
+    hass: HomeAssistant,
+) -> None:
+    """A blank history rule must not mean the history of the whole instance.
+
+    A history rule carries nothing but its target and its ids, so an unfinished
+    one -- ids never picked -- is indistinguishable from "every entity the target
+    names", which for the default domain target is everything. Read that way, a
+    role that could read nothing live came back with the recorded history of
+    every entity on a live instance, from a role posted as `{"rules": [{}]}`.
+
+    The panel filters empty rows out before saving, so this arrives through the
+    role API instead: a backup, a script, or an older build. It grants nothing.
+    """
+    role = compile_role(hass, _role(history={"rules": [{}]}), _lookup(hass))
+    assert role.grant_rules[GRANT_HISTORY] == [], "an unfinished rule is not a grant"
+
+    perms = Permissions(roles=[role])
+    assert perms.past_allowed(GRANT_HISTORY, "lock.secret") is False
+    assert perms.grants_any_past(GRANT_HISTORY) is False, (
+        "and it does not open the app gate"
+    )
+
+
+async def test_a_history_rule_with_a_target_but_no_ids_grants_nothing(
+    hass: HomeAssistant,
+) -> None:
+    """Naming a target without picking any id is still an unfinished rule."""
+    role = compile_role(
+        hass,
+        _role(history={"rules": [{"target": "area_ids", "ids": []}]}),
+        _lookup(hass),
+    )
+    assert (
+        Permissions(roles=[role]).past_allowed(GRANT_HISTORY, "sensor.anything")
+        is False
+    )
+
+
+async def test_logbook_grant_adds_logbook_without_read(hass: HomeAssistant) -> None:
+    """A logbook rule lets a role see a timeline it cannot read live."""
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {"entity_ids": {"light.kitchen": {POLICY_READ: True}}}
+            },
+            logbook={"rules": [{"target": "entity_ids", "ids": ["lock.front"]}]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+
+    assert perms.check_entity("lock.front", POLICY_READ) is False, "live read unchanged"
+    assert perms.past_allowed(GRANT_LOGBOOK, "light.kitchen") is True
+    assert perms.past_allowed(GRANT_LOGBOOK, "lock.front") is True
+    assert perms.past_allowed(GRANT_LOGBOOK, "lock.secret") is False
+
+
+async def test_a_grant_in_one_section_does_not_grant_the_other(
+    hass: HomeAssistant,
+) -> None:
+    """The two sections are independent, and one compiler must not merge them.
+
+    They exist separately so a role can be shown a trend without the timeline of
+    who caused it -- "the house was cold on Tuesday" without "somebody turned the
+    heating down at 9pm". Compiling both through `_compile_grant_rules` keyed by
+    section is what keeps that true; keying it wrong would hand out both.
+    """
+    role = compile_role(
+        hass,
+        _role(
+            history={"rules": [{"target": "entity_ids", "ids": ["climate.trend"]}]},
+            logbook={"rules": [{"target": "entity_ids", "ids": ["lock.front"]}]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+
+    assert perms.past_allowed(GRANT_HISTORY, "climate.trend") is True
+    assert perms.past_allowed(GRANT_HISTORY, "lock.front") is False
+    assert perms.past_allowed(GRANT_LOGBOOK, "lock.front") is True
+    assert perms.past_allowed(GRANT_LOGBOOK, "climate.trend") is False
+
+    assert perms.grants_any_past(GRANT_HISTORY) is True
+    assert perms.grants_any_past(GRANT_LOGBOOK) is True
+
+
+async def test_a_denial_beats_a_logbook_grant(hass: HomeAssistant) -> None:
+    """A logbook rule must not resurrect what the same role denies to read."""
+    role = compile_role(
+        hass,
+        _role(
+            deny={CAT_ENTITIES: {"entity_ids": {"lock.secret": True}}},
+            logbook={"rules": [{"target": "domains", "ids": ["lock"]}]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+    assert perms.past_allowed(GRANT_LOGBOOK, "lock.secret") is False
+    assert perms.past_allowed(GRANT_LOGBOOK, "lock.other") is True
+
+
+async def test_global_deny_beats_a_logbook_grant(hass: HomeAssistant) -> None:
+    """The household-wide deny vetoes a logbook grant as it does a live read."""
+    lookup = _lookup(hass)
+    role = compile_role(
+        hass,
+        _role(logbook={"rules": [{"target": "domains", "ids": ["camera"]}]}),
+        lookup,
+    )
+    deny_fn = compile_entities({"entity_ids": {"camera.bedroom": True}}, lookup)
+    perms = Permissions(roles=[role], global_deny_fn=deny_fn)
+    assert perms.past_allowed(GRANT_LOGBOOK, "camera.bedroom") is False
+    assert perms.past_allowed(GRANT_LOGBOOK, "camera.porch") is True
+
+
+async def test_a_blank_rule_grants_nothing_in_either_section(
+    hass: HomeAssistant,
+) -> None:
+    """The unfinished-rule rule holds for every grant section, not just history."""
+    for section in (GRANT_HISTORY, GRANT_LOGBOOK):
+        role = compile_role(hass, _role(**{section: {"rules": [{}]}}), _lookup(hass))
+        perms = Permissions(roles=[role])
+        assert role.grant_rules[section] == [], section
+        assert perms.past_allowed(section, "lock.secret") is False, section
+        assert perms.grants_any_past(section) is False, section
+
+
+async def test_every_grant_section_is_accepted_by_the_role_schema(
+    hass: HomeAssistant,
+) -> None:
+    """A role can carry every section named in GRANT_SECTIONS.
+
+    The schema builds its keys from that tuple, so adding a section there without
+    wiring the rest of it would compile a role whose grant is silently inert.
+    This fails if a section is named but not compiled.
+    """
+    from custom_components.ha_rbac.const import GRANT_SECTIONS  # noqa: PLC0415
+
+    role = compile_role(
+        hass,
+        _role(
+            **{
+                section: {"rules": [{"target": "entity_ids", "ids": ["lock.front"]}]}
+                for section in GRANT_SECTIONS
+            }
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+    for section in GRANT_SECTIONS:
+        assert perms.past_allowed(section, "lock.front") is True, section

@@ -8,12 +8,18 @@ objects carrying a denied entity id.
 
 from collections.abc import Callable
 from functools import cached_property
-from typing import Any
+from typing import Any, Final
 
 from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.core import HomeAssistant
 
-from .const import EVENT_RBAC_DENIED, KEY_ENTITY, RESOURCE_KEYS
+from .const import (
+    EVENT_RBAC_DENIED,
+    GRANT_HISTORY,
+    GRANT_LOGBOOK,
+    KEY_ENTITY,
+    RESOURCE_KEYS,
+)
 from .extract import Extracted, entity_candidate
 
 # Keys of the compressed state-diff protocol used by subscribe_entities.
@@ -26,6 +32,45 @@ STATE_DIFF_REMOVALS = "-"
 ENTITY_EVENT_ADD = "a"
 ENTITY_EVENT_CHANGE = "c"
 ENTITY_EVENT_REMOVE = "r"
+
+# Subscriptions whose client blocks on the first frame, so that frame has to
+# arrive even when the role may see nothing in it.
+SUBSCRIBE_ENTITIES: Final = "subscribe_entities"
+LOGBOOK_EVENT_STREAM: Final = "logbook/event_stream"
+
+
+def opening_frame(command: str, event: Any) -> Any:
+    """Return the empty frame a subscription's first event must still send.
+
+    `subscribe_entities` opens with one frame carrying every entity's initial
+    state, and the frontend treats it as "states have loaded" -- it sits on a
+    spinner until it arrives. A role that can read nothing, which a history-only
+    grant makes a sensible thing to configure, filters that frame down to
+    nothing, and an event filtered to nothing is not forwarded, so the session
+    never finished loading. The logbook stream is the same shape of problem for
+    its own panel.
+
+    What stands in is what Home Assistant itself sends when there is nothing to
+    send: `{"a": {}}` for a user with no readable states, and a stream message
+    with an empty `events` list for a logbook query that filtered away -- which is
+    why the logbook frame is the real one with its rows removed rather than an
+    invention, since only the real one carries the window it covers.
+
+    Only the *first* frame, and only for these two, because answering every
+    emptied frame would hand the role a clock: one frame per state change
+    anywhere in the house, denied entities included, arriving the moment it
+    happens. Measured on a test instance, five deliberate toggles of a light the
+    role could not read produced five frames -- a real-time activity oracle for
+    entities the role is not supposed to know exist, handed to it by the code
+    that hides them. Which frame is a subscription's first is the proxy's to
+    know; what an empty one looks like is this module's.
+    """
+    if command == SUBSCRIBE_ENTITIES:
+        return {ENTITY_EVENT_ADD: {}}
+    if command == LOGBOOK_EVENT_STREAM and isinstance(event, dict):
+        return {**event, "events": []}
+    return None
+
 
 # Lovelace uses its own conventions, which are not Home Assistant resource keys.
 LOVELACE_ENTITY_KEYS = ("entity", "entities", "camera_image")
@@ -42,6 +87,7 @@ class FilterContext:
         check: CheckFn,
         app_allowed: "Callable[[str], bool] | None" = None,
         attribute_hidden: "Callable[[str, str], bool] | None" = None,
+        past_check: "Callable[[str, str], bool] | None" = None,
         can_edit_dashboards: bool = False,
     ) -> None:
         """Initialise the context."""
@@ -49,6 +95,7 @@ class FilterContext:
         self.check = check
         self._app_allowed = app_allowed
         self._attribute_hidden = attribute_hidden
+        self._past_check = past_check
         self.can_edit_dashboards = can_edit_dashboards
 
     @property
@@ -103,6 +150,7 @@ class FilterContext:
             permissions.check_entity,
             permissions.app_allowed,
             permissions.attribute_hidden if permissions.hides_attributes else None,
+            permissions.past_allowed,
             permissions.has_dashboard_edit,
         )
 
@@ -113,6 +161,20 @@ class FilterContext:
     def readable(self, entity_id: str) -> bool:
         """Return True if the user may read an entity."""
         return self.check(entity_id, POLICY_READ)
+
+    def past_readable(self, section: str, entity_id: str) -> bool:
+        """Return True if the user may read an entity's recorded past.
+
+        `section` is one of `GRANT_SECTIONS`: the history of a value, or the
+        logbook of what happened to it. Past state, so anything the role can read
+        live it can also read the past of; a grant in that section adds entities
+        on top, for a role meant to see one device's trend without being handed
+        its current value everywhere else. With no grant callback wired this is
+        exactly `readable`, so a context built by hand keeps the old behaviour.
+        """
+        if self._past_check is not None:
+            return self._past_check(section, entity_id)
+        return self.readable(entity_id)
 
     @cached_property
     def visible_domains(self) -> set[str]:
@@ -382,6 +444,8 @@ def _filter_entity_event(ctx: FilterContext, event: Any) -> Any:
         if kept_ids:
             out[ENTITY_EVENT_REMOVE] = kept_ids
 
+    # Nothing left means nothing is sent. A subscription's opening frame is the
+    # one exception, and the proxy makes it: see `opening_frame`.
     return out or None
 
 
@@ -619,6 +683,249 @@ def _filter_media(ctx: FilterContext, result: Any) -> Any:
     return filtered
 
 
+# Fields in the energy preferences that name a statistic or an entity. A
+# recorder statistic id for a sensor is that sensor's entity id, and the price
+# fields hold an entity id outright, so all of them gate on readability. Listed
+# because none is spelled `entity_id`, so the generic walk passes them by.
+_ENERGY_STAT_FIELDS = (
+    "stat_energy_from",
+    "stat_energy_to",
+    "stat_cost",
+    "stat_compensation",
+    "stat_rate",
+    "stat_rate_from",
+    "stat_rate_to",
+    "stat_rate_inverted",
+    "stat_consumption",
+    "stat_soc",
+    "included_in_stat",
+    "entity_energy_price",
+    "entity_energy_price_export",
+)
+
+
+def _energy_ref_readable(ctx: FilterContext, value: Any) -> bool:
+    """Return True unless a value is an entity id the role cannot read.
+
+    An external statistic id like `co2signal:co2_intensity` is not an entity
+    and is left alone; only an entity-shaped id is gated.
+    """
+    return not _looks_like_entity_id(value) or ctx.readable(value)
+
+
+def _energy_source_visible(ctx: FilterContext, source: Any) -> bool:
+    """Return True unless an energy source names a statistic the role can't read.
+
+    A source is dropped whole if any statistic or price field on it points at an
+    entity the role cannot see: keeping a source with its meter stripped out
+    would still disclose the topology -- that a grid, a battery or a solar array
+    exists -- which is what this withholds.
+    """
+    if not isinstance(source, dict):
+        return True
+    for field in _ENERGY_STAT_FIELDS:
+        if not _energy_ref_readable(ctx, source.get(field)):
+            return False
+    # A grid source nests its meters under flow_from/flow_to lists.
+    for flow_key in ("flow_from", "flow_to"):
+        flows = source.get(flow_key)
+        if isinstance(flows, list) and not all(
+            _energy_source_visible(ctx, flow) for flow in flows
+        ):
+            return False
+    return True
+
+
+@REGISTRY.result("energy/get_prefs")
+def _filter_energy_prefs(ctx: FilterContext, result: Any) -> Any:
+    """Drop energy sources and devices naming statistics the role cannot read.
+
+    The prefs enumerate every meter, battery, solar array and monitored device
+    by its recorder statistic id -- which for a sensor is its entity id -- under
+    fields (`stat_energy_from`, `entity_energy_price`, `stat_consumption`, ...)
+    that are not spelled `entity_id`, so the generic walk returned the lot. A
+    restricted user learned every energy sensor, the grid/solar/battery topology
+    and the price-entity ids of things hidden everywhere else.
+    """
+    if not isinstance(result, dict):
+        return result
+    filtered = dict(result)
+    if isinstance(sources := filtered.get("energy_sources"), list):
+        filtered["energy_sources"] = [
+            source for source in sources if _energy_source_visible(ctx, source)
+        ]
+    for devices_key in ("device_consumption", "device_consumption_water"):
+        if isinstance(devices := filtered.get(devices_key), list):
+            filtered[devices_key] = [
+                device for device in devices if _energy_source_visible(ctx, device)
+            ]
+    return filtered
+
+
+def _statistic_id_readable(ctx: FilterContext, statistic_id: Any) -> bool:
+    """Return True unless a statistic id is an entity the role cannot read.
+
+    External statistics (`co2signal:...`, `tibber:...`) are not entities and
+    pass; a recorder statistic for a sensor uses the entity id as its id, so it
+    is gated.
+    """
+    return not _looks_like_entity_id(statistic_id) or ctx.readable(statistic_id)
+
+
+@REGISTRY.result("recorder/list_statistic_ids", "recorder/get_statistics_metadata")
+def _filter_statistic_metadata(ctx: FilterContext, result: Any) -> Any:
+    """Drop statistic metadata for entities the role cannot read.
+
+    Each row is keyed on a `statistic_id` field -- not `entity_id` -- so the
+    generic walk left them, disclosing the id, friendly name, source and unit of
+    every recorded sensor the role is hidden from. An entity-shaped statistic id
+    is gated; an external one is left alone.
+    """
+    if not isinstance(result, list):
+        return result
+    return [
+        row
+        for row in result
+        if not isinstance(row, dict)
+        or _statistic_id_readable(ctx, row.get("statistic_id"))
+    ]
+
+
+# Search result keys whose values are entity ids (bare strings, not objects),
+# so the generic walk -- which only inspects a dict's own `entity_id` field --
+# never checked them.
+_SEARCH_ENTITY_KEYS = ("entity", "automation", "scene", "script", "person", "group")
+
+# The rest of the keys that name something the role may be hidden from are
+# containers, and they are the resource kinds this integration already knows
+# about: a search result's `device`, `area`, `label` and `floor` are the same
+# things `device_id`, `area_id`, `label_id` and `floor_id` name on the request
+# side. Derived from `RESOURCE_KEYS` rather than listed, because listing them is
+# what let `floor` and `label` through: they were left out of a pair of
+# hardcoded names while `device` and `area` were filtered, so an automation the
+# role may read handed over the id of a floor and a label holding nothing it is
+# allowed to see. `tests/test_filters.py` pins both sets against Home
+# Assistant's own `ItemType`, so a kind added upstream fails a test rather than
+# leaking quietly.
+_SEARCH_CONTAINER_KEYS = tuple(
+    sorted({kind for kind in RESOURCE_KEYS.values() if kind != KEY_ENTITY})
+)
+
+
+@REGISTRY.result("search/related")
+def _filter_search_related(ctx: FilterContext, result: Any) -> Any:
+    """Drop related items the role cannot see from a search result.
+
+    `search/related` answers `{item_type: [ids]}` with the ids as bare strings
+    -- `{"entity": ["lock.front"], "device": [...], "area": [...]}` -- so the
+    generic walk, which looks only for an object's own `entity_id` field, passed
+    the lot. The request names one item and is gated up front, but the response
+    enumerates every entity, device and area related to it, hidden or not.
+    """
+    if not isinstance(result, dict):
+        return result
+    out: dict[str, Any] = {}
+    for key, ids in result.items():
+        if not isinstance(ids, list):
+            out[key] = ids
+            continue
+        if key in _SEARCH_ENTITY_KEYS:
+            kept = [i for i in ids if not _looks_like_entity_id(i) or ctx.readable(i)]
+        elif key in _SEARCH_CONTAINER_KEYS:
+            kept = [i for i in ids if _container_id_visible(ctx, key, i)]
+        else:
+            kept = ids
+        if kept:
+            out[key] = kept
+    return out
+
+
+def _container_id_visible(ctx: FilterContext, kind: str, container_id: Any) -> bool:
+    """Return True if the role can read any entity in a container.
+
+    A device, area, label or floor the role can see nothing in is one it is not
+    meant to know exists, so its id is withheld -- the same rule
+    `_container_visible` applies to objects that name one.
+    """
+    if not isinstance(container_id, str):
+        return True
+    node = {f"{kind}_id": container_id}
+    return _container_visible(ctx, node)
+
+
+# The two ways a logbook row names an entity. `entity_id` is what the row is
+# about; `context_entity_id` is what *caused* it.
+LOGBOOK_ENTITY_KEYS = ("entity_id", "context_entity_id")
+
+
+def _logbook_entry_visible(ctx: FilterContext, entry: Any) -> bool:
+    """Return True if a logbook row names no entity the role cannot see.
+
+    Both ways a row names an entity matter, and only the first was ever checked.
+    "The front door unlocked because Alice arrived" carries the door under
+    `entity_id` and the person under `context_entity_id`, so a row about an
+    entity the role may watch, caused by one it may not see, disclosed the cause:
+    who moved, who came home. A door a role legitimately holds became a way to
+    read a person it is hidden from.
+
+    Withheld whole rather than stripped. A row with its context removed still
+    says the door opened at that moment for a reason the reader cannot see, and
+    the useful half of the leak is the timing.
+    """
+    if not isinstance(entry, dict):
+        return True
+    return all(
+        not _looks_like_entity_id(value := entry.get(key))
+        or ctx.past_readable(GRANT_LOGBOOK, value)
+        for key in LOGBOOK_ENTITY_KEYS
+    )
+
+
+def _filter_logbook(ctx: FilterContext, entries: Any) -> Any:
+    """Drop logbook rows naming an entity the role may not see.
+
+    Unconditional, and not a function of whether the role holds a logbook grant:
+    the `context_entity_id` gap leaked for every restricted role, grant or none.
+    """
+    if not isinstance(entries, list):
+        return prune(ctx, entries)
+    return [entry for entry in entries if _logbook_entry_visible(ctx, entry)]
+
+
+@REGISTRY.result("logbook/get_events")
+def _filter_logbook_result(ctx: FilterContext, result: Any) -> Any:
+    """Filter the flat list of logbook rows the result is."""
+    return _filter_logbook(ctx, result)
+
+
+@REGISTRY.event("logbook/event_stream")
+def _filter_logbook_event(ctx: FilterContext, event: Any) -> Any:
+    """Filter a streamed logbook frame.
+
+    A stream frame wraps its rows under `events`; older shapes stream a bare
+    list. A frame with no rows left is dropped rather than forwarded empty: the
+    logbook panel waits on its first frame, and the proxy answers that one on its
+    own, the way it does for `subscribe_entities`. Forwarding every emptied frame
+    instead would tell the role the instant anything happened in the house.
+    """
+    if isinstance(event, dict) and isinstance(event.get("events"), list):
+        kept = _filter_logbook(ctx, event["events"])
+        return {**event, "events": kept} if kept else None
+    if isinstance(event, list):
+        return _filter_logbook(ctx, event) or None
+    return prune(ctx, event)
+
+
+def filter_rest_logbook(ctx: FilterContext, payload: Any) -> Any:
+    """Filter the REST `/api/logbook` response, a flat list of rows.
+
+    The REST endpoint answers with the same rows the websocket does, and it had
+    no filter of its own -- so it fell to the generic walk, which never looked at
+    `context_entity_id` either.
+    """
+    return _filter_logbook(ctx, payload)
+
+
 @REGISTRY.result("get_services")
 def _filter_get_services(ctx: FilterContext, result: Any) -> Any:
     """Hide service domains the role has no entity in.
@@ -804,7 +1111,9 @@ def _filter_history_states(ctx: FilterContext, states: Any) -> Any:
         return prune(ctx, states)
     out: dict[str, Any] = {}
     for entity_id, samples in states.items():
-        if _looks_like_entity_id(entity_id) and not ctx.readable(entity_id):
+        if _looks_like_entity_id(entity_id) and not ctx.past_readable(
+            GRANT_HISTORY, entity_id
+        ):
             continue
         named = entity_id if _looks_like_entity_id(entity_id) else None
         if not ctx.hides_attributes or not isinstance(samples, list):
@@ -837,3 +1146,104 @@ def _filter_history_event(ctx: FilterContext, event: Any) -> Any:
     if not isinstance(event, dict) or not isinstance(event.get("states"), dict):
         return prune(ctx, event)
     return {**event, "states": _filter_history_states(ctx, event["states"])}
+
+
+def _filter_statistics(ctx: FilterContext, stats: Any) -> Any:
+    """Filter a mapping of statistic id -> that statistic's rows.
+
+    Statistics are keyed the way history is: `{statistic_id: [rows]}`, where a
+    recorder statistic for an entity uses the entity id as its key and each row
+    (`{start, mean, min, max, sum, ...}`) names no entity of its own. The
+    generic walk recovered nothing from the key, so a denied entity's numbers
+    passed straight through -- the same leak history had before it got its own
+    filter. An entity-shaped key is gated on history access; an external
+    statistic id like `energy:solar` is not an entity and is left alone.
+    """
+    if not isinstance(stats, dict):
+        return prune(ctx, stats)
+    return {
+        statistic_id: rows
+        for statistic_id, rows in stats.items()
+        if not _looks_like_entity_id(statistic_id)
+        or ctx.past_readable(GRANT_HISTORY, statistic_id)
+    }
+
+
+@REGISTRY.result(
+    "history/statistics_during_period", "recorder/statistics_during_period"
+)
+def _filter_statistics_result(ctx: FilterContext, result: Any) -> Any:
+    """Filter the statistic-id-keyed mapping the result is."""
+    return _filter_statistics(ctx, result)
+
+
+@REGISTRY.event("history/statistics_during_period", "recorder/statistics_during_period")
+def _filter_statistics_event(ctx: FilterContext, event: Any) -> Any:
+    """Filter a streamed statistics frame, keyed the same way."""
+    if isinstance(event, dict) and isinstance(event.get("statistics"), dict):
+        return {**event, "statistics": _filter_statistics(ctx, event["statistics"])}
+    return _filter_statistics(ctx, event)
+
+
+def filter_rest_history(ctx: FilterContext, payload: Any) -> Any:
+    """Filter the REST `/api/history/period` response, whichever shape it is.
+
+    The REST endpoint answers in one of two shapes:
+
+    * A mapping `{entity_id: [samples]}`, the same shape the websocket result
+      carries, so `_filter_history_states` handles it directly.
+    * A *list of lists* -- one inner list per entity -- which is what Home
+      Assistant returns by default and always with `minimal_response`. Here the
+      entity id is not on every sample: only the FIRST object in each inner list
+      carries `entity_id`, and the rest are minimised to just a state and a
+      timestamp. The generic `prune` walk recovers an id only from a sample's
+      own key, so it dropped a denied entity's first sample and kept every
+      later one -- leaking the values, timestamps and attributes the denial was
+      meant to withhold. The whole inner list belongs to one entity, so it is
+      that entity that decides whether the list stays or goes, read from the
+      first sample that names it.
+    """
+    if isinstance(payload, dict):
+        return _filter_history_states(ctx, payload)
+    if not isinstance(payload, list):
+        return prune(ctx, payload)
+
+    out: list[Any] = []
+    for series in payload:
+        entity_id = _series_entity_id(series)
+        if entity_id is not None and not ctx.past_readable(GRANT_HISTORY, entity_id):
+            # One entity owns the whole inner list; drop it entirely rather
+            # than sample by sample, so no minimised tail survives.
+            continue
+        if entity_id is not None and ctx.hides_attributes and isinstance(series, list):
+            out.append([_strip_rest_history_sample(ctx, entity_id, s) for s in series])
+        else:
+            out.append(series)
+    return out
+
+
+def _series_entity_id(series: Any) -> str | None:
+    """Return the entity id an inner history list belongs to, if it names one.
+
+    Only the first sample carries it under minimisation; a series that names no
+    id anywhere is left for the caller to pass through untouched rather than
+    guessed at.
+    """
+    if not isinstance(series, list):
+        return None
+    for sample in series:
+        if isinstance(sample, dict):
+            candidate = sample.get("entity_id")
+            if _looks_like_entity_id(candidate):
+                return candidate
+    return None
+
+
+def _strip_rest_history_sample(ctx: FilterContext, entity_id: str, sample: Any) -> Any:
+    """Strip withheld attributes from one uncompressed REST history sample."""
+    if not isinstance(sample, dict) or not isinstance(sample.get("attributes"), dict):
+        return sample
+    return {
+        **sample,
+        "attributes": ctx.strip_attributes(entity_id, sample["attributes"]),
+    }

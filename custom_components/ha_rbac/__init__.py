@@ -133,6 +133,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     # Integrations register websocket commands lazily as they are set up.
     data.unsubscribes.append(hass.bus.async_listen("component_loaded", catalog.rebuild))
+    # `component_loaded` fires as a component is imported, which is before some
+    # of them register their HTTP views -- the `ios` component that `mobile_app`
+    # pulls in registers `/api/ios/config` late enough that the rebuild above
+    # can miss it. A route the catalogue never captured falls through to the
+    # admin default, and a non-admin's companion app, which fetches that path
+    # on every launch, is refused it and hangs after login. Rebuilding once
+    # more when Home Assistant has finished starting captures whatever
+    # registered in between.
+    data.unsubscribes.append(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, catalog.rebuild)
+    )
     data.dashboard_entities = dashboard_entities
     websocket_api.async_register(hass)
     # The panel is how roles are administered, but it is not how they are
@@ -301,6 +312,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         await proxy.async_start()
         data.proxy = proxy
+        # The proxy is the real entry point on `proxy_port` from here on,
+        # whether this integration moved Home Assistant's own listener or the
+        # person running it did that by hand -- either way the auto-detected
+        # internal URL, if nothing overrides it, would otherwise still name
+        # Home Assistant's own port.
+        discovery.async_correct_internal_url(hass, proxy_port)
         if await _confirm_move():
             # Only once the move is permanent. Until then Home Assistant may
             # still return to the port it came from, and an advertisement
@@ -465,5 +482,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Home Assistant sets `disabled_by` before it unloads, which is what tells
     # the two apart.
     if entry.disabled_by is not None:
+        # The corrected internal URL names the proxy's port, which nothing is
+        # about to answer on. Cleared here rather than in the network restore,
+        # because it is set whether or not this integration moved Home
+        # Assistant and has to come back for the same reason.
+        discovery.async_restore_internal_url(hass)
         await _async_restore_network(hass, entry)
     return True

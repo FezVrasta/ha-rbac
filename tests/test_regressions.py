@@ -311,6 +311,48 @@ async def test_query_string_resources_are_extracted(
     assert decision.allowed is False
 
 
+async def test_rest_history_minimal_response_does_not_leak(
+    hass: HomeAssistant,
+) -> None:
+    """The `/api/history/period` list-of-lists leak, through the real policy.
+
+    Home Assistant puts the entity id only on the first sample of each series
+    and minimises the rest to a state and a timestamp. The generic walk
+    recovered an id only from a sample's own key, so a denied entity lost its
+    first sample and kept the leaking tail. A role that reads everything but
+    the lock domain must get no lock sample at all, first or later.
+    """
+    from custom_components.ha_rbac.filters import filter_rest_history  # noqa: PLC0415
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            deny={CAT_ENTITIES: {"domains": {"lock": True}}},
+        ),
+        _lookup(hass),
+    )
+    ctx = FilterContext.for_user(hass, Permissions(roles=[role]))
+
+    payload = [
+        [
+            {"entity_id": "lock.front", "state": "locked", "last_changed": "t0"},
+            {"state": "unlocked", "last_changed": "t1"},
+            {"state": "locked", "last_changed": "t2"},
+        ],
+        [
+            {"entity_id": "sensor.temp", "state": "20", "last_changed": "t0"},
+            {"state": "21", "last_changed": "t1"},
+        ],
+    ]
+
+    result = filter_rest_history(ctx, payload)
+    flat = json.dumps(result)
+    assert "lock.front" not in flat
+    assert "unlocked" not in flat, "the minimised tail must not survive either"
+    assert "sensor.temp" in flat and "21" in flat, "an allowed series is untouched"
+
+
 async def test_route_matching_prefers_the_more_specific_url() -> None:
     """A permissive pattern from another integration must not shadow a core one.
 
@@ -1360,6 +1402,72 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+async def test_a_view_registered_after_setup_is_reclassified_on_start(
+    hass: HomeAssistant, socket_enabled: None
+) -> None:
+    """The route a non-admin's phone hung on was one the catalogue built before.
+
+    The catalogue is a snapshot: `rebuild` freezes the tier of every view that
+    exists at that moment. Setup builds it early, but `mobile_app` pulls in the
+    `ios` component -- and its `/api/ios/config` view -- later in start-up. A
+    route missing from the snapshot falls through to the admin default, so a
+    restricted user's companion app, which fetches that path on every launch,
+    was refused it and hung after login. Setup registers one more rebuild on
+    the started event to capture whatever appeared in between; without it, the
+    late view stays admin forever. This registers a view *after* setup's build
+    and proves the started rebuild -- and only it -- reclassifies the route.
+    """
+    from homeassistant.components.http import HomeAssistantView  # noqa: PLC0415
+
+    for domain in ("http", "websocket_api"):
+        await async_setup_component(hass, domain, {"http": {}})
+    await hass.async_block_till_done()
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_PROXY_PORT: _free_port(),
+            CONF_BIND_ADDRESS: "127.0.0.1",
+            CONF_UPSTREAM_HOST: "127.0.0.1",
+            CONF_UPSTREAM_PORT: _free_port(),
+        },
+    )
+    entry.add_to_hass(hass)
+
+    # Not running, so the started listener is registered rather than skipped.
+    hass.set_state(CoreState.not_running)
+    assert await async_setup_entry(hass, entry)
+    catalog = hass.data[DATA_RBAC].catalog
+
+    # A user-level view that comes into being only now -- after setup already
+    # snapshotted the catalogue -- standing in for `ios` arriving late.
+    class _LateUserView(HomeAssistantView):
+        url = "/api/rbac_regression/late"
+        name = "api:rbac_regression:late"
+        requires_auth = True
+
+        async def get(self, request: object) -> None:
+            """Answer a plain user-level GET, with no admin gate."""
+
+    method, path = "GET", _LateUserView.url
+    try:
+        # The snapshot predates the view, so the path is unknown and admin.
+        assert catalog.tier_for_request(method, path) == TIER_ADMIN, (
+            "precondition: the late view is absent from the build-time snapshot"
+        )
+
+        hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+        await hass.async_block_till_done()
+        hass.set_state(CoreState.running)
+
+        # The started rebuild re-walked the views and captured the late one.
+        assert catalog.tier_for_request(method, path) != TIER_ADMIN, (
+            "the started rebuild must reclassify a view registered after setup"
+        )
+    finally:
+        assert await async_unload_entry(hass, entry)
+
+
 async def test_a_role_can_refuse_one_ordinary_service(
     hass: HomeAssistant,
 ) -> None:
@@ -1882,3 +1990,222 @@ async def test_an_integrations_own_route_names_its_camera_too(
     assert decision.resources == ["camera.bedroom"], (
         "the request has to name the camera for the deny rule to be consulted"
     )
+
+
+async def _member_decider(hass: HomeAssistant) -> Decider:
+    """Return a decider on an instance with a light group and a scene.
+
+    The group is the helper kind -- an ordinary `light.` entity that forwards to
+    its members -- rather than an old-style `group.` entity, because those two
+    are expanded by different machinery and only the old one was covered.
+    """
+    for domain in ("websocket_api", "config", "api"):
+        await async_setup_component(hass, domain, {})
+    await async_setup_component(
+        hass,
+        "input_select",
+        {"input_select": {"announcing": {"options": ["Jan", "Federico"]}}},
+    )
+    await hass.async_block_till_done()
+
+    hass.states.async_set("light.bed_light", "on", {})
+    hass.states.async_set("light.ceiling_lights", "on", {})
+    # The two an installation gets from the helper editor and the scene editor,
+    # published the way Home Assistant publishes them.
+    hass.states.async_set(
+        "light.hall",
+        "on",
+        {"entity_id": ["light.bed_light", "light.ceiling_lights"]},
+    )
+    hass.states.async_set(
+        "scene.evening",
+        "unknown",
+        {"entity_id": ["input_select.announcing", "light.bed_light"]},
+    )
+    hass.states.async_set(
+        "media_player.speakers",
+        "playing",
+        {"group_members": ["media_player.kitchen"]},
+    )
+    hass.states.async_set("media_player.kitchen", "playing", {"volume_level": 1.0})
+    await hass.async_block_till_done()
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    return Decider(hass, catalog, REGISTRY)
+
+
+def _may_control_all_but(hass: HomeAssistant, *entity_ids: str) -> Permissions:
+    """Control of everything except these, which stay readable."""
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {
+                    SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True},
+                    "entity_ids": {
+                        entity_id: {POLICY_READ: True} for entity_id in entity_ids
+                    },
+                }
+            },
+            tiers={"max": TIER_USER, "allow": [], "deny": []},
+        ),
+        _lookup(hass),
+    )
+    return Permissions(roles=[role])
+
+
+def _call(domain: str, service: str, entity_id: str, **data: Any) -> dict[str, Any]:
+    return {
+        "type": "call_service",
+        "domain": domain,
+        "service": service,
+        "target": {"entity_id": entity_id},
+        "service_data": data,
+    }
+
+
+async def test_a_group_helper_cannot_carry_a_call_to_a_denied_member(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-6qwm-3pgq-2w7h: a read-only light went off with the group it is in.
+
+    Only an old-style `group.` entity is expanded before the service runs, and
+    that is the one this layer was resolving. A group *helper* is an ordinary
+    `light.` entity whose own handler forwards to its members from inside Home
+    Assistant, after the answer has already been given -- so the members were
+    never judged, and the group was a one-click way around any rule naming one.
+    """
+    decider = await _member_decider(hass)
+    permissions = _may_control_all_but(hass, "light.bed_light")
+
+    direct = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.bed_light"),
+    )
+    assert direct.allowed is False, "the rule works when the entity is named"
+
+    through = decider.decide(
+        permissions, KIND_WS, "call_service", _call("light", "turn_off", "light.hall")
+    )
+    assert through.allowed is False, "and has to work when the group names it"
+    assert "light.bed_light" in through.resources
+
+    # The other member is not the reason, and a group of only allowed members
+    # stays workable.
+    hass.states.async_set(
+        "light.hall_ok", "on", {"entity_id": ["light.ceiling_lights"]}
+    )
+    await hass.async_block_till_done()
+    assert decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.hall_ok"),
+    ).allowed
+
+
+async def test_a_scene_cannot_carry_a_value_to_a_denied_entity(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-8vfg-2wp7-3rh8: a read-only select took a new value from a scene.
+
+    `scene.apply` names the states it reproduces in its payload and was already
+    read. A *stored* scene names nothing -- `scene.turn_on` carries only the
+    scene -- and what it puts back is on the scene entity, which nothing looked
+    at. Activating one was a way to write any entity it had been built with.
+    """
+    decider = await _member_decider(hass)
+    permissions = _may_control_all_but(hass, "input_select.announcing")
+
+    decision = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        _call("scene", "turn_on", "scene.evening"),
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_RESOURCE
+    assert "input_select.announcing" in decision.resources
+
+
+async def test_a_speaker_group_cannot_carry_a_volume_to_a_denied_member(
+    hass: HomeAssistant,
+) -> None:
+    """GHSA-rm59-p5pc-35m5: a read-only speaker took a volume from its group.
+
+    Same shape again, under the attribute a media player uses for it. Kept as
+    its own test because it is a different attribute, and covering one of the
+    two would have read as covering both.
+    """
+    decider = await _member_decider(hass)
+    permissions = _may_control_all_but(hass, "media_player.kitchen")
+
+    decision = decider.decide(
+        permissions,
+        KIND_WS,
+        "call_service",
+        _call("media_player", "volume_set", "media_player.speakers", volume_level=0.5),
+    )
+    assert decision.allowed is False
+    assert "media_player.kitchen" in decision.resources
+
+
+async def test_a_member_list_is_followed_through_a_nested_group(
+    hass: HomeAssistant,
+) -> None:
+    """A group holding a group is one more hop to the same denied entity."""
+    decider = await _member_decider(hass)
+    hass.states.async_set("light.outer", "on", {"entity_id": ["light.hall"]})
+    await hass.async_block_till_done()
+
+    decision = decider.decide(
+        _may_control_all_but(hass, "light.bed_light"),
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.outer"),
+    )
+    assert decision.allowed is False
+    assert "light.bed_light" in decision.resources
+
+
+async def test_a_member_list_that_points_at_itself_terminates(
+    hass: HomeAssistant,
+) -> None:
+    """A cycle is a configuration mistake, not a reason to hang the proxy."""
+    decider = await _member_decider(hass)
+    hass.states.async_set("light.a", "on", {"entity_id": ["light.b"]})
+    hass.states.async_set("light.b", "on", {"entity_id": ["light.a"]})
+    await hass.async_block_till_done()
+
+    decision = decider.decide(
+        _may_control_all_but(hass, "light.bed_light"),
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.a"),
+    )
+    assert decision.allowed is True
+
+
+async def test_an_attribute_that_is_not_a_member_list_is_not_expanded(
+    hass: HomeAssistant,
+) -> None:
+    """`entity_id` naming something that is not an entity must not deny a call.
+
+    The list is confirmed against the state machine rather than trusted, so an
+    integration publishing an unrelated string under the same attribute costs a
+    failed lookup instead of a refusal nobody can explain.
+    """
+    decider = await _member_decider(hass)
+    hass.states.async_set("light.odd", "on", {"entity_id": ["not_an_entity", 7]})
+    await hass.async_block_till_done()
+
+    decision = decider.decide(
+        _may_control_all_but(hass, "light.bed_light"),
+        KIND_WS,
+        "call_service",
+        _call("light", "turn_off", "light.odd"),
+    )
+    assert decision.allowed is True

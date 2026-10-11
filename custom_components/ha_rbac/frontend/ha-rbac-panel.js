@@ -47,6 +47,10 @@ const LOCATION_MODES = [
 ];
 
 // Where each kind of exception lives in a stored policy.
+// The domains whose entities carry a list of options a rule can narrow. Kept
+// in step with SELECT_DOMAINS in decide.py.
+const SELECT_DOMAINS = ["input_select", "select"];
+
 const TARGETS = [
   { value: "area_ids", label: "Areas", block: "entities", selector: { area: { multiple: true } } },
   { value: "domains", label: "Domains", block: "entities", selector: null },
@@ -76,6 +80,18 @@ const DAYS = [
   { value: "sun", label: "Sun" },
 ];
 
+// The reasons a request is refused, in words. One list so the Denials table
+// and its filter chips read a denial the same way. Order is deliberate: the
+// gates run roughly in this order, so the chips do too.
+const REASONS = [
+  ["tier", "Not allowed to use that command"],
+  ["resource", "No access to that entity"],
+  ["app", "No access to that dashboard, add-on or screen"],
+  ["unbounded", "Request did not say what it would touch"],
+  ["degraded", "Permission derivation unavailable"],
+];
+const REASON_LABELS = Object.fromEntries(REASONS);
+
 // mdiClose, mdiPlus: inlined because @mdi/js is a build-time import.
 const ICON_CLOSE =
   "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z";
@@ -92,6 +108,18 @@ const STYLES = `
   @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
   ha-card { margin-bottom: 16px; }
   .card-content { padding: 16px; }
+  /* First-paint loading: centre a spinner with room around it, so an empty
+     panel reads as loading rather than broken. */
+  .loading { display: flex; flex-direction: column; align-items: center;
+             justify-content: center; gap: 12px; padding: 64px 16px;
+             color: var(--secondary-text-color); }
+  .loading .hint { margin: 0; }
+  .spinner { width: 40px; height: 40px; border-radius: 50%;
+             border: 3px solid var(--divider-color);
+             border-top-color: var(--primary-color);
+             animation: rbac-spin 0.9s linear infinite; }
+  @keyframes rbac-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
   h2 { margin: 0 0 4px; font-size: var(--ha-font-size-l, 1.15rem);
        font-weight: var(--ha-font-weight-medium, 500); }
   h3 { margin: 28px 0 4px; font-size: var(--ha-font-size-m, .95rem);
@@ -107,6 +135,10 @@ const STYLES = `
     padding: 12px 16px; border-bottom: 2px solid transparent; white-space: nowrap;
   }
   .tabs button[aria-selected="true"] { opacity: 1; border-bottom-color: currentColor; }
+  /* Keyboard focus has to be visible for arrow-key navigation to be usable;
+     the mouse never lands here so a visible ring on focus is not noise. */
+  .tabs button:focus-visible { opacity: 1; outline: 2px solid currentColor;
+                               outline-offset: -2px; border-radius: 4px; }
   /* The picker is a control in its own right, wide enough to hold a list of
      entities, so it gets its own line rather than fighting the dropdowns for
      room. The dropdowns keep the top line, where their labels line up. */
@@ -158,8 +190,47 @@ const STYLES = `
      anywhere, because a long REST path has no spaces to wrap on. */
   td .detail { display: block; margin-top: 2px; color: var(--secondary-text-color);
                font-size: var(--ha-font-size-s, .85rem); overflow-wrap: anywhere; }
+  /* The "When" column is a short relative time and reads better unbroken; the
+     full timestamp is on the cell's title. */
+  td.nowrap, th.nowrap { white-space: nowrap; }
+  /* The denials filter: a search field over a row of reason chips. The field
+     takes the width it needs and the chips wrap under it on a narrow screen. */
+  .denial-tools { display: flex; flex-direction: column; gap: 12px; margin: 4px 0 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    font: inherit; font-size: var(--ha-font-size-s, .85rem); cursor: pointer;
+    border: 1px solid var(--divider-color); border-radius: 16px;
+    padding: 5px 12px; background: none; color: var(--primary-text-color);
+  }
+  .chip:hover { background: var(--secondary-background-color); }
+  .chip[aria-pressed="true"] {
+    background: var(--primary-color); color: var(--text-primary-color, #fff);
+    border-color: var(--primary-color);
+  }
   .actions { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; align-items: center; }
   .actions .spacer { flex: 1; }
+  /* Unsaved changes: the Save button's label changes to "Save changes" and it
+     gains weight, so the state is carried by text and not by colour alone. */
+  ha-button.dirty { font-weight: 600; }
+  /* The panel's own confirmation dialog. Home Assistant's dialog-box cannot be
+     reached from a custom panel (the reasoning is on _confirm), so this is built
+     here and themed from the same variables as everything else. */
+  .modal-backdrop {
+    position: fixed; inset: 0; z-index: 10; display: flex;
+    align-items: center; justify-content: center; padding: 16px;
+    background: rgba(0, 0, 0, .4);
+  }
+  .modal {
+    background: var(--card-background-color, #fff);
+    color: var(--primary-text-color);
+    border-radius: var(--ha-border-radius-md, 8px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .3);
+    padding: 20px; max-width: 420px; width: 100%;
+  }
+  .modal h2 { margin: 0 0 8px; }
+  .modal p { margin: 0; color: var(--secondary-text-color); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+  .modal-actions ha-button.destructive { --mdc-theme-primary: var(--error-color, #db4437); }
   ul.roles { list-style: none; margin: 0; padding: 0; }
   ul.roles li {
     padding: 12px; border-radius: var(--ha-border-radius-md, 8px); cursor: pointer;
@@ -282,6 +353,25 @@ const esc = (v) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
   );
 
+/**
+ * How long ago a denial happened, in words. "just now", "5 min ago", "3 h ago",
+ * then a plain date once it is old enough that the exact day matters more than
+ * the elapsed time. A denial with no timestamp -- one recorded before the log
+ * carried them -- says nothing rather than "55 years ago".
+ */
+function timeAgo(ts) {
+  if (!ts) return "";
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (seconds < 45) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days} d ago`;
+  return new Date(ts * 1000).toLocaleDateString();
+}
+
 /** Turn a stored permission value into one of none/read/control. */
 function accessOf(value) {
   if (value === true) return "control";
@@ -323,6 +413,56 @@ function readChoiceRules(role) {
     target: rule.target || "domains",
     ids: [...(rule.ids || [])],
     options: [...(rule.options || [])],
+  }));
+}
+
+/**
+ * The role sections that grant reading an entity's recorded past.
+ *
+ * Mirrors `GRANT_SECTIONS` in const.py. One descriptor each, because the two
+ * sections differ only in the words around them: same rule shape, same editor,
+ * same read-back. `draft` is the key the rows live under on the draft, and
+ * `follows` is what the fallback row says when there are none.
+ */
+const GRANT_SECTIONS = [
+  {
+    id: "history",
+    draft: "historyRules",
+    title: "History",
+    button: "Grant history",
+    follows: "History follows read",
+    hint: `History is the past of an entity's state. A role sees the history of
+      whatever it can read above &mdash; this is for the entity you want it to see
+      the <em>trend</em> of without handing over the live value everywhere else:
+      the living-room thermostat on a shared dashboard, say. Pick the entities (or
+      a whole domain, area, label or floor) whose history this role may read. A
+      denial above still wins &mdash; history never brings back what a role is
+      forbidden to see. Leave it empty and history follows exactly what the role
+      can read.`,
+  },
+  {
+    id: "logbook",
+    draft: "logbookRules",
+    title: "Logbook",
+    button: "Grant logbook",
+    follows: "Logbook follows read",
+    hint: `The logbook is the timeline of what happened &mdash; when a light came
+      on, who unlocked a door. A role sees the logbook of whatever it can read
+      above; this is for an entity you want it to see the <em>history of
+      events</em> for without handing over the live value everywhere else. Pick
+      the entities (or a whole domain, area, label or floor) whose logbook this
+      role may read. A denial above still wins, and an entry caused by an entity
+      the role cannot see is withheld whole &mdash; so who came home is not
+      disclosed through a door it may watch. Independent of the History grant:
+      leave it empty and the logbook follows exactly what the role can read.`,
+  },
+];
+
+/** Read one of a role's grant sections into editable rows. */
+function readGrantRules(role, section) {
+  return ((role[section.id] || {}).rules || []).map((rule) => ({
+    target: rule.target || "domains",
+    ids: [...(rule.ids || [])],
   }));
 }
 
@@ -425,15 +565,33 @@ class HaRbacPanel extends HTMLElement {
     this._catalog = null;
     this._recording = {};
     this._recordTimer = null;
+    // Denials tab: a free-text needle and an optional reason to narrow the
+    // list to. The table can hold a hundred rows and the whole point of it is
+    // to find one, so it is filtered rather than only scrolled.
+    this._denialFilter = "";
+    this._denialReason = "";
     // Which sections are open, kept across renders: saving a role should
     // not fold away the section you were working in.
     this._open = new Set();
     this._selected = null;
     this._draft = null;
+    // The role as it was loaded, serialized, so an edit can be told from it.
+    // Null while nothing editable is mounted.
+    this._baseline = null;
+    // An open confirmation dialog, kept so a render can put it back.
+    this._modal = null;
+    // A tab whose button should take focus after the next render.
+    this._focusTab = null;
     this._notice = null;
     // Set by an action that edited the draft rather than the stored role.
     this._pending = null;
     this._loaded = false;
+    // False until the first fetch has resolved. The panel can be the first
+    // thing on screen when reached by its URL, and its data arrives over four
+    // websocket calls after `loadCardHelpers`; without this the element sits
+    // blank until they land, which reads as a broken page rather than a
+    // loading one.
+    this._ready = false;
     this._narrow = false;
   }
 
@@ -535,6 +693,9 @@ class HaRbacPanel extends HTMLElement {
     } catch (err) {
       this._notice = { kind: "error", text: err.message || String(err) };
     }
+    // The first fetch has now either landed or failed; either way there is
+    // something to show other than a spinner (the data, or an error banner).
+    this._ready = true;
     this._render();
     // A reload or a link can land straight on a tab that fetches its own data,
     // which until now only happened when the tab was clicked.
@@ -566,6 +727,12 @@ class HaRbacPanel extends HTMLElement {
           tierDeny: [...((role.tiers || {}).deny || [])],
           attrRules: readAttributeRules(role),
           choiceRules: readChoiceRules(role),
+          ...Object.fromEntries(
+            GRANT_SECTIONS.map((section) => [
+              section.draft,
+              readGrantRules(role, section),
+            ])
+          ),
         }
       : null;
   }
@@ -579,6 +746,16 @@ class HaRbacPanel extends HTMLElement {
     else if (this._tab === "settings") this._mountSettings();
     this._wire();
     this._syncRecordPoll();
+    // A render replaces the whole shadow root, so an open confirmation has to be
+    // put back or it vanishes mid-question and its promise never settles.
+    if (this._modal) this.shadowRoot.appendChild(this._modal);
+    // Focus a tab only once the render that rebuilt it has happened; see
+    // `_selectTab`.
+    if (this._focusTab) {
+      const button = this.shadowRoot.getElementById(`tab-${this._focusTab}`);
+      this._focusTab = null;
+      if (button) button.focus();
+    }
   }
 
   _chrome() {
@@ -594,20 +771,37 @@ class HaRbacPanel extends HTMLElement {
       banners += `<ha-alert alert-type="${esc(type)}">${esc(this._notice.text)}</ha-alert>`;
     }
 
+    // A proper ARIA tablist, not just styled buttons: each tab carries its
+    // role and an id, points at the panel it controls, and takes itself out of
+    // the tab order unless it is the selected one (roving tabindex). The arrow
+    // keys move between them, wired in `_wire`. Without this a screen reader
+    // reads four unrelated buttons and Tab stops on every one of them.
     const tabs = [
       ["roles", "Roles"],
       ["users", "Users"],
       ["denials", "Denials"],
       ["settings", "Settings"],
     ]
-      .map(
-        ([id, label]) =>
-          `<button data-tab="${id}" aria-selected="${this._tab === id}">${label}</button>`
-      )
+      .map(([id, label]) => {
+        const selected = this._tab === id;
+        return `<button role="tab" id="tab-${id}" data-tab="${id}"
+          aria-controls="rbac-tabpanel" aria-selected="${selected}"
+          tabindex="${selected ? "0" : "-1"}">${label}</button>`;
+      })
       .join("");
 
     let body = "";
-    if (this._tab === "roles") body = this._rolesView();
+    if (!this._ready) {
+      // Before the first fetch lands. The header and tabs are already up, so
+      // the page reads as loading rather than broken. The spinner is CSS of
+      // our own rather than a Home Assistant element: the name of the built-in
+      // one changed across versions (ha-circular-progress -> ha-spinner), and
+      // a spinner that silently renders nothing is worse than none.
+      body = `<div class="loading">
+        <div class="spinner" role="progressbar" aria-label="Loading"></div>
+        <p class="hint">Loading&hellip;</p>
+      </div>`;
+    } else if (this._tab === "roles") body = this._rolesView();
     else if (this._tab === "users") body = this._usersView();
     else if (this._tab === "settings") body = this._settingsView();
     else body = this._denialsView();
@@ -615,11 +809,17 @@ class HaRbacPanel extends HTMLElement {
     // The navigationIcon slot is deliberately left empty: ha-top-app-bar-fixed
     // falls back to ha-menu-button, which is the sidebar toggle a narrow
     // screen needs and which this panel had no way of offering before.
+    //
+    // The panel is labelled by its active tab and focusable, so moving into it
+    // from the tab strip lands somewhere and a screen reader announces which
+    // tab it belongs to.
     return `
       <ha-top-app-bar-fixed>
         <div slot="title">Access Control</div>
-        <div slot="subRow" class="tabs">${tabs}</div>
-        <div class="wrap">${banners}${body}</div>
+        <div slot="subRow" class="tabs" role="tablist"
+          aria-label="Access control sections">${tabs}</div>
+        <div class="wrap" id="rbac-tabpanel" role="tabpanel"
+          tabindex="0" aria-labelledby="tab-${this._tab}">${banners}${body}</div>
       </ha-top-app-bar-fixed>`;
   }
 
@@ -634,13 +834,26 @@ class HaRbacPanel extends HTMLElement {
       )
       .join("");
 
+    // With no roles the bare list is just empty space above a button, which
+    // does not say the button is the thing to press. Say it.
+    const rolesBlock = this._roles.length
+      ? `<ul class="roles">${list}</ul>`
+      : `<p class="hint">No roles yet. Create one to start deciding what
+         people can see and do.</p>`;
+
     return `
       <div class="layout">
         <ha-card>
           <div class="card-content">
             <h2>Roles</h2>
-            <ul class="roles">${list}</ul>
-            <div class="actions"><ha-button id="new-role">New role</ha-button></div>
+            ${rolesBlock}
+            <div class="actions">
+              <!-- Filled rather than plain, so with no roles yet the button reads
+                   as the thing to press. appearance is what this frontend's
+                   ha-button takes; raised is the old mwc-button attribute and is
+                   silently ignored, which made the emphasis a no-op. -->
+              <ha-button id="new-role" appearance="filled">New role</ha-button>
+            </div>
           </div>
         </ha-card>
         <ha-card><div class="card-content" id="editor"></div></ha-card>
@@ -653,7 +866,11 @@ class HaRbacPanel extends HTMLElement {
     if (!host) return;
     const draft = this._draft;
     if (!draft) {
-      host.innerHTML = "<p class='hint'>Select a role.</p>";
+      // No role selected. Which of the two reasons it is decides what to say:
+      // there are none to select, or there are and none is picked.
+      host.innerHTML = this._roles.length
+        ? "<p class='hint'>Select a role from the list to edit it.</p>"
+        : "<p class='hint'>Create a role to begin.</p>";
       return;
     }
     const locked = draft.system_generated;
@@ -705,16 +922,16 @@ class HaRbacPanel extends HTMLElement {
         Those are read from the dashboard whenever a request is judged, so
         editing a dashboard changes what its holders see without anyone
         reopening the role. A denial elsewhere still wins. "Can edit" is a
-        different thing from the three before it: it says whether this role
-        may change the dashboard's own layout -- its views and cards -- not
-        what the role sees drawn on it. Home Assistant's own dashboard editor
-        is shown or hidden by a single administrator flag, so ticking this for
+        different thing from the two before it: it says whether this role may
+        change the dashboard's own layout -- its views and cards -- not what
+        the role sees drawn on it. Home Assistant's own dashboard editor is
+        shown or hidden by a single administrator flag, so ticking this for
         even one dashboard reports this role as an administrator to the
         frontend; every other check still runs exactly as it did, so a role
         with no other access still reaches nothing else.</p>
       <table id="dashboards">
         <thead><tr>
-          <th>Dashboard</th><th>Can open</th><th>Sees what is on it</th><th>Can control it</th><th>Can edit</th>
+          <th>Dashboard</th><th>Can open</th><th>Sees what is on it</th><th>Can edit</th>
         </tr></thead>
         <tbody>${this._visibleApps()
           .filter((app) => app.kind === "lovelace")
@@ -729,7 +946,6 @@ class HaRbacPanel extends HTMLElement {
               <td>${esc(app.label)}</td>
               <td>${box("open", !denied)}</td>
               <td>${box("content", !denied && level !== "empty")}</td>
-              <td>${box("control", !denied && level === "control")}</td>
               <td>${box("edit", !denied && canEdit)}</td>
             </tr>`;
           })
@@ -774,16 +990,33 @@ class HaRbacPanel extends HTMLElement {
         <div class="card-content">      <p class="hint">Being allowed to work a
         dropdown is being allowed to pick anything on it. Where the options are
         people &mdash; who is announcing, whose room this is &mdash; that is
-        usually too much. Name the options this role may choose and the rest are
+        usually too much. Pick the options this role may choose and the rest are
         refused, while the entity itself stays as permitted as you left it
-        above. Comma separated, and matched exactly. Leave a select unnamed here
-        and nothing about it changes.</p>
+        above. The list offered is what those selects say they hold; an option
+        is matched exactly, so pick rather than type wherever you can. Leave a
+        select unnamed here and nothing about it changes.</p>
       <div id="choice-rules"></div>
       <div class="actions">
         <ha-button id="add-choice" ${locked ? "disabled" : ""}>Limit a select</ha-button>
       </div>
         </div>
       </ha-expansion-panel>
+
+      ${GRANT_SECTIONS.map(
+        (section) => `
+      <ha-expansion-panel data-section="${section.id}" data-title="${section.title}"
+        header="${section.title}">
+        <div class="card-content">
+          <p class="hint">${section.hint}</p>
+          <div id="${section.id}-rules"></div>
+          <div class="actions">
+            <ha-button id="add-${section.id}" ${locked ? "disabled" : ""}>${
+              section.button
+            }</ha-button>
+          </div>
+        </div>
+      </ha-expansion-panel>`
+      ).join("")}
 
       <ha-expansion-panel data-section="admin" data-title="Administration: what this role can change"
         header="Administration: what this role can change">
@@ -950,6 +1183,76 @@ class HaRbacPanel extends HTMLElement {
     this._mountRules(host.querySelector("#rules"), locked);
     this._mountAttrRules(host.querySelector("#attr-rules"), locked);
     this._mountChoiceRules(host.querySelector("#choice-rules"), locked);
+    for (const section of GRANT_SECTIONS) {
+      this._mountGrantRules(
+        section,
+        host.querySelector(`#${section.id}-rules`),
+        locked
+      );
+    }
+
+    // Snapshot the role as it was loaded, so an edit can be told from the
+    // stored value. Built-in roles cannot be edited, so they are never dirty
+    // and need no baseline. Taken after every control is mounted, because a
+    // few of them (the name, the app checkboxes) live in the DOM until
+    // `_payload` reads them, and the snapshot has to see the same source the
+    // comparison later will.
+    this._baseline = locked ? null : this._serializeDraft();
+    if (!locked) {
+      // One set of listeners over the whole editor rather than one per
+      // control: the only question here is whether the payload now differs
+      // from the baseline. `input`/`change` cover the plain fields and
+      // checkboxes; `value-changed` and `selected` are what Home Assistant's
+      // own selectors and dropdowns fire instead.
+      //
+      // Listened for in the *capture* phase, because every one of those
+      // control handlers calls `stopPropagation()` in the bubble phase --
+      // capture runs first, top-down, and reaches here before the target
+      // stops the event. A microtask defers the check to after the control's
+      // own handler has written the new value onto the draft.
+      const mark = () => Promise.resolve().then(() => this._refreshDirty());
+      for (const type of ["input", "change", "value-changed", "selected"]) {
+        host.addEventListener(type, mark, true);
+      }
+    }
+    this._refreshDirty();
+  }
+
+  /**
+   * A stable string form of the current draft, for telling an edited role from
+   * a stored one. It is the save payload, which is exactly what a save would
+   * write, so anything that would not change the stored role does not count as
+   * a change -- reordering that serialises the same, a rule left half-filled
+   * that `_payload` drops.
+   */
+  _serializeDraft() {
+    try {
+      return JSON.stringify(this._payload());
+    } catch (err) {
+      // `_payload` reads from the mounted editor; if it is not there, there is
+      // nothing to have changed.
+      return null;
+    }
+  }
+
+  /** Whether the draft differs from the role as it was loaded. */
+  _isDirty() {
+    if (this._baseline == null) return false;
+    return this._serializeDraft() !== this._baseline;
+  }
+
+  /**
+   * Reflect unsaved changes on the Save button, so it is clear there is
+   * something to save and clear once there is not.
+   */
+  _refreshDirty() {
+    const save = this.shadowRoot.getElementById("save");
+    if (!save) return;
+    const dirty = this._isDirty();
+    // The label carries the state, so it is not colour or weight alone that
+    // says there is something unsaved.
+    save.textContent = dirty ? "Save changes" : "Save";
+    save.classList.toggle("dirty", dirty);
   }
 
   /**
@@ -1193,6 +1496,12 @@ class HaRbacPanel extends HTMLElement {
       case "choices": {
         const rules = draft.choiceRules.filter((r) => r.options.length).length;
         return rules ? `${rules} select${rules === 1 ? "" : "s"}` : "Anything on any";
+      }
+      case "history":
+      case "logbook": {
+        const key = section === "history" ? "historyRules" : "logbookRules";
+        const rules = draft[key].filter((r) => r.ids.length).length;
+        return rules ? `${rules} grant${rules === 1 ? "" : "s"}` : "Follows read";
       }
       case "admin": {
         if ((draft.tiers || {}).max === "admin") return "A full administrator";
@@ -1490,6 +1799,46 @@ class HaRbacPanel extends HTMLElement {
     });
   }
 
+  /**
+   * The options the selects a choice rule targets actually offer.
+   *
+   * Read off the entities rather than typed, because a rule is matched
+   * exactly: "jan" where the select says "Jan" is a rule that reads as
+   * restricting one option and in fact permits none, and neither saving it nor
+   * being refused by it says so. The options are the shortest list in the
+   * house and the panel already has them.
+   *
+   * Kept in the order each select declares, which is the order its dropdown
+   * shows. A target the panel cannot resolve to entities on its own -- an
+   * area, a label, a floor -- offers every select's options instead, and the
+   * field takes a value that is on no list either way.
+   */
+  _optionsOffered(rule) {
+    const states = (this._hass || {}).states || {};
+    const isSelect = (id) => SELECT_DOMAINS.includes(id.split(".")[0]);
+
+    let ids;
+    if (rule.target === "entity_ids") {
+      ids = rule.ids;
+    } else if (rule.target === "domains") {
+      ids = Object.keys(states).filter((id) => rule.ids.includes(id.split(".")[0]));
+    } else {
+      ids = Object.keys(states).filter(isSelect);
+    }
+
+    const offered = [];
+    const add = (option) => {
+      if (typeof option === "string" && option && !offered.includes(option)) {
+        offered.push(option);
+      }
+    };
+    ids.forEach((id) => (((states[id] || {}).attributes || {}).options || []).forEach(add));
+    // Whatever the rule already says stays on the list even if no select
+    // offers it now, or opening the editor would quietly drop it.
+    rule.options.forEach(add);
+    return offered;
+  }
+
   _choiceRow(rule, index, locked) {
     const row = document.createElement("div");
     row.className = "rule deny";
@@ -1500,20 +1849,34 @@ class HaRbacPanel extends HTMLElement {
       this._mountChoiceRules(this.shadowRoot.getElementById("choice-rules"), locked);
     });
 
+    const remount = () =>
+      this._mountChoiceRules(this.shadowRoot.getElementById("choice-rules"), locked);
+
     const picker = document.createElement("div");
     picker.className = "picker";
-    picker.appendChild(this._pickerFor(rule, locked));
+    // Which selects the rule covers decides what there is to choose from, so
+    // the option field is rebuilt whenever that changes.
+    picker.appendChild(this._pickerFor(rule, locked, remount));
 
-    const options = document.createElement("ha-input");
+    const options = document.createElement("ha-selector");
+    options.hass = this._hass;
+    options.selector = {
+      select: {
+        multiple: true,
+        // A target the panel cannot resolve to entities still has to be
+        // expressible, and so does an option a select does not offer yet.
+        custom_value: true,
+        options: this._optionsOffered(rule).map((o) => ({ value: o, label: o })),
+      },
+    };
     options.label = "Options they may choose";
-    options.value = rule.options.join(", ");
-    options.placeholder = "Jan, Nobody";
+    options.required = false;
+    options.value = rule.options.slice();
     options.disabled = locked;
-    options.addEventListener("change", () => {
-      rule.options = options.value
-        .split(",")
-        .map((n) => n.trim())
-        .filter(Boolean);
+    options.addEventListener("value-changed", (event) => {
+      event.stopPropagation();
+      const value = event.detail.value;
+      rule.options = Array.isArray(value) ? value : value ? [value] : [];
     });
 
     const remove = this._removeButton(locked, () => {
@@ -1563,6 +1926,54 @@ class HaRbacPanel extends HTMLElement {
     return row;
   }
 
+  _mountGrantRules(section, host, locked) {
+    if (!host) return;
+    host.innerHTML = "";
+    host.appendChild(
+      this._fallbackRow(
+        "The role's own entities",
+        section.follows,
+        "Unless a rule below adds one"
+      )
+    );
+    this._draft[section.draft].forEach((rule, index) => {
+      host.appendChild(this._grantRow(section, rule, index, locked));
+    });
+  }
+
+  _grantRow(section, rule, index, locked) {
+    const row = document.createElement("div");
+    // A grant only ever widens reading, so it reads as an allowance.
+    row.className = "rule allow";
+
+    const remount = () =>
+      this._mountGrantRules(
+        section,
+        this.shadowRoot.getElementById(`${section.id}-rules`),
+        locked
+      );
+
+    const target = this._select(TARGETS, rule.target, locked, "Applies to", (value) => {
+      rule.target = value;
+      rule.ids = [];
+      remount();
+    });
+
+    const picker = document.createElement("div");
+    picker.className = "picker";
+    picker.appendChild(this._pickerFor(rule, locked, remount));
+
+    const remove = this._removeButton(locked, () => {
+      this._draft[section.draft].splice(index, 1);
+      remount();
+    });
+
+    target.classList.add("f-target");
+    remove.classList.add("f-remove");
+    row.append(target, picker, remove);
+    return row;
+  }
+
   _ruleRow(rule, index, locked) {
     const row = document.createElement("div");
     row.className = `rule ${TONE[rule.access] || ""}`;
@@ -1598,7 +2009,7 @@ class HaRbacPanel extends HTMLElement {
     return row;
   }
 
-  _pickerFor(rule, locked) {
+  _pickerFor(rule, locked, onChange) {
     const target = TARGETS.find((t) => t.value === rule.target);
 
     // Domains have no Home Assistant picker, so one is built from the domains
@@ -1623,6 +2034,7 @@ class HaRbacPanel extends HTMLElement {
       rule.ids = Array.isArray(value) ? value : value ? [value] : [];
       this._refreshSeesNothing();
       this._syncRaw();
+      if (onChange) onChange();
     });
     return el;
   }
@@ -1709,7 +2121,7 @@ class HaRbacPanel extends HTMLElement {
 
         <h3>Dashboards</h3>
         <p class="hint">A dashboard's contents decide what the roles holding it
-          can reach, and they are re-read whenever Home Assistant says one
+          can see, and they are re-read whenever Home Assistant says one
           changed. This is for when you would rather not take its word for it.</p>
         <div class="actions">
           <ha-button id="refresh-dashboards">Re-read dashboards</ha-button>
@@ -1791,10 +2203,81 @@ class HaRbacPanel extends HTMLElement {
     }
   }
 
+  /** Does a denial match the current text needle and reason chip? */
+  _denialMatches(d) {
+    if (this._denialReason && d.reason !== this._denialReason) return false;
+    const needle = this._denialFilter.trim().toLowerCase();
+    if (!needle) return true;
+    // Match on everything the row shows, so what you can read you can search:
+    // person, command, reason in words, diagnostic and the entities.
+    const hay = [
+      d.user_name,
+      d.user_id,
+      d.name,
+      this._reason(d.reason),
+      d.detail,
+      (d.resources || []).join(" "),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return hay.includes(needle);
+  }
+
   _denialsView() {
-    const rows = this._denials
+    // The reasons actually present, so a chip never offers a filter that would
+    // empty the table. Kept in the order the const lists them for stability.
+    const present = new Set(this._denials.map((d) => d.reason));
+    const chips = [["", "All"]]
+      .concat(REASONS.filter(([id]) => present.has(id)))
+      .map(
+        ([id, label]) =>
+          `<button class="chip" data-reason="${esc(id)}"
+             aria-pressed="${this._denialReason === id}">${esc(label)}</button>`
+      )
+      .join("");
+
+    const shown = this._denials.filter((d) => this._denialMatches(d));
+    const body = this._denialRowsHtml(shown);
+
+    return `<ha-card>
+      <div class="card-content">
+        <h2>Recent denials</h2>
+        <p class="hint">The person is told only that they do not have permission,
+          and which accessory when it is one they can already see. Everything
+          else &mdash; the command, the tier, the entities &mdash; would describe
+          the policy to them, so it is kept here instead. This is where to look
+          when someone says something stopped working.</p>
+        <div class="denial-tools">
+          <ha-input id="denial-filter" type="search"
+            label="Filter denials"
+            placeholder="Person, command, entity&hellip;"
+            value="${esc(this._denialFilter)}"></ha-input>
+          <div class="chips" id="denial-reasons">${chips}</div>
+        </div>
+        <div class="actions" style="margin-top:0">
+          <ha-button id="load-denials">Refresh</ha-button>
+          ${
+            this._denials.length
+              ? `<span class="hint" id="denial-count" style="margin:0">Showing ${shown.length} of ${this._denials.length}.</span>`
+              : ""
+          }
+        </div>
+        <table>
+          <thead><tr><th class="nowrap">When</th><th>Person</th><th>Request</th><th>Why</th><th>Entities</th></tr></thead>
+          <tbody id="denial-rows">${body}</tbody>
+        </table>
+      </div>
+    </ha-card>`;
+  }
+
+  /** The table body for a set of denials, with the three empty states. */
+  _denialRowsHtml(shown) {
+    const rows = shown
       .map(
         (d) => `<tr>
+          <td class="nowrap" title="${esc(
+            d.ts ? new Date(d.ts * 1000).toLocaleString() : ""
+          )}">${timeAgo(d.ts) ? esc(timeAgo(d.ts)) : "&mdash;"}</td>
           <td>${esc(d.user_name || d.user_id)}</td>
           <td><code>${esc(d.name)}</code></td>
           <td>${esc(this._reason(d.reason))}${
@@ -1806,24 +2289,26 @@ class HaRbacPanel extends HTMLElement {
         </tr>`
       )
       .join("");
+    if (rows) return rows;
+    // Two distinct empty states: nothing was ever refused, or everything was
+    // filtered out. They mean different things to whoever is looking.
+    return this._denials.length
+      ? '<tr><td colspan="5" class="hint">No denials match this filter.</td></tr>'
+      : '<tr><td colspan="5" class="hint">Nothing refused yet.</td></tr>';
+  }
 
-    return `<ha-card>
-      <div class="card-content">
-        <h2>Recent denials</h2>
-        <p class="hint">The person is told only that they do not have permission,
-          and which accessory when it is one they can already see. Everything
-          else &mdash; the command, the tier, the entities &mdash; would describe
-          the policy to them, so it is kept here instead. This is where to look
-          when someone says something stopped working.</p>
-        <div class="actions" style="margin-top:0">
-          <ha-button id="load-denials">Refresh</ha-button>
-        </div>
-        <table>
-          <thead><tr><th>Person</th><th>Request</th><th>Why</th><th>Entities</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="4" class="hint">Nothing refused yet.</td></tr>'}</tbody>
-        </table>
-      </div>
-    </ha-card>`;
+  /**
+   * Redraw the denials table body and the count in place, leaving the filter
+   * field alone so typing into it never loses focus.
+   */
+  _refreshDenialRows() {
+    const root = this.shadowRoot;
+    const tbody = root.getElementById("denial-rows");
+    if (!tbody) return;
+    const shown = this._denials.filter((d) => this._denialMatches(d));
+    tbody.innerHTML = this._denialRowsHtml(shown);
+    const count = root.getElementById("denial-count");
+    if (count) count.textContent = `Showing ${shown.length} of ${this._denials.length}.`;
   }
 
   /**
@@ -1848,43 +2333,91 @@ class HaRbacPanel extends HTMLElement {
   }
 
   _reason(reason) {
-    return (
-      {
-        tier: "Not allowed to use that command",
-        resource: "No access to that entity",
-        unbounded: "Request did not say what it would touch",
-        degraded: "Permission derivation unavailable",
-        app: "No access to that dashboard, add-on or screen",
-      }[reason] || reason
-    );
+    return REASON_LABELS[reason] || reason;
+  }
+
+  /**
+   * Switch to a tab, from a click or an arrow key. Shared so both routes leave
+   * the same state behind.
+   *
+   * `focus` asks for the newly selected tab button to take focus, which is what
+   * keyboard navigation needs since the button it was on has just been replaced.
+   * It is recorded rather than done here: the Denials and Settings tabs fetch
+   * their own data and re-render when it lands, which is *after* this function
+   * returns, so focusing now would focus a button that is about to be thrown
+   * away -- and keyboard focus would land back on the body, one arrow key into
+   * the strip. `_render` consumes the flag once the buttons it names exist.
+   *
+   * Leaving the Roles tab abandons the draft, so it asks first, the same way
+   * picking another role does.
+   */
+  async _selectTab(tab, focus = false) {
+    if (tab === this._tab && !focus) return;
+    if (this._tab === "roles" && tab !== "roles" && !(await this._confirmDiscard())) {
+      return;
+    }
+    this._tab = tab;
+    this._notice = null;
+    this._syncUrl();
+    if (focus) this._focusTab = tab;
+    // Denials and settings fetch their own data, and `_loadForTab` re-renders
+    // once it lands; everything else renders now.
+    if (tab === "denials" || tab === "settings") this._loadForTab();
+    else this._render();
+  }
+
+  /**
+   * Move to another role, asking first if the current one has unsaved edits.
+   * The draft lives only in the panel, so switching away without saving drops it
+   * silently -- which for an access-control change reads as "I set that" when
+   * nothing was set.
+   */
+  async _switchRole(roleId) {
+    if (roleId === this._selected) return;
+    if (!(await this._confirmDiscard())) return;
+    this._selected = roleId;
+    this._syncUrl();
+    this._loadDraft();
+    this._render();
   }
 
   _wire() {
     const root = this.shadowRoot;
-    root.querySelectorAll("[data-tab]").forEach((b) => {
-      b.onclick = () => {
-        this._tab = b.dataset.tab;
-        this._notice = null;
-        this._syncUrl();
-        if (this._tab === "denials" || this._tab === "settings")
-          this._loadForTab();
-        else this._render();
+    const tabButtons = [...root.querySelectorAll('[role="tab"]')];
+    tabButtons.forEach((b, index) => {
+      b.onclick = () => this._selectTab(b.dataset.tab);
+      // The WAI-ARIA tabs pattern: Left/Right move along the strip and wrap,
+      // Home/End jump to the ends. Activation follows focus (the common
+      // "automatic" variant), which is also what a click does, so the two
+      // ways in behave the same.
+      b.onkeydown = (event) => {
+        const last = tabButtons.length - 1;
+        let next = null;
+        if (event.key === "ArrowRight") next = index === last ? 0 : index + 1;
+        else if (event.key === "ArrowLeft") next = index === 0 ? last : index - 1;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = last;
+        if (next === null) return;
+        event.preventDefault();
+        // `true` asks for the new tab button to take focus once the render that
+        // creates it has run. It cannot be focused here: the button that exists
+        // now is about to be replaced, and for a tab that fetches its own data
+        // the replacement happens after an await.
+        this._selectTab(tabButtons[next].dataset.tab, true);
       };
     });
     root.querySelectorAll("[data-role]").forEach((item) => {
-      item.onclick = () => {
-        this._selected = item.dataset.role;
-        this._syncUrl();
-        this._loadDraft();
-        this._render();
-      };
+      item.onclick = () => this._switchRole(item.dataset.role);
     });
 
     const on = (id, handler) => {
       const el = root.getElementById(id);
       if (el) el.addEventListener("click", handler);
     };
-    on("new-role", () => this._createRole());
+    // Creating a role selects the new one, so it abandons the draft too.
+    on("new-role", async () => {
+      if (await this._confirmDiscard()) this._createRole();
+    });
     on("toggle-sections", () => this._toggleSections());
     on("record-start", () => this._record("start"));
     on("record-stop", () => this._record("keep"));
@@ -1894,6 +2427,23 @@ class HaRbacPanel extends HTMLElement {
     on("delete", () => this._deleteRole());
     on("save-bindings", () => this._saveBindings());
     on("load-denials", () => this._loadDenials());
+
+    // The denials filter updates the table in place rather than re-rendering
+    // the tab: a full render on every keystroke would take focus off the field
+    // mid-word. The chips do re-render, since a click does not hold focus.
+    const filter = root.getElementById("denial-filter");
+    if (filter) {
+      filter.addEventListener("input", () => {
+        this._denialFilter = filter.value || "";
+        this._refreshDenialRows();
+      });
+    }
+    root.querySelectorAll("[data-reason]").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        this._denialReason = chip.dataset.reason;
+        this._render();
+      });
+    });
     on("save-settings", () => this._saveSettings());
     on("refresh-dashboards", () => this._refreshDashboards());
     on("add-window", () => {
@@ -1908,6 +2458,16 @@ class HaRbacPanel extends HTMLElement {
       this._draft.attrRules.push({ target: "domains", ids: [], names: [] });
       this._mountAttrRules(root.getElementById("attr-rules"), false);
     });
+    for (const section of GRANT_SECTIONS) {
+      on(`add-${section.id}`, () => {
+        this._draft[section.draft].push({ target: "entity_ids", ids: [] });
+        this._mountGrantRules(
+          section,
+          root.getElementById(`${section.id}-rules`),
+          false
+        );
+      });
+    }
     on("add-rule", () => {
       this._draft.rules.push({ target: "area_ids", ids: [], access: "none" });
       this._mountRules(root.getElementById("rules"), false);
@@ -1917,9 +2477,18 @@ class HaRbacPanel extends HTMLElement {
   }
 
   /**
-   * The three boxes describe one level, not three independent ones, so ticking
-   * a deeper one implies the shallower and unticking a shallower one drops
-   * what it carried.
+   * The two boxes describe one level, not two independent ones, so ticking the
+   * deeper one implies the shallower and unticking the shallower one drops what
+   * it carried.
+   *
+   * There was a third, "can control it", which granted control of whatever the
+   * dashboard showed. Dashboards are editable, so it was a way to hand out
+   * control the role's entity list never gave; control now comes from that list
+   * alone. A role still holding the old level reads as this one.
+   *
+   * "Can edit" is unrelated to either: it governs the dashboard's own layout,
+   * not what the role sees or controls on it, so it only implies "open" and
+   * is otherwise independent of the level.
    */
   _wireDashboards(locked) {
     if (locked) return;
@@ -1934,24 +2503,15 @@ class HaRbacPanel extends HTMLElement {
 
         if (which === "open" && !on) {
           at("content").checked = false;
-          at("control").checked = false;
           at("edit").checked = false;
-        } else if (which === "content") {
-          if (on) at("open").checked = true;
-          else at("control").checked = false;
-        } else if (which === "control" && on) {
+        } else if (which === "content" && on) {
           at("open").checked = true;
-          at("content").checked = true;
         } else if (which === "edit" && on) {
           at("open").checked = true;
         }
 
         const denied = !at("open").checked;
-        const level = at("control").checked
-          ? "control"
-          : at("content").checked
-            ? "content"
-            : "empty";
+        const level = at("content").checked ? "content" : "empty";
         this._draft.appDenied = this._draft.appDenied.filter((p) => p !== path);
         if (denied) this._draft.appDenied.push(path);
         if (level === "empty") delete this._draft.dashboardLevels[path];
@@ -2010,6 +2570,21 @@ class HaRbacPanel extends HTMLElement {
             options: rule.options,
           })),
       },
+      // A rule naming nothing has selected no entity yet; it grants nothing, so
+      // it is not written -- and the compiler drops one that arrives anyway,
+      // because an unfinished rule read as "everything" is how a blank rule came
+      // to hand over the history of a whole instance. A whole domain, area, label
+      // or floor is a rule that names those ids, so it is kept.
+      ...Object.fromEntries(
+        GRANT_SECTIONS.map((section) => [
+          section.id,
+          {
+            rules: this._draft[section.draft]
+              .filter((rule) => rule.ids.length)
+              .map((rule) => ({ target: rule.target, ids: rule.ids })),
+          },
+        ])
+      ),
       schedule: {
         // Written as a list, and the older inline window is cleared so a role
         // saved after an upgrade does not carry both shapes at once.
@@ -2096,6 +2671,9 @@ class HaRbacPanel extends HTMLElement {
           apps: source.apps,
           attributes: source.attributes,
           choices: source.choices,
+          ...Object.fromEntries(
+            GRANT_SECTIONS.map((section) => [section.id, source[section.id]])
+          ),
           schedule: source.schedule,
         },
       });
@@ -2103,17 +2681,118 @@ class HaRbacPanel extends HTMLElement {
     }, "Cloned.");
   }
 
-  _deleteRole() {
+  /**
+   * Ask before doing something that cannot be taken back, in a dialog built
+   * from this panel's own markup and Home Assistant's theme variables.
+   *
+   * Not `show-dialog`. That event is how the rest of the frontend opens
+   * `dialog-box`, and reaching it from a custom panel looks like it should work
+   * and cannot: the manager only calls the `dialogImport` you hand it if the tag
+   * is not already in its cache, and what it does with the result is
+   * `element: dialogImport().then(() => createElement(tag))` followed by an
+   * `await` on that promise. A custom panel has no way to fetch the chunk that
+   * defines `dialog-box` -- the filename is content-hashed per release -- and
+   * `customElements.whenDefined("dialog-box")` never resolves, because nothing
+   * is going to define it. So the dialog never opens, *and* the manager's cache
+   * is left holding a promise that will never settle, which hangs every later
+   * `dialog-box` in the whole frontend for the life of the page: the next
+   * "Restart Home Assistant?" or "Delete this automation?" silently does
+   * nothing. Verified against the dialog manager in this version's bundle.
+   *
+   * So the dialog is ours. It uses `ha-button`, which this panel already relies
+   * on, and the same CSS variables as everything else here, so it is themed
+   * without depending on a chunk we cannot load. Escape and the backdrop
+   * cancel, focus moves into the dialog and back out to wherever it came from,
+   * and `window.confirm` is the fallback if the DOM is not there to put it in.
+   */
+  _confirm({ title, text, confirmText, dismissText, destructive = true }) {
+    const root = this.shadowRoot;
+    if (!root) return Promise.resolve(window.confirm(`${title}\n\n${text}`));
+
+    return new Promise((resolve) => {
+      const previous = root.activeElement;
+      const overlay = document.createElement("div");
+      overlay.className = "modal-backdrop";
+      overlay.innerHTML = `
+        <div class="modal" role="alertdialog" aria-modal="true"
+          aria-labelledby="modal-title" aria-describedby="modal-text">
+          <h2 id="modal-title">${esc(title)}</h2>
+          <p id="modal-text">${esc(text)}</p>
+          <div class="modal-actions">
+            <ha-button id="modal-cancel">${esc(dismissText || "Cancel")}</ha-button>
+            <ha-button id="modal-confirm" class="${destructive ? "destructive" : ""}"
+              >${esc(confirmText || "Delete")}</ha-button>
+          </div>
+        </div>`;
+
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener("keydown", onKey, true);
+        overlay.remove();
+        this._modal = null;
+        // Put focus back where it was, unless that element has since gone.
+        if (previous && previous.isConnected) previous.focus();
+        resolve(value);
+      };
+
+      const onKey = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          finish(false);
+        }
+      };
+
+      overlay.addEventListener("click", (event) => {
+        if (event.target === overlay) finish(false);
+      });
+      document.addEventListener("keydown", onKey, true);
+
+      // Kept on the instance so `_render` can put it back: a render replaces the
+      // whole shadow root, and the record poll can fire one while this is open.
+      this._modal = overlay;
+      root.appendChild(overlay);
+      overlay.querySelector("#modal-cancel").addEventListener("click", () =>
+        finish(false)
+      );
+      overlay.querySelector("#modal-confirm").addEventListener("click", () =>
+        finish(true)
+      );
+      // The cancelling button takes focus, so Return on an unread dialog is the
+      // answer that changes nothing.
+      overlay.querySelector("#modal-cancel").focus();
+    });
+  }
+
+  /**
+   * Ask before throwing away an unsaved role edit, and answer True if it is
+   * fine to go ahead. Every way out of the editor goes through this: picking
+   * another role, leaving the Roles tab, and creating a role.
+   */
+  async _confirmDiscard() {
+    if (!this._isDirty()) return true;
+    return this._confirm({
+      title: "Unsaved changes",
+      text:
+        "This role has edits that have not been saved. Leave them behind?",
+      confirmText: "Discard",
+      dismissText: "Keep editing",
+      destructive: false,
+    });
+  }
+
+  async _deleteRole() {
     const role = this._roles.find((r) => r.id === this._selected);
     const name = role ? role.name : this._selected;
-    if (
-      !window.confirm(
-        `Delete the role "${name}"? Anyone who had it falls back to their ` +
-          `Home Assistant group. This cannot be undone.`,
-      )
-    ) {
-      return;
-    }
+    const ok = await this._confirm({
+      title: `Delete the role "${name}"?`,
+      text:
+        "Anyone who had it falls back to their Home Assistant group. " +
+        "This cannot be undone.",
+      confirmText: "Delete",
+    });
+    if (!ok) return;
     this._guard(async () => {
       await this._call("roles/delete", { role_id: this._selected });
       this._selected = null;

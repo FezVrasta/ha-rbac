@@ -56,11 +56,18 @@ async def test_content_grants_reading_what_is_on_it(hass: HomeAssistant) -> None
     assert role.check("light.hallway", POLICY_READ) is False
 
 
-async def test_control_grants_both(hass: HomeAssistant) -> None:
-    """The deepest level, for a dashboard someone is meant to actually use."""
+async def test_control_grants_reading_but_never_control(hass: HomeAssistant) -> None:
+    """A dashboard grant widens reading only; control comes from the allow list.
+
+    Granting `control` on a dashboard once handed out control of every entity
+    drawn on it, so anyone who could edit that dashboard could grant a role
+    control of anything -- a bedroom light dropped onto a dashboard a guest
+    holds became theirs to switch, though the role's own allow list named no
+    such thing. Control is now the allow list's to give, never a dashboard's.
+    """
     role = _role(hass, {"guest": "control"}, lambda _p: {"light.kitchen"})
     assert role.check("light.kitchen", POLICY_READ) is True
-    assert role.check("light.kitchen", POLICY_CONTROL) is True
+    assert role.check("light.kitchen", POLICY_CONTROL) is False
 
 
 async def test_editing_the_dashboard_changes_what_the_role_sees(
@@ -134,7 +141,12 @@ async def test_a_role_granting_a_dashboard_is_not_unrestricted(
 async def test_permissions_combine_dashboard_grants_across_roles(
     hass: HomeAssistant,
 ) -> None:
-    """Holding two roles means holding what either of them grants."""
+    """Holding two roles means holding what either of them grants.
+
+    A dashboard grant is a reading grant either way, so a role widens what its
+    holder may see; control stays the allow list's to give and no dashboard,
+    on any role, hands it out.
+    """
     lights = _role(
         hass, {"a": "content"}, lambda p: {"light.kitchen"} if p == "a" else set()
     )
@@ -143,8 +155,35 @@ async def test_permissions_combine_dashboard_grants_across_roles(
     )
     permissions = Permissions(roles=[lights, locks])
     assert permissions.check_entity("light.kitchen", POLICY_READ) is True
-    assert permissions.check_entity("lock.front", POLICY_CONTROL) is True
+    assert permissions.check_entity("lock.front", POLICY_READ) is True
+    assert permissions.check_entity("lock.front", POLICY_CONTROL) is False
     assert permissions.check_entity("light.kitchen", POLICY_CONTROL) is False
+
+
+async def test_a_control_dashboard_cannot_grant_an_unlisted_entity(
+    hass: HomeAssistant,
+) -> None:
+    """The escalation this fix closes, in the shape it was found in.
+
+    A non-admin held a `control` dashboard whose contents the household edited
+    freely. Two bedroom lights were dropped onto it. The role's own allow list
+    named neither -- it was written to keep bedroom out of reach -- yet the
+    dashboard grant handed control of them anyway, so a restricted user could
+    switch lights the role was built to withhold, from any screen the entity
+    was drawn on. A dashboard may widen what is *seen*; it may not manufacture
+    control the allow list never gave.
+    """
+    role = _role(
+        hass,
+        {"shared-lights": "control"},
+        shows=lambda _p: {"light.bedroom", "light.bedroom_wardrobe"},
+    )
+
+    # Reading follows the dashboard, as the visibility grant it is.
+    assert role.check("light.bedroom", POLICY_READ) is True
+    # Control does not: the allow list named no bedroom light.
+    assert role.check("light.bedroom", POLICY_CONTROL) is False
+    assert role.check("light.bedroom_wardrobe", POLICY_CONTROL) is False
 
 
 async def test_without_a_lookup_a_dashboard_grants_nothing(

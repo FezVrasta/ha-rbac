@@ -50,6 +50,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     CAPABILITY_PATTERNS,
+    GRANT_SECTIONS,
     ROLE_ADMIN,
     ROLE_EDITOR,
     ROLE_READ_ONLY,
@@ -152,6 +153,20 @@ CHOICE_RULE_SCHEMA = vol.Schema(
 
 CHOICES_SCHEMA = vol.Schema({vol.Optional("rules", default=list): [CHOICE_RULE_SCHEMA]})
 
+# One rule: the recorded past of the entities a rule targets, for one of the
+# sections in GRANT_SECTIONS. Same targeting vocabulary as an attribute rule --
+# "every sensor in the kitchen" reads the way it does everywhere else -- and the
+# rule carries nothing but its target, because what it grants is named by the
+# section it sits in rather than by anything on the rule.
+GRANT_RULE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("target", default=ENTITY_DOMAINS): str,
+        vol.Optional("ids", default=list): [str],
+    }
+)
+
+GRANT_SCHEMA = vol.Schema({vol.Optional("rules", default=list): [GRANT_RULE_SCHEMA]})
+
 ATTRIBUTES_SCHEMA = vol.Schema(
     {
         vol.Optional("rules", default=list): [ATTRIBUTE_RULE_SCHEMA],
@@ -203,18 +218,41 @@ LOCATION_SCHEMA = vol.Schema(
 # dashboard, and sees on it only what it is allowed elsewhere.
 DASHBOARD_EMPTY = "empty"
 DASHBOARD_CONTENT = "content"
-DASHBOARD_CONTROL = "control"
-DASHBOARD_LEVELS = (DASHBOARD_EMPTY, DASHBOARD_CONTENT, DASHBOARD_CONTROL)
+DASHBOARD_LEVELS = (DASHBOARD_EMPTY, DASHBOARD_CONTENT)
+
+# A third level, "control", once granted control of whatever the dashboard
+# showed. It was a way to escalate: dashboards are editable -- by a non-admin
+# too, if the role holds the `dashboards` capability -- so dropping an entity
+# onto a granted dashboard handed out control the role's own entity list never
+# gave. Control now comes from the entity list and nowhere else, which leaves
+# the level meaning exactly what "content" means.
+#
+# Folded into "content" rather than rejected. A role that fails this schema is
+# skipped whole, taking with it the access it still describes correctly, and
+# every role saved before this reads as invalid otherwise. It is also what a
+# browser still running the old panel sends.
+DASHBOARD_CONTROL_LEGACY = "control"
+
+
+def _dashboard_level(value: Any) -> str:
+    """Validate a dashboard level, folding the retired one into `content`."""
+    if value == DASHBOARD_CONTROL_LEGACY:
+        return DASHBOARD_CONTENT
+    return vol.In(DASHBOARD_LEVELS)(value)
+
 
 APPS_SCHEMA = vol.Schema(
     {
         vol.Optional("allow", default=list): [str],
         vol.Optional("deny", default=list): [str],
-        vol.Optional("dashboards", default=dict): {str: vol.In(DASHBOARD_LEVELS)},
+        vol.Optional("dashboards", default=dict): {str: _dashboard_level},
         # Dashboards this role may edit the layout of -- url_path globs, so "*"
         # covers every one. Separate from `dashboards` above, which is about
         # what a role *sees* on a dashboard it opens, not whether it may change
-        # the dashboard's own configuration.
+        # the dashboard's own configuration. Unlike `dashboards`, this one is
+        # never a route to entity control: it only ever reaches the handful of
+        # `lovelace/config/*` and `lovelace/dashboards/*` commands (see
+        # `Decider._dashboard_edit_allowed`), never `check_entity`.
         vol.Optional("dashboard_edit", default=list): [str],
     }
 )
@@ -236,6 +274,10 @@ ROLE_SCHEMA = vol.Schema(
         vol.Optional("apps", default=dict): APPS_SCHEMA,
         vol.Optional("attributes", default=dict): ATTRIBUTES_SCHEMA,
         vol.Optional("choices", default=dict): CHOICES_SCHEMA,
+        **{
+            vol.Optional(section, default=dict): GRANT_SCHEMA
+            for section in GRANT_SECTIONS
+        },
         vol.Optional("schedule", default=dict): SCHEDULE_SCHEMA,
         vol.Optional("location", default=dict): LOCATION_SCHEMA,
     }
@@ -697,6 +739,76 @@ class CompiledChoiceRule:
         return self.entity_ids is not None and entity_id in self.entity_ids
 
 
+@dataclass(slots=True)
+class CompiledGrantRule:
+    """The entities whose recorded past a rule grants reading of.
+
+    One class for every section in `GRANT_SECTIONS`: a history rule and a logbook
+    rule differ in what the section means, not in what the rule says, so what
+    they grant is carried by the key they were compiled under rather than by
+    anything here.
+
+    Unlike an attribute or a choice rule, this one *grants*, so it has no
+    "covers everything" state: a rule that names nothing covers nothing, and
+    `_compile_grant_rules` drops it rather than building one. Reading the empty
+    case as universal is how a blank rule came to hand over the history of a
+    whole instance.
+    """
+
+    # The exact entity ids this rule covers, or the domains it covers. Both None
+    # is a rule that grants nothing, which is never built.
+    entity_ids: set[str] | None
+    domains: set[str] | None
+
+    def covers(self, entity_id: str) -> bool:
+        """Return True if this rule applies to an entity."""
+        if self.domains is not None and entity_id.partition(".")[0] in self.domains:
+            return True
+        return self.entity_ids is not None and entity_id in self.entity_ids
+
+
+def _compile_grant_rules(
+    hass: HomeAssistant, section: dict[str, Any]
+) -> list[CompiledGrantRule]:
+    """Turn one of a role's grant sections into matchers.
+
+    Targeted exactly like an attribute or choice rule, and resolved through the
+    same expansion, so an area or a label means here what it means everywhere
+    else.
+
+    A rule naming no ids grants nothing and is dropped. It is the only rule shape
+    with nothing else on it -- no names, no options -- so "covers every entity its
+    target names" would make an unfinished rule mean the whole house. The panel
+    never writes one, filtering empty rows out before it saves, but the role API
+    accepts what it is given and a role can arrive from a backup or a script:
+    posted `{"rules": [{}]}`, a role that could read nothing live came back with
+    the recorded history of every entity on the instance. The same reasoning
+    drops a choice rule permitting no options.
+
+    A role that wants all of it says so by not denying the panel, or by naming
+    the domains; neither needs a blank rule to mean everything.
+    """
+    compiled: list[CompiledGrantRule] = []
+    for rule in section.get("rules") or []:
+        ids = list(rule.get("ids") or [])
+        if not ids:
+            continue
+
+        target = rule.get("target") or ENTITY_DOMAINS
+        if target == ENTITY_DOMAINS:
+            compiled.append(CompiledGrantRule(None, {i.lower() for i in ids}))
+            continue
+        if target == ENTITY_ENTITY_IDS:
+            compiled.append(CompiledGrantRule({i.lower() for i in ids}, None))
+            continue
+
+        policy = desugar(hass, {CAT_ENTITIES: {target: dict.fromkeys(ids, True)}})
+        resolved = set((policy.get(CAT_ENTITIES) or {}).get(ENTITY_ENTITY_IDS) or {})
+        compiled.append(CompiledGrantRule(resolved, None))
+
+    return compiled
+
+
 def _compile_choice_rules(
     hass: HomeAssistant, choices: dict[str, Any]
 ) -> list[CompiledChoiceRule]:
@@ -800,6 +912,9 @@ class CompiledRole:
     dashboard_edit: list[str]
     attribute_rules: "list[CompiledAttributeRule]"
     choice_rules: "list[CompiledChoiceRule]"
+    # Grant rules per section of `GRANT_SECTIONS`, keyed by section name. Every
+    # section is present, so a lookup never has to guard for a missing one.
+    grant_rules: "dict[str, list[CompiledGrantRule]]"
     schedule: dict[str, Any]
     location: dict[str, Any]
     # url_path -> level, for dashboards this role gets the contents of.
@@ -823,21 +938,38 @@ class CompiledRole:
             return False
         return self._granted_by_a_dashboard(entity_id, key)
 
+    def grants_past(self, section: str, entity_id: str) -> bool:
+        """Return True if a grant rule in one section covers an entity.
+
+        The recorded past only, and additive: this says nothing about live state,
+        which `check` decides. A denial is not consulted here because the union
+        at the `Permissions` level applies it first -- a role must not resurrect,
+        through a grant rule, an entity another clause denied outright.
+        """
+        return any(rule.covers(entity_id) for rule in self.grant_rules[section])
+
     def _granted_by_a_dashboard(self, entity_id: str, key: str) -> bool:
         """Return True if a dashboard this role gets the contents of shows it.
 
+        A dashboard grant only ever widens *reading*. Control is never handed
+        out this way: an entity a role may operate is one its own allow list
+        names, because otherwise anyone who can edit a dashboard could grant
+        control of anything by dropping it on a dashboard the role happens to
+        hold -- a privilege escalation the entity list was written to prevent,
+        and one a non-admin could work themselves if the role holds the
+        `dashboards` capability.
+
         A denial still wins, which is checked before this: naming an entity a
         role must not see should not be undone by someone putting it on a
-        dashboard the role happens to hold. So does an exception that caps an
-        entity below the level asked for -- a garage door marked read-only is
-        read-only wherever it is drawn.
+        dashboard the role happens to hold.
         """
         if self.dashboard_entities is None:
             return False
+        # Control is not grantable through a dashboard; only the allow list is.
+        if key == POLICY_CONTROL:
+            return False
         for url_path, level in self.dashboard_levels.items():
             if level == DASHBOARD_EMPTY:
-                continue
-            if key == POLICY_CONTROL and level != DASHBOARD_CONTROL:
                 continue
             if entity_id in self.dashboard_entities(url_path):
                 return True
@@ -865,6 +997,10 @@ def compile_role(
     ]
     attribute_rules = _compile_attribute_rules(hass, attributes)
     choice_rules = _compile_choice_rules(hass, choices)
+    grant_rules = {
+        section: _compile_grant_rules(hass, role.get(section) or {})
+        for section in GRANT_SECTIONS
+    }
 
     return CompiledRole(
         role_id=role["id"],
@@ -880,6 +1016,7 @@ def compile_role(
         dashboard_edit=list(apps.get("dashboard_edit") or []),
         attribute_rules=attribute_rules,
         choice_rules=choice_rules,
+        grant_rules=grant_rules,
         schedule=dict(role.get("schedule") or {}),
         location=dict(role.get("location") or {}),
         dashboard_levels={
@@ -904,6 +1041,7 @@ def compile_role(
             and not apps.get("allow")
             and not (apps.get("dashboards") or {})
             and not attribute_rules
+            and not any(grant_rules.values())
         ),
     )
 
@@ -923,6 +1061,41 @@ class Permissions:
         if self.global_deny_fn is not None and self.global_deny_fn(entity_id, key):
             return False
         return any(role.check(entity_id, key) for role in self.roles)
+
+    def past_allowed(self, section: str, entity_id: str) -> bool:
+        """Return True if the user may read an entity's recorded past.
+
+        `section` is one of `GRANT_SECTIONS`: the history of a value, or the
+        logbook of what happened to it. Both are past state, so anything a role
+        can read live it can read the past of -- `check_entity` already answers
+        that, global deny and role union included. A grant rule then *adds*
+        entities on top, for the case these sections exist to serve: a role that
+        may see one device's trend without being handed its current value
+        everywhere.
+
+        Additive, but never a way around a denial. A grant rule grants only
+        within the role that holds it, and only for an entity that same role does
+        not itself deny -- so a role cannot use a broad grant to resurrect what
+        its own deny clause withheld. The household-wide deny vetoes
+        unconditionally, the way it does for live reads.
+
+        The sections are independent: a history grant says nothing about the
+        logbook, and the other way round. A role meant to see a trend without the
+        timeline of who caused it is a role worth being able to write.
+        """
+        if self.pass_through:
+            return True
+        if self.check_entity(entity_id, POLICY_READ):
+            return True
+        if self.global_deny_fn is not None and self.global_deny_fn(
+            entity_id, POLICY_READ
+        ):
+            return False
+        return any(
+            role.grants_past(section, entity_id)
+            and not role.deny_fn(entity_id, POLICY_READ)
+            for role in self.roles
+        )
 
     def tier_allowed(self, command: str, tier: str) -> bool:
         """Return True if any role permits a command at the given tier.
@@ -995,6 +1168,18 @@ class Permissions:
         """Return True if any role withholds attributes."""
         return not self.pass_through and any(
             role.attribute_rules for role in self.roles
+        )
+
+    def grants_any_past(self, section: str) -> bool:
+        """Return True if any role holds a grant rule in one section.
+
+        Used by the app gate: a role that denies the History panel but holds a
+        history rule still needs the `history/*` commands to reach the response
+        filter, which is what narrows them to the granted entities. Without this
+        the app gate would refuse them up front and the grant would mean nothing.
+        """
+        return not self.pass_through and any(
+            role.grant_rules[section] for role in self.roles
         )
 
     def app_allowed(self, url_path: str) -> bool:

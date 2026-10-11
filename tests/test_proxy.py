@@ -17,6 +17,7 @@ from typing import Any
 import aiohttp
 import pytest
 from aiohttp import web
+from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.components.http.auth import async_sign_path
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -31,7 +32,12 @@ from custom_components.ha_rbac.denylog import Denial, DenyLog
 from custom_components.ha_rbac.filters import REGISTRY
 from custom_components.ha_rbac.ingress import SESSION_ENDPOINT
 from custom_components.ha_rbac.policy import Evaluator, Permissions
-from custom_components.ha_rbac.proxy import RbacProxy, _WsSession
+from custom_components.ha_rbac.proxy import (
+    MAX_BUFFERED_RESPONSE_SIZE,
+    RbacProxy,
+    _carries_entity_data,
+    _WsSession,
+)
 from custom_components.ha_rbac.record import Recorder
 from custom_components.ha_rbac.store import RbacStore
 
@@ -58,6 +64,7 @@ async def proxy_env_fixture(
     hass_access_token: str,
     hass_read_only_user: MockUser,
     hass_read_only_access_token: str,
+    tmp_path: Any,
 ) -> dict[str, Any]:
     """Start Home Assistant behind the proxy and return the pieces under test."""
     for domain in ("http", "websocket_api", "api", "config", "auth"):
@@ -77,6 +84,102 @@ async def proxy_env_fixture(
         return web.Response(text="webhook reached")
 
     hass.http.app.router.add_route("POST", "/api/webhook/{id}", _webhook)
+
+    # Non-JSON responses the companion app fetches on every connect. None
+    # carries entity data; all were being refused to a restricted user, which
+    # hung the app on the loading screen after login.
+    async def _manifest(request: web.Request) -> web.Response:
+        return web.Response(
+            text='{"name": "Home Assistant"}',
+            content_type="application/manifest+json",
+        )
+
+    hass.http.app.router.add_route("GET", "/manifest.json", _manifest)
+
+    # The frontend index, as a view at "/" the way Home Assistant registers it.
+    # `build_statics` skips "/" outright, so provenance cannot cover the index
+    # and the `text/html` exemption is the only thing that lets it through --
+    # which is the residual risk the design records.
+    class _IndexView(HomeAssistantView):
+        """Stands in for the frontend shell."""
+
+        url = "/"
+        name = "rbac_test:index"
+        requires_auth = False
+
+        async def get(self, request: web.Request) -> web.Response:
+            """Return the shell, with no state rendered into it."""
+            return web.Response(
+                text="<html>Home Assistant</html>", content_type="text/html"
+            )
+
+    hass.http.register_view(_IndexView())
+
+    # `/api/onboarding` as it actually answers a restricted user, measured on the
+    # live instance: the onboarding views are gone once onboarding is done, so
+    # Home Assistant 404s with a `text/plain` body. During onboarding proper
+    # nobody is signed in, so no response is filtered and this path is not
+    # reachable with a role at all. An earlier stub here returned 200
+    # `text/plain`, which no Home Assistant build does -- the onboarding views
+    # answer JSON -- and asserting on it is what made `text/plain` look like a
+    # type that has to be exempt.
+    async def _onboarding(request: web.Request) -> web.Response:
+        raise web.HTTPNotFound(text="404: Not Found", content_type="text/plain")
+
+    hass.http.app.router.add_route("GET", "/api/onboarding", _onboarding)
+
+    # A rendered template: entity state in a 200 `text/plain` body from a view
+    # that no role marks admin, which is why `text/plain` is not exempt by type.
+    class _RenderedTemplateView(HomeAssistantView):
+        """Stands in for an endpoint that answers with rendered state."""
+
+        url = "/rbac_rendered"
+        name = "rbac_test:rendered"
+
+        async def get(self, request: web.Request) -> web.Response:
+            """Return entity state as plain text."""
+            return web.Response(
+                text="light.bedroomlight is on", content_type="text/plain"
+            )
+
+    hass.http.register_view(_RenderedTemplateView())
+
+    # A body over the buffering cap, in an exempt shape so it reaches the
+    # forwarding path rather than the filter. Held in memory whole, this is what
+    # a backup download or a media file costs the proxy.
+    class _BigView(HomeAssistantView):
+        """Stands in for a backup or a media file."""
+
+        url = "/rbac_big"
+        name = "rbac_test:big"
+
+        async def get(self, request: web.Request) -> web.Response:
+            """Return a body over the buffering cap."""
+            return web.Response(
+                body=b"x" * (MAX_BUFFERED_RESPONSE_SIZE + 1), content_type="image/png"
+            )
+
+    hass.http.register_view(_BigView())
+
+    # The same shape, comfortably under the cap.
+    class _SmallView(HomeAssistantView):
+        """Stands in for the small replies the companion app fires in bursts."""
+
+        url = "/rbac_small"
+        name = "rbac_test:small"
+
+        async def get(self, request: web.Request) -> web.Response:
+            """Return a body well under the buffering cap."""
+            return web.Response(body=b"x" * 1024, content_type="image/png")
+
+    hass.http.register_view(_SmallView())
+
+    # A file served straight off disk, for the provenance exemption. Registered
+    # through Home Assistant so the catalogue derives it the way it does live.
+    (tmp_path / "note.txt").write_text("a note on disk")
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig("/rbac_static", str(tmp_path), False)]
+    )
 
     upstream = await aiohttp_server(hass.http.app)
 
@@ -986,3 +1089,294 @@ async def test_a_protocol_relative_path_cannot_redirect_the_upstream(
     assert seen, "precondition: the requests reached the proxy"
     for url in seen:
         assert URL(url).host == upstream, f"upstream was redirected to {url}"
+
+
+@pytest.mark.parametrize(
+    ("content_type", "carries"),
+    [
+        # The exemption set: shapes with no representation for entity state.
+        # There is nowhere in any of these formats to put an entity id and a
+        # value, so an unfilterable body in one of them discloses nothing.
+        ("image/png", False),
+        ("image/svg+xml", False),
+        ("video/mp4", False),
+        ("audio/mpeg", False),
+        ("font/woff2", False),
+        ("multipart/x-mixed-replace", False),
+        ("multipart/x-mixed-replace; boundary=frame", False),
+        ("application/octet-stream", False),
+        ("application/wasm", False),
+        ("text/css", False),
+        ("text/javascript", False),
+        ("application/javascript", False),
+        # The two earned by requirement 3.3, and the ones the earlier allowlist
+        # missed: the PWA manifest and the frontend shell. The companion app
+        # fetches both on every connect and cannot start without them.
+        ("application/manifest+json", False),
+        ("text/html", False),
+        ("text/html; charset=utf-8", False),
+        # Outside the set. `application/json` reaches this branch only when it
+        # was too large or too malformed to parse -- `_filter_http_body` returns
+        # `filterable=True` for anything it can read, so a parseable JSON body
+        # never gets here at all.
+        ("application/json", True),
+        ("application/json; charset=utf-8", True),
+        # The third one the earlier allowlist missed, and the one that must not
+        # be exempted by type: a rendered template is entity state in plain
+        # text. The plain-text paths requirement 3.3 protects are covered by
+        # provenance and by the upstream-error rule instead, both at the call
+        # site.
+        ("text/plain", True),
+        ("text/plain; charset=utf-8", True),
+        # A spread of shapes nobody enumerated, each of which could carry state.
+        # Defaulting to refusal is what makes these safe without naming them.
+        ("application/xml", True),
+        ("text/xml", True),
+        ("text/csv", True),
+        ("text/event-stream", True),
+        ("application/x-yaml", True),
+        ("application/graphql-response+json", True),
+        ("application/vnd.api+json", True),
+        ("", True),
+        ("application/JSON", True),
+    ],
+)
+def test_only_shapes_without_a_state_slot_are_exempt(
+    content_type: str, carries: bool
+) -> None:
+    """Refusal is the default; a shape earns its exemption or is refused.
+
+    The rule this replaces asked whether the type was exactly
+    `application/json`, which emptied the guard rather than tightening it:
+    parseable JSON never reaches this branch, so answering "no" for everything
+    else forwarded every non-JSON carrier of entity state unfiltered. The rule
+    before that tried to enumerate the harmless types and missed three, which is
+    why the exemptions here are a closed set and the default is refusal.
+    """
+    assert _carries_entity_data(content_type) is carries
+
+
+@pytest.mark.parametrize(
+    ("path", "status", "content_type", "marker"),
+    [
+        # Requirement 3.3, and the shapes measured on the live instance.
+        (
+            "/manifest.json",
+            HTTPStatus.OK,
+            "application/manifest+json",
+            "Home Assistant",
+        ),
+        ("/", HTTPStatus.OK, "text/html", "Home Assistant"),
+        # Home Assistant's own 404, which is what `/api/onboarding` answers once
+        # onboarding is done. It must arrive as the 404 it is: the companion app
+        # reads anything else as an auth failure and loops on token refresh.
+        ("/api/onboarding", HTTPStatus.NOT_FOUND, "text/plain", "404"),
+        # Requirement 3.5, provenance: `text/plain` off disk, which no
+        # content-type exemption covers.
+        ("/rbac_static/note.txt", HTTPStatus.OK, "text/plain", "a note on disk"),
+    ],
+)
+async def test_unfilterable_but_harmless_reaches_a_restricted_user(
+    proxy_env: dict[str, Any],
+    path: str,
+    status: HTTPStatus,
+    content_type: str,
+    marker: str,
+) -> None:
+    """A restricted user gets these back, with their own status and type.
+
+    Each is unfilterable and named no resources, so each reaches the refusal
+    branch: the decision for a plain GET that names nothing is
+    `allowed=True, resources=[], filter_response=True`. What lets them through
+    is an earned exemption -- shape, provenance, or Home Assistant's own error
+    framing -- not a 403.
+    """
+    await _bind(proxy_env["store"], proxy_env["read_only_user"], ROLE_READ_ONLY)
+    token = proxy_env["read_only_token"]
+
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(
+            f"{proxy_env['base']}{path}",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as response,
+    ):
+        body = await response.text()
+        assert response.status == status, body
+        assert response.headers["Content-Type"].startswith(content_type)
+        assert marker in body
+
+
+async def test_unfilterable_entity_state_is_refused(
+    proxy_env: dict[str, Any],
+) -> None:
+    """The fail-open is closed: a non-exempt unfilterable body is refused.
+
+    `/rbac_rendered` is a rendered template -- entity state in a 200
+    `text/plain` body, served by a view rather than off disk. The request names
+    no resources, so the resource gate checked nothing, and the response cannot
+    be parsed, so the filter checked nothing either. Under the rule this
+    replaces it was forwarded, handing a restricted user state her role denies.
+    """
+    await _bind(proxy_env["store"], proxy_env["read_only_user"], ROLE_READ_ONLY)
+    token = proxy_env["read_only_token"]
+
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(
+            f"{proxy_env['base']}/rbac_rendered",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as response,
+    ):
+        body = await response.text()
+        assert response.status == HTTPStatus.FORBIDDEN, body
+        assert "light.bedroomlight" not in body
+
+
+async def test_a_small_response_keeps_its_content_length(
+    proxy_env: dict[str, Any],
+) -> None:
+    """Small replies are buffered so their original framing survives.
+
+    Streaming drops the Content-Length and aiohttp delimits the body with
+    chunked transfer-encoding instead. iOS's URLSession reuses one connection
+    hard and mis-frames a chunked reply on a reused connection often enough
+    that one of the ~20 token refreshes the companion app fires on login is
+    lost, which hangs the app after the password is entered.
+    """
+    await _bind(proxy_env["store"], proxy_env["read_only_user"], ROLE_READ_ONLY)
+
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(
+            f"{proxy_env['base']}/rbac_small",
+            headers={"Authorization": f"Bearer {proxy_env['read_only_token']}"},
+        ) as response,
+    ):
+        body = await response.read()
+
+    assert response.status == HTTPStatus.OK
+    assert len(body) == 1024
+    assert response.headers.get("Content-Length") == "1024"
+
+
+async def test_a_large_response_streams_instead_of_being_buffered(
+    proxy_env: dict[str, Any],
+) -> None:
+    """Preserving framing must not mean holding a whole download in memory.
+
+    Every backup and media file Home Assistant serves with a Content-Length
+    comes through this path, for admins as much as for anyone else, so
+    buffering on the strength of a Content-Length alone turns a multi-gigabyte
+    download into a multi-gigabyte allocation on hardware that does not have
+    it. The framing this protects belongs to small replies sent back to back;
+    a large body is one long transfer where chunked costs nothing.
+    """
+    await _bind(proxy_env["store"], proxy_env["read_only_user"], ROLE_READ_ONLY)
+
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(
+            f"{proxy_env['base']}/rbac_big",
+            headers={"Authorization": f"Bearer {proxy_env['read_only_token']}"},
+        ) as response,
+    ):
+        body = await response.read()
+
+    assert response.status == HTTPStatus.OK
+    # It arrives whole either way; what is being pinned is how.
+    assert len(body) == MAX_BUFFERED_RESPONSE_SIZE + 1
+    assert response.headers.get("Content-Length") is None
+    assert response.headers.get("Transfer-Encoding") == "chunked"
+
+
+def _read_nothing_session(hass: Any) -> _WsSession:
+    """Return a relayed session whose role may read no entity at all."""
+    nothing = Permissions(roles=[])
+    session = _WsSession.__new__(_WsSession)
+    session._hass = hass
+    session._pending = OrderedDict({1: "subscribe_entities"})
+    session._streaming = {}
+    session._endpoints = OrderedDict()
+    session._highest_id = 1
+    session._permissions = nothing
+    session._evaluator = SimpleNamespace(async_permissions=lambda _user: nothing)
+    session._ingress = None
+    session._client = _RecordingClient()
+    session._user = None
+    return session
+
+
+async def test_the_opening_snapshot_reaches_a_role_that_may_read_nothing(
+    hass: HomeAssistant,
+) -> None:
+    """A role that can read nothing must still be told that states have loaded.
+
+    `subscribe_entities` opens with one frame carrying every entity's initial
+    state, and the frontend sits on a spinner until it arrives. A role that may
+    read nothing -- which a history-only grant makes a sensible configuration --
+    filters that frame down to nothing, and an event filtered to nothing is not
+    forwarded, so the session never finished loading. Reproduced against a live
+    instance: the result came back and then no event frame at all.
+    """
+    hass.states.async_set("lock.front", "locked")
+    session = _read_nothing_session(hass)
+
+    opening = session._filter_outbound(
+        {"id": 1, "type": "event", "event": {"a": {"lock.front": {"s": "locked"}}}}
+    )
+
+    assert opening is not None, "the frame the frontend waits on must be sent"
+    assert opening["event"] == {"a": {}}, "empty, and the shape Home Assistant sends"
+
+
+async def test_later_empty_diffs_do_not_become_an_activity_clock(
+    hass: HomeAssistant,
+) -> None:
+    """Only the opening frame is substituted; an emptied diff is still dropped.
+
+    Answering every diff that filters to nothing with a bare frame hands the
+    role a clock: one frame per state change anywhere in the house, denied
+    entities included, arriving the moment it happens. Measured on a test
+    instance before this was narrowed, five deliberate toggles of a light the
+    role could not read produced five frames -- a real-time activity oracle for
+    entities the role is not supposed to know exist.
+    """
+    hass.states.async_set("lock.front", "locked")
+    session = _read_nothing_session(hass)
+
+    session._filter_outbound(
+        {"id": 1, "type": "event", "event": {"a": {"lock.front": {"s": "locked"}}}}
+    )
+    later = session._filter_outbound(
+        {"id": 1, "type": "event", "event": {"c": {"lock.front": {"+": {"s": "open"}}}}}
+    )
+
+    assert later is None, "nothing survived the filter, so nothing is sent"
+
+
+async def test_only_subscribe_entities_gets_an_opening_frame(
+    hass: HomeAssistant,
+) -> None:
+    """Another subscription's first frame is not substituted.
+
+    The frontend blocks on `subscribe_entities` and on nothing else, so a frame
+    is invented for that one subscription only. Every other emptied frame is
+    dropped, first or not.
+    """
+    hass.states.async_set("lock.front", "locked")
+    session = _read_nothing_session(hass)
+    session._pending = OrderedDict({1: "subscribe_events"})
+
+    first = session._filter_outbound(
+        {
+            "id": 1,
+            "type": "event",
+            "event": {
+                "event_type": "state_changed",
+                "data": {"entity_id": "lock.front"},
+            },
+        }
+    )
+
+    assert first is None

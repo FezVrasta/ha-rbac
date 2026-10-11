@@ -105,14 +105,15 @@ async def test_widening_still_works(hass: HomeAssistant) -> None:
     assert role.check(GARAGE, POLICY_READ) is True
 
 
-async def test_a_read_only_baseline_still_takes_a_control_dashboard(
+async def test_a_control_dashboard_never_grants_control_by_itself(
     hass: HomeAssistant,
 ) -> None:
-    """The dashboard feature itself is untouched.
+    """A dashboard grant widens reading; control is the allow list's to give.
 
-    A baseline is not an instruction about any particular entity, so a dashboard
-    the role is meant to operate still grants control on what it shows. Only an
-    exception naming an entity outranks it.
+    A `control` dashboard once handed control of whatever it showed, so a role
+    whose baseline only reads could still operate anything drawn on a dashboard
+    it held -- control the allow list never granted. The dashboard now widens
+    reading only; control of an entity must come from the role naming it.
     """
     role = _role(
         hass,
@@ -121,7 +122,8 @@ async def test_a_read_only_baseline_still_takes_a_control_dashboard(
         shows=lambda _p: {BLINDS},
     )
 
-    assert role.check(BLINDS, POLICY_CONTROL) is True
+    assert role.check(BLINDS, POLICY_READ) is True
+    assert role.check(BLINDS, POLICY_CONTROL) is False
 
 
 async def test_no_access_still_beats_everything(hass: HomeAssistant) -> None:

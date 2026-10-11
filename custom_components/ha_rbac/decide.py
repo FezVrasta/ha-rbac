@@ -33,6 +33,8 @@ from homeassistant.helpers import (
 from .catalog import Catalog
 from .const import (
     CAPABILITY_PATTERNS,
+    GRANT_HISTORY,
+    GRANT_LOGBOOK,
     MAX_WALK_DEPTH,
     RESOURCE_KEYS,
     TIER_ADMIN,
@@ -82,6 +84,68 @@ WRITES_ONLY_TO_THE_LOG = frozenset({"system_log.write"})
 # The Settings panel, whose url path is also the namespace every
 # registry command lives under.
 CONFIG_PANEL = "config"
+
+
+@dataclass(frozen=True, slots=True)
+class PastGrant:
+    """What one grant section widens, and the panel it belongs to.
+
+    A role may deny the panel wholesale yet still be granted the recorded past of
+    specific entities, in which case the section's reads are let through to the
+    per-entity response filter rather than refused at the app gate. The filter
+    then narrows the answer to the granted entities, so letting them through
+    discloses nothing wider.
+    """
+
+    # The role section the grant is written in, and the panel it hides behind.
+    # The same string, because a section is named after its panel.
+    section: str
+    # Websocket commands the grant widens, matched by name.
+    commands: frozenset[str]
+    # REST path the grant widens, matched by prefix because the path carries a
+    # timestamp tail and there is no static key to match whole.
+    rest_prefix: str
+
+
+# Statistics ride with history: the same grant covers a trend whether it is read
+# as raw history or as a downsampled statistic, and refusing the downsampled one
+# would leave a granted chart half drawn.
+PAST_GRANTS: tuple[PastGrant, ...] = (
+    PastGrant(
+        section=GRANT_HISTORY,
+        commands=frozenset(
+            {
+                "history/history_during_period",
+                "history/stream",
+                "history/statistics_during_period",
+                "recorder/statistics_during_period",
+            }
+        ),
+        rest_prefix="/api/history/period",
+    ),
+    PastGrant(
+        section=GRANT_LOGBOOK,
+        commands=frozenset({"logbook/get_events", "logbook/event_stream"}),
+        rest_prefix="/api/logbook",
+    ),
+)
+
+PAST_GRANT_BY_PANEL: dict[str, PastGrant] = {
+    grant.section: grant for grant in PAST_GRANTS
+}
+
+
+def _widened_by(kind: str, name: str) -> "PastGrant | None":
+    """Return the grant section a request belongs to, if any widens it."""
+    if kind == KIND_HTTP:
+        # `name` is "<METHOD> <path>"; only the path half is matched.
+        parts = name.split(" ", 1)
+        if len(parts) != 2:
+            return None
+        return next(
+            (g for g in PAST_GRANTS if parts[1].startswith(g.rest_prefix)), None
+        )
+    return next((g for g in PAST_GRANTS if name in g.commands), None)
 
 
 def _reads_attributes(node: Any, depth: int = 0) -> bool:
@@ -229,6 +293,60 @@ class Decision:
             self.message = USER_MESSAGES.get(self.reason, DEFAULT_USER_MESSAGE)
 
 
+# How an entity says which other entities it acts on. Every group platform
+# publishes its members as `entity_id`, and so does a stored scene -- the list
+# of what it puts back. `group_members` is the same thing for a speaker group.
+MEMBER_ATTRIBUTES = ("entity_id", "group_members")
+
+
+@callback
+def _expand_members(hass: HomeAssistant, entities: set[str]) -> set[str]:
+    """Add the entities that working a group or a scene reaches through it.
+
+    Home Assistant expands an old-style `group.` entity before the service runs,
+    which is why `expand_entity_ids` is enough for those. Nothing expands the
+    rest: a group helper is an ordinary `light.` or `media_player.` entity whose
+    own handler forwards the call to its members, and `scene.turn_on` puts back
+    whatever the scene stored. Both happen inside Home Assistant, after this
+    layer has already answered, so a member reachable that way was never judged
+    -- and a light denied outright went off when the group it sits in was
+    switched, a read-only select took a new value from a scene, and a read-only
+    speaker took a new volume from the group above it.
+
+    Read off the state rather than the registry because that is where every
+    group platform, the old ones and the helpers alike, publishes its members,
+    and a member that is not in the state machine is not something the call can
+    reach. Followed transitively, since a group can hold a group.
+    """
+    reached = set(entities)
+    pending = list(entities)
+    seen: set[str] = set()
+
+    while pending:
+        entity_id = pending.pop()
+        if entity_id in seen:
+            continue
+        seen.add(entity_id)
+        if (state := hass.states.get(entity_id)) is None:
+            continue
+        for attribute in MEMBER_ATTRIBUTES:
+            value = state.attributes.get(attribute)
+            if isinstance(value, str):
+                value = [value]
+            if not isinstance(value, (list, tuple, set)):
+                continue
+            for member in value:
+                if (
+                    isinstance(member, str)
+                    and member not in reached
+                    and hass.states.get(member) is not None
+                ):
+                    reached.add(member)
+                    pending.append(member)
+
+    return reached
+
+
 @callback
 def expand_to_entities(hass: HomeAssistant, found: Extracted) -> set[str]:
     """Resolve every referenced resource to concrete entity ids.
@@ -293,7 +411,9 @@ def expand_to_entities(hass: HomeAssistant, found: Extracted) -> set[str]:
     # is the same helper the service framework uses, so the expansion matches.
     entities.update(group_helper.expand_entity_ids(hass, entities))
 
-    return entities
+    # And the ones Home Assistant does not expand, which it reaches from inside
+    # the entity instead. Last, and over the whole set, for the same reason.
+    return _expand_members(hass, entities)
 
 
 class Decider:
@@ -311,6 +431,18 @@ class Decider:
         self._catalog = catalog
         self._filters = filter_registry
         self._recorder = recorder
+
+    @property
+    def catalog(self) -> Catalog:
+        """Return the catalogue this decider judges against.
+
+        The proxy needs it on the way back as well as on the way in: whether a
+        response came straight off disk is a question only the catalogue can
+        answer, and the answer has to be the same one the request was judged
+        with. Handing it out here keeps the two halves on one catalogue instead
+        of giving the proxy a second reference that could drift out of step.
+        """
+        return self._catalog
 
     @callback
     def is_recording(self, permissions: Permissions) -> bool:
@@ -465,10 +597,21 @@ class Decider:
         key = POLICY_CONTROL if self._is_mutation(kind, name, payload) else POLICY_READ
 
         # 3. Resource gate. Every entity the request names must be permitted.
+        #    A read of the recorded past is the one read a grant widens: an
+        #    entity a role may see the trend or the timeline of, without being
+        #    able to read its live state, must pass here or the grant never
+        #    reaches the response filter. A grant only ever adds read-shaped
+        #    access, so it applies to reads alone -- a mutation is judged by
+        #    `check_entity` as before.
+        widened = _widened_by(kind, name) if key == POLICY_READ else None
         denied = sorted(
             entity_id
             for entity_id in entities
             if not permissions.check_entity(entity_id, key)
+            and not (
+                widened is not None
+                and permissions.past_allowed(widened.section, entity_id)
+            )
         )
         if denied:
             return Decision(
@@ -483,7 +626,12 @@ class Decider:
         #     being allowed to choose every option on it -- "these people may
         #     put their own name on the announcer, and nobody else's".
         if (
-            choice_decision := self._decide_choices(permissions, payload, entities)
+            choice_decision := self._decide_choices(
+                permissions,
+                payload,
+                entities,
+                self._catalog.path_service(method, path) if kind == KIND_HTTP else None,
+            )
         ) is not None:
             return choice_decision
 
@@ -595,6 +743,14 @@ class Decider:
 
         for app in denied:
             if not self._app_named(app, kind, name, payload):
+                continue
+            # A role can deny the History or Logbook panel yet still be granted
+            # the recorded past of specific entities. The panel stays hidden, but
+            # its commands must reach the response filter rather than be refused
+            # here, or the filter never runs and the grant is dead letter.
+            if (grant := PAST_GRANT_BY_PANEL.get(app["url_path"])) is not None and (
+                permissions.grants_any_past(grant.section)
+            ):
                 continue
             what = f"the {app['title']} add-on" if app.get("addon") else app["title"]
             return Decision(
@@ -770,7 +926,11 @@ class Decider:
 
     @callback
     def _decide_choices(
-        self, permissions: Permissions, payload: dict[str, Any], entities: set[str]
+        self,
+        permissions: Permissions,
+        payload: dict[str, Any],
+        entities: set[str],
+        called: "tuple[str, str] | None" = None,
     ) -> "Decision | None":
         """Refuse a select the role may work but may not set to this option.
 
@@ -792,10 +952,18 @@ class Decider:
         matching each call to its own target: a payload naming two selects and
         one option is asking for that option on both as far as anything here
         can tell, and refusing is the direction to be wrong in.
+
+        `called` is the service a REST path names. `POST
+        /api/services/input_select/select_option` is the same request as a
+        `call_service` command with the two halves of the name in the URL,
+        where walking the body cannot reach them -- and a gate that read only
+        the body let one curl choose any option a role was refused.
         """
         if not permissions.restricts_options:
             return None
         calls = _select_services(payload)
+        if called is not None and called[0] in SELECT_DOMAINS:
+            calls.append(called)
         if not calls:
             return None
 
