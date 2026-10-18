@@ -594,8 +594,46 @@ def _filter_panels(ctx: FilterContext, result: Any) -> Any:
     return {
         url_path: panel
         for url_path, panel in result.items()
-        if ctx.app_visible(url_path)
+        if url_path == "notfound" or ctx.app_visible(url_path)
     }
+
+
+@REGISTRY.result("frontend/get_user_data", "frontend/get_system_data")
+@REGISTRY.event("frontend/subscribe_user_data", "frontend/subscribe_system_data")
+def _filter_frontend_defaults(ctx: FilterContext, result: Any) -> Any:
+    """Point a denied default at an allowed dashboard in this response only.
+
+    The frontend expects its default panel to exist. Preserve its empty
+    notfound panel above, and replace a configured but hidden default here,
+    including streamed preferences. Never change the stored household default.
+    """
+    from homeassistant.components.frontend import DATA_PANELS  # noqa: PLC0415
+
+    panels = ctx.hass.data.get(DATA_PANELS) or {}
+
+    def replace(node: Any) -> Any:
+        if isinstance(node, list):
+            return [replace(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        value = {key: replace(item) for key, item in node.items()}
+        default = value.get("default_panel")
+        if isinstance(default, str) and (
+            default not in panels or not ctx.app_visible(default)
+        ):
+            value["default_panel"] = next(
+                (
+                    path
+                    for path, panel in panels.items()
+                    if panel.component_name == "lovelace"
+                    and not panel.require_admin
+                    and ctx.app_visible(path)
+                ),
+                "notfound",
+            )
+        return value
+
+    return replace(prune(ctx, result))
 
 
 @REGISTRY.result("config/entity_registry/list_for_display")
