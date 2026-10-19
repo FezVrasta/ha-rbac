@@ -932,6 +932,51 @@ async def test_a_dashboard_edit_grant_unlocks_only_that_dashboard(
     assert other_dashboard.reason == REASON_TIER
 
 
+async def test_a_dashboard_edit_grant_does_not_defeat_an_explicit_deny(
+    hass: HomeAssistant,
+) -> None:
+    """A role's own `tiers.deny` still vetoes a dashboard it was handed to edit.
+
+    `tier_allowed` returning False means either of two different things: the
+    ceiling is too low, or a deny glob matched outright. The per-dashboard
+    override may only raise the first -- a role that explicitly refused
+    `lovelace/config/*` meant that refusal to stick, not to be read as merely
+    needing a narrower grant.
+    """
+    await async_setup_component(hass, "websocket_api", {})
+    await hass.async_block_till_done()
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    catalog.apps = lambda: [
+        {"url_path": "map", "title": "Map", "kind": "lovelace", "addon": None},
+    ]
+    catalog.tier_for = lambda command: TIER_ADMIN
+    decider = Decider(hass, catalog, REGISTRY)
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}}
+            },
+            tiers={"max": TIER_USER, "allow": [], "deny": ["lovelace/config/*"]},
+            apps={"allow": [], "deny": [], "dashboard_edit": ["map"]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+
+    decision = decider.decide(
+        perms,
+        KIND_WS,
+        "lovelace/config/save",
+        {"type": "lovelace/config/save", "url_path": "map", "config": {}},
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_TIER
+
+
 async def test_a_dashboard_edit_grant_reports_the_role_as_admin(
     hass: HomeAssistant,
 ) -> None:

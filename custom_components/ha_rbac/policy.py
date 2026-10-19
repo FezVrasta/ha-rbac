@@ -1097,6 +1097,24 @@ class Permissions:
             for role in self.roles
         )
 
+    def tier_denied(self, command: str) -> bool:
+        """Return True if an explicit deny glob vetoes a command outright.
+
+        Split out from `tier_allowed` so a narrower grant elsewhere -- the
+        per-dashboard edit override being the first of these -- can tell "the
+        ceiling is too low" from "a role explicitly refused this": the first
+        is what such a grant is meant to raise, the second is not. Collapsing
+        both into one boolean, as `tier_allowed` alone does, would let any
+        later override defeat a deny it was never meant to touch.
+        """
+        if self.pass_through:
+            return False
+        return any(
+            fnmatch(command, pattern)
+            for role in self.roles
+            for pattern in role.tier_deny
+        )
+
     def tier_allowed(self, command: str, tier: str) -> bool:
         """Return True if any role permits a command at the given tier.
 
@@ -1105,11 +1123,7 @@ class Permissions:
         """
         if self.pass_through:
             return True
-        if any(
-            fnmatch(command, pattern)
-            for role in self.roles
-            for pattern in role.tier_deny
-        ):
+        if self.tier_denied(command):
             return False
         if any(
             fnmatch(command, pattern)

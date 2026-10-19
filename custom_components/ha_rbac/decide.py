@@ -537,9 +537,10 @@ class Decider:
             if kind == KIND_HTTP
             else self._catalog.tier_for(name)
         )
-        if not permissions.tier_allowed(
-            name, tier
-        ) and not self._dashboard_edit_allowed(permissions, kind, name, payload):
+        if not permissions.tier_allowed(name, tier) and (
+            permissions.tier_denied(name)
+            or not self._dashboard_edit_allowed(permissions, kind, name, payload)
+        ):
             return Decision(
                 allowed=False,
                 reason=REASON_TIER,
@@ -703,6 +704,10 @@ class Decider:
         override to reach something else that merely shares no other gate.
         Only the dashboard the command actually names is consulted: holding
         one dashboard is not holding all of them.
+
+        The caller still has to check `tier_denied` itself: this raises a
+        ceiling that is too low, it does not and must not defeat an explicit
+        deny, which `tier_allowed` alone cannot distinguish from a ceiling.
         """
         if kind != KIND_WS:
             return False
