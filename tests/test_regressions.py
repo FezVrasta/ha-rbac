@@ -875,6 +875,141 @@ async def test_the_default_dashboard_is_not_refused_by_accident(
     assert decision.allowed is True
 
 
+async def test_a_dashboard_edit_grant_unlocks_only_that_dashboard(
+    hass: HomeAssistant,
+) -> None:
+    """A role may be handed one dashboard to edit without the "dashboards" capability.
+
+    That capability would hand the tier gate every dashboard at once.
+    `lovelace/config/save` is forced to the admin tier here, the same as Home
+    Assistant marks it, so this proves the per-dashboard grant -- not the
+    tier ceiling -- is what lets the request through, and only for the
+    dashboard actually named.
+    """
+    await async_setup_component(hass, "websocket_api", {})
+    await hass.async_block_till_done()
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    catalog.apps = lambda: [
+        {
+            "url_path": "lovelace",
+            "title": "Overview",
+            "kind": "lovelace",
+            "addon": None,
+        },
+        {"url_path": "map", "title": "Map", "kind": "lovelace", "addon": None},
+    ]
+    catalog.tier_for = lambda command: TIER_ADMIN
+    decider = Decider(hass, catalog, REGISTRY)
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}}
+            },
+            apps={"allow": [], "deny": [], "dashboard_edit": ["map"]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+
+    granted = decider.decide(
+        perms,
+        KIND_WS,
+        "lovelace/config/save",
+        {"type": "lovelace/config/save", "url_path": "map", "config": {}},
+    )
+    other_dashboard = decider.decide(
+        perms,
+        KIND_WS,
+        "lovelace/config/save",
+        {"type": "lovelace/config/save", "url_path": "lovelace", "config": {}},
+    )
+    assert granted.allowed is True
+    assert other_dashboard.allowed is False
+    assert other_dashboard.reason == REASON_TIER
+
+
+async def test_a_dashboard_edit_grant_does_not_defeat_an_explicit_deny(
+    hass: HomeAssistant,
+) -> None:
+    """A role's own `tiers.deny` still vetoes a dashboard it was handed to edit.
+
+    `tier_allowed` returning False means either of two different things: the
+    ceiling is too low, or a deny glob matched outright. The per-dashboard
+    override may only raise the first -- a role that explicitly refused
+    `lovelace/config/*` meant that refusal to stick, not to be read as merely
+    needing a narrower grant.
+    """
+    await async_setup_component(hass, "websocket_api", {})
+    await hass.async_block_till_done()
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    catalog.apps = lambda: [
+        {"url_path": "map", "title": "Map", "kind": "lovelace", "addon": None},
+    ]
+    catalog.tier_for = lambda command: TIER_ADMIN
+    decider = Decider(hass, catalog, REGISTRY)
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={
+                CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True, POLICY_CONTROL: True}}
+            },
+            tiers={"max": TIER_USER, "allow": [], "deny": ["lovelace/config/*"]},
+            apps={"allow": [], "deny": [], "dashboard_edit": ["map"]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+
+    decision = decider.decide(
+        perms,
+        KIND_WS,
+        "lovelace/config/save",
+        {"type": "lovelace/config/save", "url_path": "map", "config": {}},
+    )
+    assert decision.allowed is False
+    assert decision.reason == REASON_TIER
+
+
+async def test_a_dashboard_edit_grant_reports_the_role_as_admin_only_when_opted_in(
+    hass: HomeAssistant,
+) -> None:
+    """Home Assistant's dashboard editor is shown or hidden by `is_admin` alone.
+
+    Reporting as an administrator widens what the frontend *offers* -- the
+    whole Settings sidebar, not just the dashboard editor -- so the grant
+    alone is not enough: a role needs `report_as_admin` too, on purpose,
+    before `auth/current_user` reports it as an admin. A plain role, and one
+    holding the grant but not the opt-in, both still report as non-admin;
+    only the combination of both does.
+    """
+    plain = compile_role(hass, _role(), _lookup(hass))
+    unacknowledged = compile_role(
+        hass, _role(apps={"dashboard_edit": ["map"]}), _lookup(hass)
+    )
+    editor = compile_role(
+        hass,
+        _role(apps={"dashboard_edit": ["map"], "report_as_admin": True}),
+        _lookup(hass),
+    )
+
+    def _is_admin(role: Any) -> Any:
+        ctx = FilterContext.for_user(hass, Permissions(roles=[role]))
+        return REGISTRY.filter_result(
+            "auth/current_user", ctx, {"id": "u", "is_admin": True}
+        )["is_admin"]
+
+    assert _is_admin(plain) is False
+    assert _is_admin(unacknowledged) is False
+    assert _is_admin(editor) is True
+
+
 async def test_a_denied_addon_is_refused_at_the_supervisor_api(
     hass: HomeAssistant,
 ) -> None:

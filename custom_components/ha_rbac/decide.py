@@ -537,7 +537,10 @@ class Decider:
             if kind == KIND_HTTP
             else self._catalog.tier_for(name)
         )
-        if not permissions.tier_allowed(name, tier):
+        if not permissions.tier_allowed(name, tier) and (
+            permissions.tier_denied(name)
+            or not self._dashboard_edit_allowed(permissions, kind, name, payload)
+        ):
             return Decision(
                 allowed=False,
                 reason=REASON_TIER,
@@ -684,6 +687,36 @@ class Decider:
             # administrator can see and change them.
 
         return Decision(allowed=True, resources=sorted(entities), filter_response=True)
+
+    @callback
+    def _dashboard_edit_allowed(
+        self,
+        permissions: Permissions,
+        kind: str,
+        name: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        """Return True if a per-dashboard edit grant covers this command.
+
+        Scoped tightly to the handful of commands a dashboard's own layout is
+        changed through, matched the same way the "dashboards" capability
+        matches them -- so a role granted one dashboard cannot use the same
+        override to reach something else that merely shares no other gate.
+        Only the dashboard the command actually names is consulted: holding
+        one dashboard is not holding all of them.
+
+        The caller still has to check `tier_denied` itself: this raises a
+        ceiling that is too low, it does not and must not defeat an explicit
+        deny, which `tier_allowed` alone cannot distinguish from a ceiling.
+        """
+        if kind != KIND_WS:
+            return False
+        if not any(
+            fnmatch(name, pattern) for pattern in CAPABILITY_PATTERNS["dashboards"]
+        ):
+            return False
+        url_path = payload.get("url_path")
+        return isinstance(url_path, str) and permissions.dashboard_editable(url_path)
 
     @callback
     def _decide_app(

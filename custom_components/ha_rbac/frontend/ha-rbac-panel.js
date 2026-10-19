@@ -716,6 +716,8 @@ class HaRbacPanel extends HTMLElement {
           ...readRules(role),
           appDenied: [...((role.apps || {}).deny || [])],
           dashboardLevels: { ...((role.apps || {}).dashboards || {}) },
+          dashboardEdit: [...((role.apps || {}).dashboard_edit || [])],
+          reportAsAdmin: !!((role.apps || {}).report_as_admin),
           schedule: readSchedule(role),
           location: {
             zones: [...((role.location || {}).zones || [])],
@@ -920,16 +922,22 @@ class HaRbacPanel extends HTMLElement {
         role is allowed elsewhere, or it can carry its own contents with it.
         Those are read from the dashboard whenever a request is judged, so
         editing a dashboard changes what its holders see without anyone
-        reopening the role. A denial elsewhere still wins.</p>
+        reopening the role. A denial elsewhere still wins. "Can edit" is a
+        different thing from the two before it: it says whether this role may
+        change the dashboard's own layout -- its views and cards -- not what
+        the role sees drawn on it. This alone only decides what the proxy will
+        let through; see below for whether Home Assistant's own editor
+        actually offers the button.</p>
       <table id="dashboards">
         <thead><tr>
-          <th>Dashboard</th><th>Can open</th><th>Sees what is on it</th>
+          <th>Dashboard</th><th>Can open</th><th>Sees what is on it</th><th>Can edit</th>
         </tr></thead>
         <tbody>${this._visibleApps()
           .filter((app) => app.kind === "lovelace")
           .map((app) => {
             const denied = draft.appDenied.includes(app.url_path);
             const level = draft.dashboardLevels[app.url_path] || "empty";
+            const canEdit = draft.dashboardEdit.includes(app.url_path);
             const box = (which, on) =>
               `<ha-checkbox data-dash="${esc(app.url_path)}" data-level="${which}"
                  ${on ? "checked" : ""} ${locked ? "disabled" : ""}></ha-checkbox>`;
@@ -937,10 +945,31 @@ class HaRbacPanel extends HTMLElement {
               <td>${esc(app.label)}</td>
               <td>${box("open", !denied)}</td>
               <td>${box("content", !denied && level !== "empty")}</td>
+              <td>${box("edit", !denied && canEdit)}</td>
             </tr>`;
           })
           .join("")}</tbody>
       </table>
+      <div class="cap">
+        <ha-checkbox id="report-as-admin"
+          ${draft.reportAsAdmin ? "checked" : ""}
+          ${locked ? "disabled" : ""}></ha-checkbox>
+        <div class="cap-text">
+          <div class="cap-title">Let this role reach Home Assistant's own dashboard editor</div>
+          <p class="hint">Home Assistant shows or hides its dashboard editor
+            -- and its whole Settings sidebar alongside it -- by one flag:
+            whether it believes the signed-in person is an administrator.
+            There is nothing finer underneath it, so this is the only way to
+            make the "Edit" button it offers actually appear. Ticking it
+            reports this role as an administrator to Home Assistant's
+            frontend for that reason alone; every check below still runs
+            exactly as it did, so Settings pages this role was not otherwise
+            granted will show in the menu but refuse everything inside them.
+            Leave it off and a dashboard marked "Can edit" above is still
+            enforced on the wire -- it is only the editor's own button that
+            will not appear for it.</p>
+        </div>
+      </div>
         </div>
       </ha-expansion-panel>
 
@@ -1466,9 +1495,13 @@ class HaRbacPanel extends HTMLElement {
       }
       case "dashboards": {
         const levels = Object.values(draft.dashboardLevels || {});
-        return levels.length
+        const editable = (draft.dashboardEdit || []).length;
+        let summary = levels.length
           ? `${levels.length} carrying contents`
           : "Open only, no contents";
+        if (editable) summary += `, ${editable} editable`;
+        if (editable && draft.reportAsAdmin) summary += " (reports as admin)";
+        return summary;
       }
       case "entities": {
         const base = (BASE.find((o) => o.value === draft.base) || {}).label || "";
@@ -2471,6 +2504,10 @@ class HaRbacPanel extends HTMLElement {
    * dashboard showed. Dashboards are editable, so it was a way to hand out
    * control the role's entity list never gave; control now comes from that list
    * alone. A role still holding the old level reads as this one.
+   *
+   * "Can edit" is unrelated to either: it governs the dashboard's own layout,
+   * not what the role sees or controls on it, so it only implies "open" and
+   * is otherwise independent of the level.
    */
   _wireDashboards(locked) {
     if (locked) return;
@@ -2485,7 +2522,10 @@ class HaRbacPanel extends HTMLElement {
 
         if (which === "open" && !on) {
           at("content").checked = false;
+          at("edit").checked = false;
         } else if (which === "content" && on) {
+          at("open").checked = true;
+        } else if (which === "edit" && on) {
           at("open").checked = true;
         }
 
@@ -2495,6 +2535,8 @@ class HaRbacPanel extends HTMLElement {
         if (denied) this._draft.appDenied.push(path);
         if (level === "empty") delete this._draft.dashboardLevels[path];
         else this._draft.dashboardLevels[path] = level;
+        this._draft.dashboardEdit = this._draft.dashboardEdit.filter((p) => p !== path);
+        if (at("edit").checked) this._draft.dashboardEdit.push(path);
         this._refreshSeesNothing();
       });
     }
@@ -2578,6 +2620,8 @@ class HaRbacPanel extends HTMLElement {
       },
       apps: {
         dashboards: { ...this._draft.dashboardLevels },
+        dashboard_edit: [...this._draft.dashboardEdit],
+        report_as_admin: root.getElementById("report-as-admin").checked,
         allow: [],
         // System panels are not offered, so they have no checkbox. Carry any
         // denial they already had rather than silently granting it back.

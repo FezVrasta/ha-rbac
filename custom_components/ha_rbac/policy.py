@@ -246,6 +246,22 @@ APPS_SCHEMA = vol.Schema(
         vol.Optional("allow", default=list): [str],
         vol.Optional("deny", default=list): [str],
         vol.Optional("dashboards", default=dict): {str: _dashboard_level},
+        # Dashboards this role may edit the layout of -- url_path globs, so "*"
+        # covers every one. Separate from `dashboards` above, which is about
+        # what a role *sees* on a dashboard it opens, not whether it may change
+        # the dashboard's own configuration. Unlike `dashboards`, this one is
+        # never a route to entity control: it only ever reaches the handful of
+        # `lovelace/config/*` and `lovelace/dashboards/*` commands (see
+        # `Decider._dashboard_edit_allowed`), never `check_entity`.
+        vol.Optional("dashboard_edit", default=list): [str],
+        # Explicit opt-in to reporting this role as an administrator over
+        # `auth/current_user`, which is the only way Home Assistant's own
+        # dashboard editor is shown at all. Kept apart from `dashboard_edit`
+        # itself: that grant is enforced on the wire regardless of this flag,
+        # and ticking it widens what Home Assistant's frontend *offers* (the
+        # whole Settings sidebar, not just the dashboard editor) without
+        # widening what the proxy actually lets through underneath it.
+        vol.Optional("report_as_admin", default=False): bool,
     }
 )
 
@@ -898,6 +914,14 @@ class CompiledRole:
     tier_deny: list[str]
     app_allow: list[str]
     app_deny: list[str]
+    # url_path globs this role may edit the configuration of, independent of
+    # the tier gate -- a role need not hold the "dashboards" capability, which
+    # would hand it every dashboard, just to be given one of its own.
+    dashboard_edit: list[str]
+    # Explicit opt-in to being reported as an administrator, so Home
+    # Assistant's own dashboard editor is offered for a `dashboard_edit`
+    # grant. Consulted only for that reporting, never for enforcement.
+    report_as_admin: bool
     attribute_rules: "list[CompiledAttributeRule]"
     choice_rules: "list[CompiledChoiceRule]"
     # Grant rules per section of `GRANT_SECTIONS`, keyed by section name. Every
@@ -1001,6 +1025,8 @@ def compile_role(
         tier_deny=[*BASELINE_DENY, *(tiers.get("deny") or [])],
         app_allow=list(apps.get("allow") or []),
         app_deny=list(apps.get("deny") or []),
+        dashboard_edit=list(apps.get("dashboard_edit") or []),
+        report_as_admin=bool(apps.get("report_as_admin")),
         attribute_rules=attribute_rules,
         choice_rules=choice_rules,
         grant_rules=grant_rules,
@@ -1084,6 +1110,24 @@ class Permissions:
             for role in self.roles
         )
 
+    def tier_denied(self, command: str) -> bool:
+        """Return True if an explicit deny glob vetoes a command outright.
+
+        Split out from `tier_allowed` so a narrower grant elsewhere -- the
+        per-dashboard edit override being the first of these -- can tell "the
+        ceiling is too low" from "a role explicitly refused this": the first
+        is what such a grant is meant to raise, the second is not. Collapsing
+        both into one boolean, as `tier_allowed` alone does, would let any
+        later override defeat a deny it was never meant to touch.
+        """
+        if self.pass_through:
+            return False
+        return any(
+            fnmatch(command, pattern)
+            for role in self.roles
+            for pattern in role.tier_deny
+        )
+
     def tier_allowed(self, command: str, tier: str) -> bool:
         """Return True if any role permits a command at the given tier.
 
@@ -1092,11 +1136,7 @@ class Permissions:
         """
         if self.pass_through:
             return True
-        if any(
-            fnmatch(command, pattern)
-            for role in self.roles
-            for pattern in role.tier_deny
-        ):
+        if self.tier_denied(command):
             return False
         if any(
             fnmatch(command, pattern)
@@ -1190,6 +1230,41 @@ class Permissions:
             fnmatch(url_path, pattern)
             for patterns in allow_lists
             for pattern in patterns
+        )
+
+    def dashboard_editable(self, url_path: str) -> bool:
+        """Return True if any role may edit a dashboard's own configuration.
+
+        Kept apart from `check_entity`: changing a dashboard's layout is not
+        control of an entity, and apart from the tier gate: a role scoped to
+        one dashboard should not need the "dashboards" capability, which hands
+        over every dashboard, just to be given the one it actually holds.
+        """
+        if self.pass_through:
+            return True
+        return any(
+            fnmatch(url_path, pattern)
+            for role in self.roles
+            for pattern in role.dashboard_edit
+        )
+
+    @property
+    def reports_as_admin(self) -> bool:
+        """Return True if `auth/current_user` should report this user as an admin.
+
+        Two conditions, both required: a role must actually hold a dashboard
+        to edit, and -- separately -- a role must have opted in to being
+        reported this way at all. The grant alone is not enough, because
+        Home Assistant shows or hides its whole Settings sidebar by this one
+        flag, with nothing finer underneath it: widening what the frontend
+        *offers* is a choice a role has to make on purpose, not a side effect
+        of being handed a dashboard to edit. Enforcement never reads this
+        property; every gate runs the same whether it is True or False.
+        """
+        if self.pass_through:
+            return False
+        return any(role.dashboard_edit for role in self.roles) and any(
+            role.report_as_admin for role in self.roles
         )
 
     @property
