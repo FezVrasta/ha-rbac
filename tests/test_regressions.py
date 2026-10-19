@@ -1650,6 +1650,92 @@ async def test_the_rest_spelling_of_a_call_is_judged_the_same_way(
     assert refused.reason == REASON_RESOURCE
 
 
+async def test_the_rest_spelling_of_the_dashboard_config_is_covered(
+    hass: HomeAssistant,
+) -> None:
+    """`GET /api/lovelace/dashboard/<url_path>` is `lovelace/config` over REST.
+
+    The dashboards capability named only the websocket spellings, so the same
+    config a role could read over the websocket was refused as an admin-tier
+    setting over REST, and the answer depended on which transport asked.
+    """
+    await async_setup_component(hass, "websocket_api", {})
+    await hass.async_block_till_done()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    # Isolate the capability: the tier gate would otherwise answer for the
+    # route's own derived tier and prove nothing about the pattern list.
+    catalog.tier_for_request = lambda method, path: TIER_ADMIN
+    decider = Decider(hass, catalog, REGISTRY)
+
+    def perms_for(*capabilities: str) -> Permissions:
+        role = compile_role(
+            hass,
+            _role(
+                tiers={"max": TIER_USER, "allow": [], "deny": []},
+                capabilities=list(capabilities),
+            ),
+            _lookup(hass),
+        )
+        return Permissions(roles=[role])
+
+    name = "GET /api/lovelace/dashboard/lovelace"
+    allowed = decider.decide(perms_for("dashboards"), KIND_HTTP, name, {})
+    assert allowed.allowed is True
+
+    refused = decider.decide(perms_for(), KIND_HTTP, name, {})
+    assert refused.allowed is False
+    assert refused.reason == REASON_TIER
+
+
+async def test_denying_a_dashboard_also_refuses_its_rest_spelling(
+    hass: HomeAssistant,
+) -> None:
+    """`GET /api/lovelace/dashboard/<url_path>` names its dashboard in the path.
+
+    The app gate matched dashboards by the `url_path` in the websocket
+    payload, so the REST spelling of a denied dashboard slipped past it while
+    the websocket spelling was refused.
+    """
+    await async_setup_component(hass, "websocket_api", {})
+    await hass.async_block_till_done()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    catalog.apps = lambda: [
+        {
+            "url_path": "lovelace",
+            "title": "Overview",
+            "kind": "lovelace",
+            "addon": None,
+        },
+        {"url_path": "map", "title": "Map", "kind": "lovelace", "addon": None},
+    ]
+    # Isolate the app gate: the tier gate would otherwise answer first.
+    catalog.tier_for_request = lambda method, path: TIER_ADMIN
+    decider = Decider(hass, catalog, REGISTRY)
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            tiers={"max": TIER_USER, "allow": [], "deny": []},
+            capabilities=["dashboards"],
+            apps={"allow": [], "deny": ["map"]},
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+
+    blocked = decider.decide(perms, KIND_HTTP, "GET /api/lovelace/dashboard/map", {})
+    assert blocked.allowed is False
+    assert blocked.reason == REASON_APP
+
+    allowed = decider.decide(
+        perms, KIND_HTTP, "GET /api/lovelace/dashboard/lovelace", {}
+    )
+    assert allowed.allowed is True
+
+
 async def test_a_rest_body_naming_a_resource_is_not_bound_by_its_service(
     hass: HomeAssistant,
 ) -> None:
