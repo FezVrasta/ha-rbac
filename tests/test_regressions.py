@@ -977,29 +977,37 @@ async def test_a_dashboard_edit_grant_does_not_defeat_an_explicit_deny(
     assert decision.reason == REASON_TIER
 
 
-async def test_a_dashboard_edit_grant_reports_the_role_as_admin(
+async def test_a_dashboard_edit_grant_reports_the_role_as_admin_only_when_opted_in(
     hass: HomeAssistant,
 ) -> None:
     """Home Assistant's dashboard editor is shown or hidden by `is_admin` alone.
 
-    A role holding no dashboard_edit grant still reports as non-admin, which
-    is the existing cosmetic behaviour; one holding a grant has to report as
-    an admin, or its one editable dashboard never offers an "Edit" button.
+    Reporting as an administrator widens what the frontend *offers* -- the
+    whole Settings sidebar, not just the dashboard editor -- so the grant
+    alone is not enough: a role needs `report_as_admin` too, on purpose,
+    before `auth/current_user` reports it as an admin. A plain role, and one
+    holding the grant but not the opt-in, both still report as non-admin;
+    only the combination of both does.
     """
     plain = compile_role(hass, _role(), _lookup(hass))
-    editor = compile_role(hass, _role(apps={"dashboard_edit": ["map"]}), _lookup(hass))
-
-    plain_ctx = FilterContext.for_user(hass, Permissions(roles=[plain]))
-    editor_ctx = FilterContext.for_user(hass, Permissions(roles=[editor]))
-
-    plain_result = REGISTRY.filter_result(
-        "auth/current_user", plain_ctx, {"id": "u", "is_admin": True}
+    unacknowledged = compile_role(
+        hass, _role(apps={"dashboard_edit": ["map"]}), _lookup(hass)
     )
-    editor_result = REGISTRY.filter_result(
-        "auth/current_user", editor_ctx, {"id": "u", "is_admin": True}
+    editor = compile_role(
+        hass,
+        _role(apps={"dashboard_edit": ["map"], "report_as_admin": True}),
+        _lookup(hass),
     )
-    assert plain_result["is_admin"] is False
-    assert editor_result["is_admin"] is True
+
+    def _is_admin(role: Any) -> Any:
+        ctx = FilterContext.for_user(hass, Permissions(roles=[role]))
+        return REGISTRY.filter_result(
+            "auth/current_user", ctx, {"id": "u", "is_admin": True}
+        )["is_admin"]
+
+    assert _is_admin(plain) is False
+    assert _is_admin(unacknowledged) is False
+    assert _is_admin(editor) is True
 
 
 async def test_a_denied_addon_is_refused_at_the_supervisor_api(

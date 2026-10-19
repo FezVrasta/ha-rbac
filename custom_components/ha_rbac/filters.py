@@ -88,7 +88,7 @@ class FilterContext:
         app_allowed: "Callable[[str], bool] | None" = None,
         attribute_hidden: "Callable[[str, str], bool] | None" = None,
         past_check: "Callable[[str, str], bool] | None" = None,
-        can_edit_dashboards: bool = False,
+        reports_as_admin: bool = False,
     ) -> None:
         """Initialise the context."""
         self.hass = hass
@@ -96,7 +96,7 @@ class FilterContext:
         self._app_allowed = app_allowed
         self._attribute_hidden = attribute_hidden
         self._past_check = past_check
-        self.can_edit_dashboards = can_edit_dashboards
+        self.reports_as_admin = reports_as_admin
 
     @property
     def hides_attributes(self) -> bool:
@@ -151,7 +151,7 @@ class FilterContext:
             permissions.app_allowed,
             permissions.attribute_hidden if permissions.hides_attributes else None,
             permissions.past_allowed,
-            permissions.has_dashboard_edit,
+            permissions.reports_as_admin,
         )
 
     def app_visible(self, url_path: str) -> bool:
@@ -1016,19 +1016,23 @@ def _filter_lovelace(ctx: FilterContext, result: Any) -> Any:
 def _filter_current_user(ctx: FilterContext, result: Any) -> Any:
     """Report a restricted user as non-admin so the frontend hides admin UI.
 
-    Cosmetic only in the usual case. The real enforcement is the tier and
-    resource gates; this just stops the UI offering things that will fail.
+    Cosmetic only. The real enforcement is the tier and resource gates; this
+    just stops the UI offering things that will fail.
 
-    The one exception is a role holding a dashboard-edit grant: Home
-    Assistant's own dashboard editor is shown or hidden by this flag alone,
-    with nothing finer underneath it, so a role that may edit no entity and no
-    setting still has to be reported as an administrator for its one granted
-    dashboard's "Edit" button to appear at all. Every other gate still runs
-    behind that flag exactly as it did before -- this changes what the person
-    sees offered, not what the proxy will actually let through.
+    The one exception is a role that holds a dashboard-edit grant *and* has
+    explicitly opted in to being reported this way (`reports_as_admin`):
+    Home Assistant's own dashboard editor is shown or hidden by this flag
+    alone, with nothing finer underneath it, so there is no way to offer that
+    one button without also reporting administrator for everything else the
+    frontend gates on it -- the whole Settings sidebar, user management and
+    integrations included. That is a real widening of what is *offered*, not
+    of what is granted, which is why it needs its own opt-in rather than
+    riding along with the grant itself: every other gate still runs behind
+    this flag exactly as it did before, so a role with no other access still
+    reaches nothing else -- it only gets to see the menu for it first.
     """
     if isinstance(result, dict):
-        return {**result, "is_admin": ctx.can_edit_dashboards}
+        return {**result, "is_admin": ctx.reports_as_admin}
     return result
 
 
