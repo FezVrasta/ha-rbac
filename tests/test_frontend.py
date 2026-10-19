@@ -246,6 +246,53 @@ def test_the_denials_table_can_be_filtered_and_says_when() -> None:
     assert "_render()" not in listener, "a full render would steal focus mid-word"
 
 
+def test_every_box_that_denies_an_app_is_read_back_when_a_role_is_saved() -> None:
+    """`apps.deny` is one list written from two tables, and only one was read.
+
+    The apps section has a checkbox per app; the Dashboards table carries each
+    dashboard's as its "Can open" column. Saving rebuilt the list from
+    `[data-app]` alone, so unticking "Can open" redrew unticked and granted the
+    dashboard back, and a url_path added through the role API vanished the next
+    time anyone touched an unrelated checkbox (#73).
+
+    A text check, not a DOM: it pins that both selectors are read where the
+    list is built, and that nothing goes back to rebuilding it inline.
+    """
+    source = PANEL.read_text()
+
+    builder = source[source.index("_deniedApps(root) {") :]
+    builder = builder[: builder.index("\n  }\n")]
+    assert "[data-app]" in builder, builder
+    assert '[data-dash][data-level="open"]' in builder, builder
+    # A denial the form draws no box for -- a system panel, a stopped add-on, a
+    # deleted dashboard -- has nothing to read, so it has to be carried.
+    assert "this._draft.appDenied" in builder, builder
+
+    payload = source[source.index("_payload()") : source.index("_deniedApps(root) {")]
+    apps = payload[payload.index("apps: {") :]
+    assert "this._deniedApps(root)" in apps, apps
+    assert "[data-app]" not in apps, "the deny list is built in one place only"
+
+
+def test_an_allow_list_the_form_cannot_edit_survives_a_save() -> None:
+    """`apps.allow` has no control in the editor, so saving must carry it.
+
+    It used to be written back as `[]` on every save. An allow list is the
+    strictest thing a role can carry -- everything not named is refused -- so
+    clearing it silently widened the role to whatever the tier gate let
+    through, and the role editor did it on an unrelated edit (#73).
+    """
+    source = PANEL.read_text()
+    assert "appAllow: [...((role.apps || {}).allow || [])]" in source, (
+        "the stored allow list is never read into the draft"
+    )
+    payload = source[source.index("_payload()") :]
+    apps = payload[payload.index("apps: {") :]
+    allow = apps[apps.index("allow:") : apps.index("deny:")]
+    assert "this._draft.appAllow" in allow, allow
+    assert "[]" not in allow, "an empty allow list would widen the role"
+
+
 def test_the_new_role_button_uses_an_attribute_this_frontend_reads() -> None:
     """Emphasis on the New role button has to use `appearance`, not `raised`.
 

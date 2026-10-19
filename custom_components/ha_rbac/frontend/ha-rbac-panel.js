@@ -715,6 +715,10 @@ class HaRbacPanel extends HTMLElement {
           ...role,
           ...readRules(role),
           appDenied: [...((role.apps || {}).deny || [])],
+          // Carried rather than edited: the form offers no control for an allow
+          // list, and writing an empty one back on every save silently widened
+          // a role that had one.
+          appAllow: [...((role.apps || {}).allow || [])],
           dashboardLevels: { ...((role.apps || {}).dashboards || {}) },
           schedule: readSchedule(role),
           location: {
@@ -2578,19 +2582,41 @@ class HaRbacPanel extends HTMLElement {
       },
       apps: {
         dashboards: { ...this._draft.dashboardLevels },
-        allow: [],
-        // System panels are not offered, so they have no checkbox. Carry any
-        // denial they already had rather than silently granting it back.
-        deny: [
-          ...this._draft.appDenied.filter((path) => SYSTEM_PANELS.includes(path)),
-          ...[...root.querySelectorAll("[data-app]")]
-            .filter((box) => !box.checked)
-            // A checkbox with no value attribute reports "on", so read the
-            // dataset rather than falling back to it.
-            .map((box) => box.dataset.app),
-        ],
+        allow: [...this._draft.appAllow],
+        deny: this._deniedApps(root),
       },
     };
+  }
+
+  /**
+   * The apps a role may not open, read back off the form.
+   *
+   * One list, written from two tables: the apps section has a box per app, and
+   * the Dashboards table carries each dashboard's as its "Can open" column.
+   * Reading only the first silently dropped every dashboard denial on save --
+   * unticking "Can open" redrew unticked and granted the dashboard back, and a
+   * url_path added through the role API disappeared the next time anyone
+   * touched an unrelated checkbox.
+   *
+   * A denial the form draws no box for is carried rather than rebuilt: the
+   * system panels, which are never offered, and anything a stored role names
+   * that is not installed right now -- a stopped add-on, a deleted dashboard.
+   * Those have no box to read, so rebuilding from boxes alone would grant them
+   * back the moment the role was saved on an instance where they are missing.
+   */
+  _deniedApps(root) {
+    const boxes = [
+      ...root.querySelectorAll("[data-app]"),
+      ...root.querySelectorAll('[data-dash][data-level="open"]'),
+    ];
+    // A checkbox with no value attribute reports "on", so read the dataset
+    // rather than falling back to it.
+    const path = (box) => box.dataset.app || box.dataset.dash;
+    const offered = new Set(boxes.map(path));
+    return [
+      ...boxes.filter((box) => !box.checked).map(path),
+      ...this._draft.appDenied.filter((denied) => !offered.has(denied)),
+    ];
   }
 
   async _guard(action, done) {
