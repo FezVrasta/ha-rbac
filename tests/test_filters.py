@@ -154,6 +154,35 @@ async def test_lovelace_cards_are_filtered_by_its_own_conventions(
     assert cards[1]["entities"] == ["light.a"]
 
 
+async def test_rest_dashboard_config_is_scrubbed_like_its_websocket_spelling(
+    hass: HomeAssistant,
+) -> None:
+    """`GET /api/lovelace/dashboard/<url_path>` answers with a lovelace config.
+
+    The generic walk does not recognise Lovelace's `entity`/`entities` keys,
+    so without the lovelace scrubber the REST spelling would leak the ids of
+    entities the role cannot read that the websocket spelling drops.
+    """
+    from custom_components.ha_rbac.filters import filter_rest_lovelace  # noqa: PLC0415
+
+    config = {
+        "views": [
+            {
+                "cards": [
+                    {"type": "button", "entity": "lock.front"},
+                    {"type": "button", "entity": "light.kitchen"},
+                    {"type": "entities", "entities": ["light.a", "lock.front"]},
+                ]
+            }
+        ]
+    }
+    result = filter_rest_lovelace(_ctx(hass, {"lock.front"}), config)
+    cards = result["views"][0]["cards"]
+    assert len(cards) == 2
+    assert cards[0]["entity"] == "light.kitchen"
+    assert cards[1]["entities"] == ["light.a"]
+
+
 async def test_current_user_is_reported_as_non_admin(hass: HomeAssistant) -> None:
     """Cosmetic: stops the frontend offering admin UI that would fail."""
     result = REGISTRY.filter_result(
