@@ -386,3 +386,22 @@ def test_the_inline_gate_detector_reads_both_shapes() -> None:
     assert gates_on_admin(answers_401) is True
     assert gates_on_admin(branches) is False
     assert gates_on_admin(unrelated) is False
+
+
+async def test_the_ios_config_path_is_open_when_no_view_claims_it(
+    hass: HomeAssistant,
+) -> None:
+    """The iOS app accepts a 404 for this path and loops on a 403.
+
+    `ios` is not part of `default_config` and `mobile_app` does not depend on it,
+    so on many installs nothing registers `/api/ios/config`. It used to fall to
+    the admin default, and a restricted user's app refreshed its token in a loop.
+    Only the one verb and path are opened: the rest of that namespace stays admin.
+    """
+    await async_setup_component(hass, "http", {})
+    catalog = Catalog(hass)
+    catalog.rebuild()
+
+    assert catalog.tier_for_request("GET", "/api/ios/config") == TIER_OPEN
+    assert catalog.tier_for_request("POST", "/api/ios/config") == TIER_ADMIN
+    assert catalog.tier_for_request("GET", "/api/ios/other") == TIER_ADMIN

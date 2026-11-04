@@ -35,6 +35,10 @@ class Denial:
     # say how long ago something broke -- the first question when someone
     # reports that a UI stopped working.
     ts: float = 0.0
+    # How many times in a row this same request was refused. A client that retries
+    # a refused call in a loop would otherwise fill the whole buffer with one row
+    # and push every earlier denial out of it.
+    count: int = 1
 
 
 class DenyLog:
@@ -53,8 +57,26 @@ class DenyLog:
         # that set it explicitly is left alone.
         if not denial.ts:
             denial.ts = dt_util.utcnow().timestamp()
-        self._entries.append(denial)
         self._hass.bus.async_fire(EVENT_RBAC_DENIED, asdict(denial))
+        if (last := self._entries[-1] if self._entries else None) is not None and (
+            last.user_id,
+            last.kind,
+            last.name,
+            last.reason,
+            last.detail,
+            last.resources,
+        ) == (
+            denial.user_id,
+            denial.kind,
+            denial.name,
+            denial.reason,
+            denial.detail,
+            denial.resources,
+        ):
+            last.count += 1
+            last.ts = denial.ts
+            return
+        self._entries.append(denial)
 
     @callback
     def async_recent(self, limit: int = 100) -> list[dict[str, Any]]:

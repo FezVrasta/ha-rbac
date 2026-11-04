@@ -233,3 +233,29 @@ async def test_a_role_stored_with_the_retired_dashboard_level_survives(
     )
 
     assert role["apps"]["dashboards"] == {"kids": "content"}
+
+
+async def test_a_request_refused_in_a_loop_is_one_row_with_a_count(
+    hass: HomeAssistant,
+) -> None:
+    """One retrying client must not push every earlier denial out of the buffer.
+
+    The same request refused again straight away is folded into the row before
+    it, and an event still fires for each so automations see every refusal.
+    """
+    events: list[dict] = []
+    hass.bus.async_listen(EVENT_RBAC_DENIED, lambda event: events.append(event.data))
+    log = DenyLog(hass)
+    log.async_record(Denial("u1", "Guest", "ws", "render_template", "unbounded", []))
+    for _ in range(150):
+        log.async_record(Denial("u2", "Kid", "http", "GET /x", "tier", []))
+    log.async_record(Denial("u1", "Guest", "ws", "render_template", "unbounded", []))
+    await hass.async_block_till_done()
+
+    recent = log.async_recent()
+    assert [(d["user_id"], d["count"]) for d in recent] == [
+        ("u1", 1),
+        ("u2", 150),
+        ("u1", 1),
+    ]
+    assert len(events) == 152

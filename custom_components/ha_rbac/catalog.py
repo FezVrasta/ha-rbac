@@ -238,6 +238,17 @@ def _url_to_pattern(url: str) -> "re.Pattern[str]":
 # not. GET and HEAD because that is all the router answers there.
 STATIC_METHODS = ("get", "head")
 
+# Paths the Companion app requests that no view claims when the integration that
+# owns them is not loaded. The iOS app fetches `/api/ios/config` on every launch
+# and accepts only Home Assistant's own `404: Not Found`; `mobile_app` does not
+# depend on `ios`, and `ios` is not part of `default_config`, so on an install
+# without it nothing registers the path and it would fall to the admin default.
+# A restricted user then got a 403, which the app reads as an auth failure and
+# answers with a token refresh, over and over. Open here means "let Home
+# Assistant answer": if `ios` is loaded the view claims the path first and its
+# own tier applies, and if it is not Home Assistant says 404.
+UNCLAIMED_COMPANION_PATHS = frozenset({("get", "/api/ios/config")})
+
 
 @dataclass(slots=True)
 class StaticInfo:
@@ -539,6 +550,8 @@ class Catalog:
             # written into `www/` was being refused to the people it was put
             # there for, while a stranger could still fetch it.
             if self.serves_a_file(method, path):
+                return TIER_OPEN
+            if (method.lower(), path.rstrip("/")) in UNCLAIMED_COMPANION_PATHS:
                 return TIER_OPEN
             return TIER_ADMIN
         return route.tier_for_method(method)

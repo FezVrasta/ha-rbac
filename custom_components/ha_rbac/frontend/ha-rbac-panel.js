@@ -2269,7 +2269,9 @@ class HaRbacPanel extends HTMLElement {
             d.ts ? new Date(d.ts * 1000).toLocaleString() : ""
           )}">${timeAgo(d.ts) ? esc(timeAgo(d.ts)) : "&mdash;"}</td>
           <td>${esc(d.user_name || d.user_id)}</td>
-          <td><code>${esc(d.name)}</code></td>
+          <td><code>${esc(d.name)}</code>${
+            d.count > 1 ? ` <span class="hint">&times;${d.count}</span>` : ""
+          }</td>
           <td>${esc(this._reason(d.reason))}${
             // Absent on denials recorded before this was logged, and on the
             // few refusals that carry no diagnostic worth showing.
@@ -2735,7 +2737,13 @@ class HaRbacPanel extends HTMLElement {
         overlay.remove();
         this._modal = null;
         // Put focus back where it was, unless that element has since gone.
-        if (previous && previous.isConnected) previous.focus();
+        if (previous && previous.isConnected) {
+          try {
+            previous.focus();
+          } catch (_) {
+            // Focus is a courtesy; the answer must still go out.
+          }
+        }
         resolve(value);
       };
 
@@ -2762,8 +2770,13 @@ class HaRbacPanel extends HTMLElement {
         finish(true)
       );
       // The cancelling button takes focus, so Return on an unread dialog is the
-      // answer that changes nothing.
-      overlay.querySelector("#modal-cancel").focus();
+      // answer that changes nothing. An `ha-button` builds its inner <button> on
+      // its first update, and `focus()` before that throws out of this executor,
+      // which leaves the promise rejected and the confirmation unable to answer.
+      const cancel = overlay.querySelector("#modal-cancel");
+      Promise.resolve(cancel.updateComplete)
+        .then(() => cancel.focus())
+        .catch(() => {});
     });
   }
 

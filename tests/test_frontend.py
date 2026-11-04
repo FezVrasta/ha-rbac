@@ -306,3 +306,18 @@ def test_the_new_role_button_uses_an_attribute_this_frontend_reads() -> None:
     tag = source[tag_start : source.index(">", tag_start) + 1]
     assert "appearance=" in tag, tag
     assert "raised" not in tag, tag
+
+
+def test_the_dialog_waits_for_its_button_before_focusing_it() -> None:
+    """`ha-button` has no inner <button> until its first update.
+
+    Calling `focus()` straight after appending the overlay threw "this.button is
+    null" out of the promise executor, so the dialog rejected instead of ever
+    answering and deleting a role did nothing at all.
+    """
+    source = PANEL.read_text()
+    confirm = source[
+        source.index("  _confirm({") : source.index("  async _confirmDiscard")
+    ]
+    assert "updateComplete" in confirm
+    assert 'querySelector("#modal-cancel").focus()' not in confirm
