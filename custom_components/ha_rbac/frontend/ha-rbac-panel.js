@@ -924,10 +924,13 @@ class HaRbacPanel extends HTMLElement {
         role is allowed elsewhere, or it can carry its own contents with it.
         Those are read from the dashboard whenever a request is judged, so
         editing a dashboard changes what its holders see without anyone
-        reopening the role. A denial elsewhere still wins.</p>
+        reopening the role. A denial elsewhere still wins. The last column
+        only adds entities the role could not read already: a role that reads
+        everything, like Read only, shows every entity on any dashboard it can
+        open, whatever this column says.</p>
       <table id="dashboards">
         <thead><tr>
-          <th>Dashboard</th><th>Can open</th><th>Sees what is on it</th>
+          <th>Dashboard</th><th>Can open</th><th>Also grants what is on it</th>
         </tr></thead>
         <tbody>${this._visibleApps()
           .filter((app) => app.kind === "lovelace")
