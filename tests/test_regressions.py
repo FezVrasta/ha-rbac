@@ -2251,3 +2251,26 @@ async def test_an_attribute_that_is_not_a_member_list_is_not_expanded(
         _call("light", "turn_off", "light.odd"),
     )
     assert decision.allowed is True
+
+
+async def test_notifications_are_withheld_unless_the_role_holds_the_capability(
+    hass: HomeAssistant,
+) -> None:
+    """The bell's text is free-form and no entity list narrows it.
+
+    `persistent_notification/*` is open to every role at the user tier, so a
+    restricted role read whatever an administrator or an integration wrote
+    there. A role now gets none unless it names the capability; an
+    administrative ceiling is left alone.
+    """
+    bare = compile_role(hass, _role("a"), _lookup(hass))
+    held = compile_role(hass, _role("b", capabilities=["notifications"]), _lookup(hass))
+    admin = compile_role(
+        hass,
+        _role("c", tiers={"max": TIER_ADMIN, "allow": ["*"], "deny": []}),
+        _lookup(hass),
+    )
+    for command in ("persistent_notification/get", "persistent_notification/subscribe"):
+        assert Permissions(roles=[bare]).tier_allowed(command, TIER_OPEN) is False
+        assert Permissions(roles=[held]).tier_allowed(command, TIER_OPEN) is True
+        assert Permissions(roles=[admin]).tier_allowed(command, TIER_OPEN) is True

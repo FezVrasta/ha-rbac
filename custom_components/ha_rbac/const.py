@@ -172,7 +172,27 @@ CAPABILITIES: Final = (
         "description": "Create, download and restore backups.",
         "patterns": ("backup/*",),
     },
+    {
+        "id": "notifications",
+        "title": "Notifications",
+        "description": (
+            "Read and dismiss the notifications in the bell. They are free text "
+            "that integrations and automations write, and no entity list can "
+            "narrow them, so a role gets none unless it holds this."
+        ),
+        "patterns": ("persistent_notification/*",),
+        # Unlike the others this one is open to every role at the user tier, so
+        # not holding it has to refuse it rather than merely not grant it.
+        "default_deny": True,
+    },
 )
+
+# What a role that does not hold a `default_deny` capability may not run.
+WITHHELD_UNLESS_GRANTED: Final[dict[str, tuple[str, ...]]] = {
+    capability["id"]: capability["patterns"]
+    for capability in CAPABILITIES
+    if capability.get("default_deny")
+}
 
 CAPABILITY_PATTERNS: Final[dict[str, tuple[str, ...]]] = {
     capability["id"]: capability["patterns"] for capability in CAPABILITIES

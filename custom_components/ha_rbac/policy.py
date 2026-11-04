@@ -50,6 +50,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     CAPABILITY_PATTERNS,
+    WITHHELD_UNLESS_GRANTED,
     GRANT_SECTIONS,
     ROLE_ADMIN,
     ROLE_EDITOR,
@@ -458,6 +459,7 @@ def default_roles() -> dict[str, dict[str, Any]]:
                 "scenes",
                 "dashboards",
                 "helpers",
+                "notifications",
             ],
         },
         ROLE_USER: {
@@ -470,6 +472,7 @@ def default_roles() -> dict[str, dict[str, Any]]:
             },
             "deny": {},
             "tiers": {"max": TIER_USER, "allow": [], "deny": list(ACTS_ON_INTENT)},
+            "capabilities": ["notifications"],
         },
         ROLE_READ_ONLY: {
             "id": ROLE_READ_ONLY,
@@ -479,6 +482,7 @@ def default_roles() -> dict[str, dict[str, Any]]:
             "allow": {CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
             "deny": {},
             "tiers": {"max": TIER_USER, "allow": [], "deny": list(ACTS_ON_INTENT)},
+            "capabilities": ["notifications"],
         },
     }
 
@@ -983,6 +987,19 @@ def compile_role(
         *capability_patterns(role.get("capabilities")),
         *(tiers.get("allow") or []),
     ]
+    # Held-by-default capabilities are open to every role, so a role that does
+    # not name one has to refuse it. An administrative ceiling is left alone: it
+    # reaches everything else too.
+    withheld = (
+        []
+        if tier_max == TIER_ADMIN
+        else [
+            pattern
+            for capability, patterns in WITHHELD_UNLESS_GRANTED.items()
+            if capability not in (role.get("capabilities") or [])
+            for pattern in patterns
+        ]
+    )
     attribute_rules = _compile_attribute_rules(hass, attributes)
     choice_rules = _compile_choice_rules(hass, choices)
     grant_rules = {
@@ -998,7 +1015,7 @@ def compile_role(
         cap_fn=compile_caps(allow_policy.get(CAT_ENTITIES), perm_lookup),
         tier_max=tier_max,
         tier_allow=tier_allow,
-        tier_deny=[*BASELINE_DENY, *(tiers.get("deny") or [])],
+        tier_deny=[*BASELINE_DENY, *withheld, *(tiers.get("deny") or [])],
         app_allow=list(apps.get("allow") or []),
         app_deny=list(apps.get("deny") or []),
         attribute_rules=attribute_rules,

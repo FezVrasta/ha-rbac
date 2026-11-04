@@ -193,6 +193,7 @@ async def broad_catalog_fixture(hass: HomeAssistant) -> Catalog:
         "backup",
         "blueprint",
         "person",
+        "persistent_notification",
     ):
         await async_setup_component(hass, domain, {domain: {}})
     await hass.async_block_till_done()
