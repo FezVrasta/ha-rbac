@@ -191,6 +191,22 @@ async def test_current_user_is_reported_as_non_admin(hass: HomeAssistant) -> Non
     assert result["is_admin"] is False
 
 
+async def test_current_user_stays_admin_for_an_admin_ceiling(
+    hass: HomeAssistant,
+) -> None:
+    """A role handed the administrative tier gets the Settings area back.
+
+    The frontend builds Settings from this flag, so reporting false for a role
+    that really reaches admin commands left that page empty (#81). A user Home
+    Assistant itself calls non-admin stays non-admin.
+    """
+    ctx = FilterContext(hass, lambda entity_id, key: True, admin_ui=True)
+    admin = REGISTRY.filter_result("auth/current_user", ctx, {"is_admin": True})
+    assert admin["is_admin"] is True
+    plain = REGISTRY.filter_result("auth/current_user", ctx, {"is_admin": False})
+    assert plain["is_admin"] is False
+
+
 async def test_catalogues_are_passed_through(hass: HomeAssistant) -> None:
     """Pruning a themes payload would corrupt the UI and conceal nothing."""
     payload = {"themes": {"dark": {"primary-color": "#000"}}, "default_theme": "dark"}

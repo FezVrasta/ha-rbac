@@ -1102,6 +1102,13 @@ class Permissions:
             for role in self.roles
         )
 
+    @property
+    def reaches_admin_tier(self) -> bool:
+        """Return True if any role's ceiling is the administrative tier."""
+        return self.pass_through or any(
+            role.tier_max == TIER_ADMIN for role in self.roles
+        )
+
     def tier_allowed(self, command: str, tier: str) -> bool:
         """Return True if any role permits a command at the given tier.
 

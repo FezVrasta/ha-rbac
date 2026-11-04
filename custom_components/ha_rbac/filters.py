@@ -88,9 +88,13 @@ class FilterContext:
         app_allowed: "Callable[[str], bool] | None" = None,
         attribute_hidden: "Callable[[str, str], bool] | None" = None,
         past_check: "Callable[[str, str], bool] | None" = None,
+        admin_ui: bool = False,
     ) -> None:
         """Initialise the context."""
         self.hass = hass
+        # Whether a role reaches the administrative tier, so the frontend may
+        # offer the settings screens the user can really use.
+        self.admin_ui = admin_ui
         self.check = check
         self._app_allowed = app_allowed
         self._attribute_hidden = attribute_hidden
@@ -149,6 +153,7 @@ class FilterContext:
             permissions.app_allowed,
             permissions.attribute_hidden if permissions.hides_attributes else None,
             permissions.past_allowed,
+            permissions.reaches_admin_tier,
         )
 
     def app_visible(self, url_path: str) -> bool:
@@ -1062,10 +1067,13 @@ def _filter_current_user(ctx: FilterContext, result: Any) -> Any:
     """Report a restricted user as non-admin so the frontend hides admin UI.
 
     Cosmetic only. The enforcement is the tier gate; this just stops the UI
-    offering things that will fail.
+    offering things that will fail. A role whose ceiling is the administrative
+    tier keeps the flag Home Assistant reported: the frontend builds the whole
+    Settings area from it, so a role handed Settings and full administration
+    got a Settings page with nothing on it.
     """
     if isinstance(result, dict):
-        return {**result, "is_admin": False}
+        return {**result, "is_admin": bool(result.get("is_admin")) and ctx.admin_ui}
     return result
 
 
