@@ -535,7 +535,7 @@ class Decider:
         tier = (
             self._catalog.tier_for_request(method, path)
             if kind == KIND_HTTP
-            else self._catalog.tier_for(name)
+            else self._catalog.tier_for(name, payload)
         )
         if not permissions.tier_allowed(name, tier):
             return Decision(

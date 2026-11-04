@@ -50,7 +50,6 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     CAPABILITY_PATTERNS,
-    WITHHELD_UNLESS_GRANTED,
     GRANT_SECTIONS,
     ROLE_ADMIN,
     ROLE_EDITOR,
@@ -60,6 +59,7 @@ from .const import (
     TIER_OPEN,
     TIER_ORDER,
     TIER_USER,
+    WITHHELD_UNLESS_GRANTED,
 )
 
 # The one place a command has to be named. Each of these defeats the rest of the

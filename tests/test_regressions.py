@@ -840,7 +840,7 @@ async def test_denying_one_dashboard_leaves_the_others_alone(
     ]
     # Isolate the app gate: this command is not registered in this
     # fixture, so the tier gate would answer first and prove nothing.
-    catalog.tier_for = lambda command: TIER_OPEN
+    catalog.tier_for = lambda command, payload=None: TIER_OPEN
     decider = Decider(hass, catalog, REGISTRY)
 
     role = compile_role(
@@ -886,7 +886,7 @@ async def test_the_default_dashboard_is_not_refused_by_accident(
     catalog.apps = lambda: [
         {"url_path": "lovelace", "title": "Overview", "kind": "lovelace", "addon": None}
     ]
-    catalog.tier_for = lambda command: TIER_OPEN
+    catalog.tier_for = lambda command, payload=None: TIER_OPEN
     decider = Decider(hass, catalog, REGISTRY)
 
     role = compile_role(
@@ -923,7 +923,7 @@ async def test_a_denied_addon_is_refused_at_the_supervisor_api(
             "addon": "a0d7b954_nodered",
         }
     ]
-    catalog.tier_for = lambda command: TIER_OPEN
+    catalog.tier_for = lambda command, payload=None: TIER_OPEN
     decider = Decider(hass, catalog, REGISTRY)
 
     role = compile_role(

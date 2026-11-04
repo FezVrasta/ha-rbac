@@ -76,6 +76,8 @@ async def test_derivation_finds_no_phantom_admins(catalog: Catalog) -> None:
         if (static := declared.get(command)) is not None
         and not static.admin
         and info.tier == TIER_ADMIN
+        # Gated in the handler's own body, which the static scan cannot see.
+        and not info.inline_gate
     ]
     assert not phantom, f"derived admin for non-admin commands: {sorted(phantom)}"
 
@@ -406,3 +408,40 @@ async def test_the_ios_config_path_is_open_when_no_view_claims_it(
     assert catalog.tier_for_request("GET", "/api/ios/config") == TIER_OPEN
     assert catalog.tier_for_request("POST", "/api/ios/config") == TIER_ADMIN
     assert catalog.tier_for_request("GET", "/api/ios/other") == TIER_ADMIN
+
+
+async def test_a_command_that_gates_on_admin_inline_is_admin_tier(
+    hass: HomeAssistant,
+) -> None:
+    """`supervisor/api`, `mqtt/subscribe` and `subscribe_events` check in their body.
+
+    They carry no decorator, so they derived as open, and a role held by an
+    administrator who is not the owner reached them: Core restarts, every MQTT
+    topic, the whole event bus. The payloads core lets anyone send stay open,
+    which is what keeps ingress working for a restricted user.
+    """
+    from homeassistant.components.hassio.websocket_api import (  # noqa: PLC0415
+        websocket_supervisor_api,
+    )
+    from homeassistant.components.websocket_api import commands  # noqa: PLC0415
+
+    await async_setup_component(hass, "websocket_api", {})
+    hass.data["websocket_api"]["supervisor/api"] = (websocket_supervisor_api, None)
+    catalog = Catalog(hass)
+    catalog.rebuild()
+
+    assert catalog.tier_for("supervisor/api") == TIER_ADMIN
+    assert (
+        catalog.tier_for("supervisor/api", {"endpoint": "/core/restart"}) == TIER_ADMIN
+    )
+    assert (
+        catalog.tier_for("supervisor/api", {"endpoint": "/ingress/session"})
+        == TIER_OPEN
+    )
+    assert catalog.tier_for("subscribe_events", {"event_type": "call_service"}) == (
+        TIER_ADMIN
+    )
+    assert catalog.tier_for("subscribe_events", {"event_type": "state_changed"}) == (
+        TIER_OPEN
+    )
+    assert commands.SUBSCRIBE_ALLOWLIST

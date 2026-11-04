@@ -1001,6 +1001,10 @@ async def test_a_denial_never_reaches_a_restricted_subscriber(
             "name": "Scoped down",
             "allow": {"entities": {"all": {"read": True}}},
             "deny": {"entities": {"domains": {"lock": True}}},
+            # The tier gate refuses an unfiltered subscription by default. This
+            # role is handed it on purpose, so what is under test is what the
+            # response filter does once it is let through.
+            "tiers": {"max": "user", "allow": ["subscribe_events"], "deny": []},
         }
     )
     await store.async_set_binding(hass_admin_user.id, [role["id"]])

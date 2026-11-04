@@ -329,7 +329,7 @@ async def handle_simulate(
             "detail": decision.detail,
             "resources": decision.resources,
             "filter_response": decision.filter_response,
-            "tier": data.catalog.tier_for(msg["command"]),
+            "tier": data.catalog.tier_for(msg["command"], msg["payload"]),
             "role_ids": [role.role_id for role in permissions.roles],
             "pass_through": permissions.pass_through,
         },

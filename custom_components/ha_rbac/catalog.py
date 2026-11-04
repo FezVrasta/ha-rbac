@@ -8,7 +8,7 @@ across releases instead of rotting.
 
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from functools import partial
@@ -86,6 +86,13 @@ class CommandInfo:
     required_resources: set[str]
     optional_resources: set[str]
     is_write: bool
+    # For a command that refuses non-administrators in its own body, but only
+    # for part of what it accepts: says which payloads that refusal does not
+    # reach, and so stay open.
+    open_for: "Callable[[dict[str, Any]], bool] | None" = None
+    # Whether the admin tier came from that inline refusal rather than from a
+    # decorator.
+    inline_gate: bool = False
 
     @property
     def has_resource_field(self) -> bool:
@@ -180,6 +187,37 @@ def gates_on_admin(handler: Any) -> bool:
         ):
             return True
     return False
+
+
+def _inline_exemptions() -> "dict[str, Callable[[dict[str, Any]], bool]]":
+    """Return which payloads core lets a non-administrator send, per command.
+
+    Read from core rather than copied, so the exemption moves with it. If a
+    constant cannot be found the command simply has no exemption and stays
+    administrative, which is the safe direction.
+    """
+    exemptions: dict[str, Callable[[dict[str, Any]], bool]] = {}
+    try:
+        from homeassistant.components.hassio.websocket_api import (  # noqa: PLC0415
+            WS_NO_ADMIN_ENDPOINTS,
+        )
+
+        exemptions["supervisor/api"] = lambda msg: bool(
+            WS_NO_ADMIN_ENDPOINTS.match(msg.get("endpoint", ""))
+        )
+    except ImportError:
+        pass
+    try:
+        from homeassistant.components.websocket_api.commands import (  # noqa: PLC0415
+            SUBSCRIBE_ALLOWLIST,
+        )
+
+        exemptions["subscribe_events"] = lambda msg: (
+            msg.get("event_type", "*") in SUBSCRIBE_ALLOWLIST
+        )
+    except ImportError:
+        pass
+    return exemptions
 
 
 HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
@@ -401,12 +439,27 @@ class Catalog:
         for command, entry in handlers.items():
             handler, schema = entry if isinstance(entry, tuple) else (entry, None)
             required, optional = schema_resource_markers(schema)
+            tier = derive_tier(handler)
+            open_for = None
+            inline_gate = False
+            # A command that checks `is_admin` in its body carries no decorator,
+            # so it derives as open. Core refuses a non-administrator, which is
+            # why an ordinary restricted user is unaffected, but a role held by
+            # an administrator who is not the owner would reach it: restarting
+            # Core through `supervisor/api`, reading every MQTT topic, or
+            # subscribing to the whole event bus.
+            if tier == TIER_OPEN and gates_on_admin(handler):
+                tier = TIER_ADMIN
+                inline_gate = True
+                open_for = _inline_exemptions().get(command)
             commands[command] = CommandInfo(
                 command=command,
-                tier=derive_tier(handler),
+                tier=tier,
                 required_resources=required,
                 optional_resources=optional,
                 is_write=bool(WRITE_PATTERN.search(command)),
+                open_for=open_for,
+                inline_gate=inline_gate,
             )
 
         self._commands = commands
@@ -435,14 +488,22 @@ class Catalog:
         )
 
     @callback
-    def tier_for(self, command: str) -> str:
+    def tier_for(self, command: str, payload: "dict[str, Any] | None" = None) -> str:
         """Return the tier for a command, defaulting to admin when unknown.
 
         An unknown command is one this build has never seen registered, so the
-        safe assumption is the most restrictive one.
+        safe assumption is the most restrictive one. A command that gates only
+        part of its input is admin unless the payload is one core lets anyone
+        send, which is how ingress keeps working for a restricted user.
         """
         if (info := self._commands.get(command)) is None:
             return TIER_ADMIN
+        if info.open_for is not None and payload is not None:
+            try:
+                if info.open_for(payload):
+                    return TIER_OPEN
+            except (TypeError, ValueError):
+                pass
         return info.tier
 
     @callback
