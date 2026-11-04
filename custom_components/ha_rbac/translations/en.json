@@ -61,5 +61,11 @@
         }
       }
     }
+  },
+  "issues": {
+    "remote_ui_bypasses_roles": {
+      "title": "Home Assistant Cloud Remote UI bypasses roles",
+      "description": "Remote UI is on. Requests that arrive through the Nabu Casa relay are served by Home Assistant's own server, not by the Access Control proxy, so nobody coming in that way is held to a role. Turn Remote UI off under Settings > Home Assistant Cloud, or give only accounts that should have full access permission to sign in remotely."
+    }
   }
 }

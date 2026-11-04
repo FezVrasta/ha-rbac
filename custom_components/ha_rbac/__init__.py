@@ -59,6 +59,7 @@ from .models import RbacData
 from .policy import Evaluator
 from .proxy import RbacProxy
 from .record import Recorder
+from .remote_ui import async_watch as async_watch_remote_ui
 from .store import RbacStore
 from .util import async_upstream_is_loopback_only
 
@@ -148,6 +149,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # A Companion app's webhook runs as its owner with Core's native permissions,
     # which the proxy never sees. Judge the commands in Core's own dispatcher.
     data.unsubscribes.append(async_guard_webhooks(hass))
+    data.unsubscribes.extend(async_watch_remote_ui(hass))
     data.dashboard_entities = dashboard_entities
     websocket_api.async_register(hass)
     # The panel is how roles are administered, but it is not how they are
