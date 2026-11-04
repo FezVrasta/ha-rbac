@@ -89,6 +89,7 @@ class FilterContext:
         attribute_hidden: "Callable[[str, str], bool] | None" = None,
         past_check: "Callable[[str, str], bool] | None" = None,
         admin_ui: bool = False,
+        reports_as_admin: bool = False,
     ) -> None:
         """Initialise the context."""
         self.hass = hass
@@ -99,6 +100,7 @@ class FilterContext:
         self._app_allowed = app_allowed
         self._attribute_hidden = attribute_hidden
         self._past_check = past_check
+        self.reports_as_admin = reports_as_admin
 
     @property
     def hides_attributes(self) -> bool:
@@ -154,6 +156,7 @@ class FilterContext:
             permissions.attribute_hidden if permissions.hides_attributes else None,
             permissions.past_allowed,
             permissions.reaches_admin_tier,
+            permissions.reports_as_admin,
         )
 
     def app_visible(self, url_path: str) -> bool:
@@ -1066,14 +1069,30 @@ def filter_rest_lovelace(ctx: FilterContext, payload: Any) -> Any:
 def _filter_current_user(ctx: FilterContext, result: Any) -> Any:
     """Report a restricted user as non-admin so the frontend hides admin UI.
 
-    Cosmetic only. The enforcement is the tier gate; this just stops the UI
-    offering things that will fail. A role whose ceiling is the administrative
-    tier keeps the flag Home Assistant reported: the frontend builds the whole
-    Settings area from it, so a role handed Settings and full administration
-    got a Settings page with nothing on it.
+    Cosmetic only. The real enforcement is the tier and resource gates; this
+    just stops the UI offering things that will fail.
+
+    Home Assistant builds its whole Settings area from this flag, and shows its
+    dashboard editor by it alone, with nothing finer underneath. Two things make
+    a role keep the flag Home Assistant reported:
+
+    * its ceiling is the administrative tier (`admin_ui`), because it can then
+      really use what is offered;
+    * it holds a dashboard-edit grant *and* has opted in (`reports_as_admin`).
+      Reporting administrator for the editor's sake also opens the Settings
+      sidebar, user management and integrations in the menu, so it needs its
+      own opt-in rather than riding along with the grant. Every gate still runs
+      behind the flag exactly as before; it widens what is *offered*, never what
+      is granted.
+
+    A user Home Assistant itself calls non-admin stays non-admin.
     """
     if isinstance(result, dict):
-        return {**result, "is_admin": bool(result.get("is_admin")) and ctx.admin_ui}
+        return {
+            **result,
+            "is_admin": bool(result.get("is_admin"))
+            and (ctx.admin_ui or ctx.reports_as_admin),
+        }
     return result
 
 
