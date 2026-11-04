@@ -727,17 +727,48 @@ async def test_app_rules_are_deny_by_default_open(hass: HomeAssistant) -> None:
     assert Permissions(roles=[role]).app_allowed("energy") is True
 
 
-async def test_an_app_denial_survives_another_role_allowing_it(
+async def test_an_app_denial_does_not_override_another_role(
     hass: HomeAssistant,
 ) -> None:
-    """Denials win, so composing roles cannot hand back a hidden app."""
-    denying = compile_role(
-        hass, _role("a", apps={"allow": [], "deny": ["energy"]}), _lookup(hass)
+    """Roles union, so one role's denial cannot hide what another opens.
+
+    The panel writes "where this role can go" as a deny list of everything left
+    unticked. A user holding "Lights only" and "Climate only" must get both:
+    with a denial that vetoed across roles each one hid the other's app and the
+    user landed on "No access" with an empty sidebar.
+    """
+    lights = compile_role(
+        hass, _role("a", apps={"allow": [], "deny": ["climate"]}), _lookup(hass)
     )
-    permissive = compile_role(hass, _role("b"), _lookup(hass))
-    perms = Permissions(roles=[denying, permissive])
-    assert perms.app_allowed("energy") is False
-    assert perms.app_allowed("history") is True
+    climate = compile_role(
+        hass, _role("b", apps={"allow": [], "deny": ["light"]}), _lookup(hass)
+    )
+    perms = Permissions(roles=[lights, climate])
+    assert perms.app_allowed("light") is True
+    assert perms.app_allowed("climate") is True
+    assert Permissions(roles=[lights]).app_allowed("climate") is False
+
+
+async def test_a_tier_denial_does_not_override_another_role(
+    hass: HomeAssistant,
+) -> None:
+    """The same shape for tiers, with the baseline denial still shared."""
+    denying = compile_role(
+        hass,
+        _role("a", tiers={"max": TIER_USER, "allow": [], "deny": ["lovelace/*"]}),
+        _lookup(hass),
+    )
+    granting = compile_role(
+        hass,
+        _role("b", tiers={"max": TIER_USER, "allow": [], "deny": []}),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[denying, granting])
+    assert perms.tier_allowed("lovelace/config", TIER_USER) is True
+    assert (
+        Permissions(roles=[denying]).tier_allowed("lovelace/config", TIER_USER) is False
+    )
+    assert perms.tier_allowed("auth/sign_path", TIER_OPEN) is False
 
 
 async def test_an_app_allow_list_hides_everything_else(hass: HomeAssistant) -> None:

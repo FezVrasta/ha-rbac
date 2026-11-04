@@ -1033,6 +1033,24 @@ def compile_role(
     )
 
 
+def _role_permits_tier(role: CompiledRole, command: str, tier: str) -> bool:
+    """Return True if this one role lets its holder run a command at a tier."""
+    if any(fnmatch(command, pattern) for pattern in role.tier_deny):
+        return False
+    if any(fnmatch(command, pattern) for pattern in role.tier_allow):
+        return True
+    return TIER_ORDER.index(role.tier_max) >= TIER_ORDER.index(tier)
+
+
+def _role_permits_app(role: CompiledRole, url_path: str) -> bool:
+    """Return True if this one role lets its holder open an app."""
+    if any(fnmatch(url_path, pattern) for pattern in role.app_deny):
+        return False
+    if not role.app_allow:
+        return True
+    return any(fnmatch(url_path, pattern) for pattern in role.app_allow)
+
+
 @dataclass(slots=True)
 class Permissions:
     """The effective permissions of one user: the union of their roles."""
@@ -1087,25 +1105,14 @@ class Permissions:
     def tier_allowed(self, command: str, tier: str) -> bool:
         """Return True if any role permits a command at the given tier.
 
-        Explicit globs win over the ranked comparison: a deny glob in any role
-        vetoes, then an allow glob in any role grants, then the tier ranking.
+        Each role answers for itself and the answers are unioned. Within a role
+        an explicit glob wins over the ranked comparison: its deny globs veto,
+        then its allow globs grant, then its tier ceiling. `BASELINE_DENY` rides
+        in every role's deny list, so what no role may do stays refused for all.
         """
         if self.pass_through:
             return True
-        if any(
-            fnmatch(command, pattern)
-            for role in self.roles
-            for pattern in role.tier_deny
-        ):
-            return False
-        if any(
-            fnmatch(command, pattern)
-            for role in self.roles
-            for pattern in role.tier_allow
-        ):
-            return True
-        rank = TIER_ORDER.index(tier)
-        return any(TIER_ORDER.index(role.tier_max) >= rank for role in self.roles)
+        return any(_role_permits_tier(role, command, tier) for role in self.roles)
 
     def attribute_hidden(self, entity_id: str, name: str) -> bool:
         """Return True if an attribute must be withheld from this entity.
@@ -1172,25 +1179,18 @@ class Permissions:
     def app_allowed(self, url_path: str) -> bool:
         """Return True if any role permits this app.
 
-        Denials win, then an explicit allow list, then the default of allowing
-        whatever the tier gate already lets through.
+        Each role answers for itself, the way entities do: its denials win, then
+        its explicit allow list if it has one, then the default of allowing
+        whatever the tier gate already lets through. The roles are then unioned.
+
+        The panel writes "where this role can go" as a *deny* list of everything
+        unticked, so a role that opens Lights denies Climate and the other way
+        round. Letting one role's denial veto across the others gave a user
+        holding both nothing at all.
         """
         if self.pass_through:
             return True
-        if any(
-            fnmatch(url_path, pattern)
-            for role in self.roles
-            for pattern in role.app_deny
-        ):
-            return False
-        allow_lists = [role.app_allow for role in self.roles if role.app_allow]
-        if not allow_lists:
-            return True
-        return any(
-            fnmatch(url_path, pattern)
-            for patterns in allow_lists
-            for pattern in patterns
-        )
+        return any(_role_permits_app(role, url_path) for role in self.roles)
 
     @property
     def full_access(self) -> bool:
