@@ -859,6 +859,53 @@ async def test_full_access_connection_still_records_ingress_sessions(
     assert guard.user_id_for("minted") == proxy_env["read_only_user"].id
 
 
+async def test_dedicated_ingress_commands_record_and_renew_sessions(
+    proxy_env: dict[str, Any],
+) -> None:
+    """Since Home Assistant 2026.11 the frontend opens ingress without an endpoint.
+
+    It mints the session with `supervisor/ingress/session` and keeps it alive
+    with `supervisor/ingress/validate_session`. Neither names `/ingress/session`,
+    so the session went unrecorded and every add-on's own page was refused,
+    the owner's included.
+    """
+    guard = proxy_env["proxy"]._ingress
+    session = _WsSession.__new__(_WsSession)
+    session._pending = OrderedDict()
+    session._streaming = {}
+    session._endpoints = OrderedDict()
+    session._highest_id = 0
+    session._permissions = Permissions(pass_through=True)
+    session._evaluator = SimpleNamespace(
+        async_permissions=lambda _user: Permissions(pass_through=True)
+    )
+    session._decider = SimpleNamespace(is_recording=lambda _permissions: False)
+    session._ingress = guard
+    session._client = _RecordingClient()
+    session._user = proxy_env["read_only_user"]
+
+    assert await session._intercept(
+        {"id": 7, "type": "supervisor/ingress/session", "slug": "core_ssh"}
+    )
+    await session._on_server_text(
+        json.dumps(
+            {
+                "id": 7,
+                "type": "result",
+                "success": True,
+                "result": {"session": "minted"},
+            }
+        )
+    )
+    assert guard.user_id_for("minted") == proxy_env["read_only_user"].id
+
+    guard._sessions["minted"] = (proxy_env["read_only_user"].id, 0.0)
+    assert await session._intercept(
+        {"id": 8, "type": "supervisor/ingress/validate_session", "session": "minted"}
+    )
+    assert guard._sessions["minted"][1] > 0.0
+
+
 async def test_a_signed_path_is_filtered_for_its_owner(
     proxy_env: dict[str, Any],
 ) -> None:
