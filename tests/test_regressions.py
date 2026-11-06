@@ -1083,6 +1083,50 @@ async def test_a_denied_addon_is_refused_at_the_supervisor_api(
     assert decision.reason == REASON_APP
 
 
+async def test_a_denied_addon_is_refused_at_the_ingress_commands(
+    hass: HomeAssistant,
+) -> None:
+    """Since Home Assistant 2026.11 the frontend names the add-on in `slug`.
+
+    `supervisor/ingress/info` and `supervisor/ingress/session` carry no
+    endpoint, so matching the slug inside one let a role that denies an add-on
+    read its ingress URL and mint a session for it.
+    """
+    await async_setup_component(hass, "websocket_api", {})
+    await hass.async_block_till_done()
+
+    catalog = Catalog(hass)
+    catalog.rebuild()
+    catalog.apps = lambda: [
+        {
+            "url_path": "a0d7b954_nodered",
+            "title": "Node-RED",
+            "kind": "app",
+            "addon": "a0d7b954_nodered",
+        }
+    ]
+    catalog.tier_for = lambda command, payload=None: TIER_OPEN
+    decider = Decider(hass, catalog, REGISTRY)
+
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            apps={"allow": [], "deny": ["a0d7b954_nodered"]},
+        ),
+        _lookup(hass),
+    )
+    for command in ("supervisor/ingress/info", "supervisor/ingress/session"):
+        decision = decider.decide(
+            Permissions(roles=[role]),
+            KIND_WS,
+            command,
+            {"type": command, "slug": "a0d7b954_nodered"},
+        )
+        assert decision.allowed is False
+        assert decision.reason == REASON_APP
+
+
 async def test_a_template_reading_attributes_is_refused_when_any_are_hidden(
     hass: HomeAssistant, decider: Decider
 ) -> None:

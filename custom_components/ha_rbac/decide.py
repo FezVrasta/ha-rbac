@@ -42,6 +42,7 @@ from .const import (
 )
 from .extract import Extracted, entity_ids_in, extract, is_bounded
 from .filters import FilterRegistry
+from .ingress import INGRESS_COMMAND_PREFIX
 from .policy import Permissions
 
 if TYPE_CHECKING:
@@ -782,6 +783,10 @@ class Decider:
             return True
 
         if slug := app.get("addon"):
+            # The dedicated ingress commands name the add-on in a field of its
+            # own; read only there, every other command keeps its endpoint rule.
+            if kind == KIND_WS and name.startswith(INGRESS_COMMAND_PREFIX):
+                return payload.get("slug") == slug
             endpoint = payload.get("endpoint")
             return isinstance(endpoint, str) and f"/{slug}" in endpoint
 
