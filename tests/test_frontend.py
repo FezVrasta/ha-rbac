@@ -321,3 +321,16 @@ def test_the_dialog_waits_for_its_button_before_focusing_it() -> None:
     ]
     assert "updateComplete" in confirm
     assert 'querySelector("#modal-cancel").focus()' not in confirm
+
+
+def test_the_panel_uses_no_element_home_assistant_has_removed() -> None:
+    """Home Assistant 2026.11 removed ha-formfield (#83).
+
+    An undefined element still renders its children, so every checkbox stayed
+    on screen and simply lost its name: the panel looked half-drawn rather than
+    broken, on the role editor, the users tab and the settings switches alike.
+    A label is plain markup now, which no frontend release can take away.
+    """
+    source = PANEL.read_text()
+    assert "<ha-formfield" not in source
+    assert 'class="check-label"' in source

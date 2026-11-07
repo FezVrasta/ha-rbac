@@ -252,11 +252,17 @@ const STYLES = `
   @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
   .checks { display: grid; gap: 4px 16px; align-items: center;
             grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
-  .checks ha-formfield { display: flex; align-items: center; min-height: 40px; }
+  /* A control with its label beside it. This used to be ha-formfield, which
+     Home Assistant 2026.11 removed: an undefined element renders its children
+     but not its label attribute, so every checkbox lost its name (#83). Plain
+     markup has no frontend version to fall out of step with; a click on the
+     label is handled once, in the constructor. */
+  .check { display: flex; align-items: center; gap: 4px; min-height: 40px; }
+  .check-label { cursor: pointer; }
   /* The checkbox sits beside a single text column holding both the title and
      the description, so the two line up by construction. Offsetting the
      description by a guess at the checkbox's width did not: the label's real
-     offset comes from ha-formfield, and the two numbers were never equal. */
+     offset came from ha-formfield, and the two numbers were never equal. */
   .cap { display: flex; align-items: flex-start; gap: 4px; }
   .cap-text { min-width: 0; }
   /* No invented heights: the box and the first line of text are both about
@@ -556,6 +562,16 @@ class HaRbacPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    // Clicking a row's label toggles its control, as ha-formfield used to.
+    // Delegated, because the rows are re-rendered wholesale.
+    this.shadowRoot.addEventListener("click", (event) => {
+      const label = event.target.closest && event.target.closest(".check-label");
+      const control =
+        label && label.parentElement.querySelector("ha-checkbox, ha-switch");
+      if (!control || control.disabled) return;
+      control.checked = !control.checked;
+      control.dispatchEvent(new Event("change"));
+    });
     const opened = readUrl();
     this._tab = opened.tab;
     this._urlRole = opened.role;
@@ -908,13 +924,14 @@ class HaRbacPanel extends HTMLElement {
       <div class="checks" id="apps">${this._visibleApps()
         .filter((app) => app.kind !== "lovelace")
         .map(
-          (app) => `<ha-formfield label="${esc(app.label)}${
-            app.addon ? " (add-on)" : ""
-          }">
+          (app) => `<div class="check">
             <ha-checkbox data-app="${esc(app.url_path)}"
               ${draft.appDenied.includes(app.url_path) ? "" : "checked"}
               ${locked ? "disabled" : ""}></ha-checkbox>
-          </ha-formfield>`
+            <span class="check-label">${esc(app.label)}${
+              app.addon ? " (add-on)" : ""
+            }</span>
+          </div>`
         )
         .join("")}</div>
         </div>
@@ -2078,12 +2095,13 @@ class HaRbacPanel extends HTMLElement {
         // one role, and a single select would quietly drop the others on save.
         const boxes = this._roles
           .map(
-            (role) => `<ha-formfield label="${esc(role.name)}">
+            (role) => `<div class="check">
               <ha-checkbox data-user="${esc(user.user_id)}"
                 value="${esc(role.id)}"
                 ${user.role_ids.includes(role.id) ? "checked" : ""}
                 ${user.is_owner ? "disabled" : ""}></ha-checkbox>
-            </ha-formfield>`
+              <span class="check-label">${esc(role.name)}</span>
+            </div>`
           )
           .join("");
         const note = user.is_owner
@@ -2139,9 +2157,10 @@ class HaRbacPanel extends HTMLElement {
           anyone can bypass the proxy by connecting to the upstream port
           directly.</p>
         <div class="field">
-          <ha-formfield label="Manage HTTP configuration">
+          <div class="check">
             <ha-switch id="set-manage-http" ${s.manage_http ? "checked" : ""}></ha-switch>
-          </ha-formfield>
+            <span class="check-label">Manage HTTP configuration</span>
+          </div>
         </div>
 
         <h3>Dashboards</h3>
@@ -2160,9 +2179,10 @@ class HaRbacPanel extends HTMLElement {
           back, Home Assistant is left off the network, and getting in again
           needs a shell on the machine it runs on.</p>
         <div class="field">
-          <ha-formfield label="Put Home Assistant back if this is removed">
+          <div class="check">
             <ha-switch id="set-restore" ${s.restore_network_on_removal ? "checked" : ""}></ha-switch>
-          </ha-formfield>
+            <span class="check-label">Put Home Assistant back if this is removed</span>
+          </div>
         </div>`
             : ""
         }
