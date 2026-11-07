@@ -555,6 +555,29 @@ async def test_rest_control_is_denied_for_read_only(
         assert response.status == 401
 
 
+async def test_peek_json_lets_cancellation_propagate(
+    proxy_env: dict[str, Any],
+) -> None:
+    """A cancelled body read must not be judged as an empty payload.
+
+    The proxy runs with ``handler_cancellation=True``, so if the client
+    disconnects while the body is being read the handler task is cancelled.
+    Swallowing that and returning ``{}`` would make the gate judge a half-read
+    body as naming nothing, and -- worse -- bury a cancellation the event loop
+    is entitled to see. Nothing reaches Home Assistant either way, but the
+    cancellation must travel, not be turned into an empty-payload decision.
+    """
+    proxy = proxy_env["proxy"]
+
+    async def _cancelled_read() -> bytes:
+        raise asyncio.CancelledError
+
+    request = SimpleNamespace(method="POST", read=_cancelled_read)
+
+    with pytest.raises(asyncio.CancelledError):
+        await proxy._peek_json(request)  # type: ignore[arg-type]
+
+
 async def test_coalesced_batches_are_handled(proxy_env: dict[str, Any]) -> None:
     """Once negotiated, both directions may carry JSON arrays."""
     hass, store = proxy_env["hass"], proxy_env["store"]
