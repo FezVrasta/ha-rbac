@@ -1,9 +1,14 @@
 """Install the libraries the suite needs from Home Assistant's own integrations.
 
-`pytest-homeassistant` installs Home Assistant but leaves each integration's
-libraries to the project. The suite imports the Supervisor integration, so it
-needs that integration's libraries at the versions the installed Home Assistant
-declares. Reading the manifest from the installed copy keeps them in step.
+Home Assistant's test packages install Home Assistant but leave each
+integration's libraries to the project. The suite needs two:
+
+- the Supervisor integration's, because the suite loads its websocket commands;
+- the frontend integration's, which is Home Assistant's built frontend, because
+  `tests/test_home_assistant_surface.py` checks the panel against it.
+
+Reading each manifest from the installed Home Assistant keeps the versions in
+step with it.
 
     python testsupport/install_integration_requirements.py
 """
@@ -15,7 +20,7 @@ import sys
 from pathlib import Path
 
 # The integrations the suite imports beyond what Home Assistant installs.
-INTEGRATIONS = ("hassio",)
+INTEGRATIONS = ("frontend", "hassio")
 
 
 def main() -> None:
