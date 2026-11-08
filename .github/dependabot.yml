@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Moves the last-known-good Home Assistant in requirements-test-latest.txt to
+  # each new release. The PR runs the whole test matrix, so merging it once its
+  # checks pass is what records a release as known good.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # requirements-test.txt pins the oldest supported Home Assistant on
+      # purpose; it moves only when support for older releases is dropped.
+      - dependency-name: pytest-homeassistant-custom-component

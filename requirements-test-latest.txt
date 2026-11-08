@@ -1,0 +1,5 @@
+# The newest Home Assistant release the suite is known to pass on, with Home
+# Assistant's own test package. CI requires it on every change, so a fix for a
+# break in a newer release or beta must still pass here. Dependabot proposes the
+# next release; merging that PR, once its checks pass, records it as known good.
+pytest-homeassistant==2026.11.0

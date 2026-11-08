@@ -40,24 +40,37 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The oldest Home Assistant the integration supports, which gates
-          # every change. The name stays "Tests" so a required check on it
-          # still matches. Its community test package stops at 2026.10.
+          # The oldest Home Assistant the integration supports. The name stays
+          # "Tests" so a required check on it still matches. Its community
+          # test package stops at 2026.10.
           - deps: pinned
             name: Tests
             install: pip install -r requirements-test.txt
-          # The newest release, with Home Assistant's own test package.
+            required: true
+          # The newest release the suite is known to pass on, pinned in
+          # requirements-test-latest.txt. It can't change under a PR, so it's
+          # required: a fix for a break in a newer release or beta must still
+          # pass here. Dependabot proposes the next release, and merging that
+          # PR records it as known good.
+          - deps: known-good
+            name: Tests (last known good Home Assistant)
+            install: pip install -r requirements-test-latest.txt
+            required: true
+          # The newest release, unpinned.
           - deps: latest
             name: Tests (latest Home Assistant)
             install: pip install --upgrade pytest-homeassistant
+            required: false
           # The newest beta, out about a week before each monthly release. When
           # no beta is newer than the release, this tests the release.
           - deps: beta
             name: Tests (Home Assistant beta)
             install: pip install --upgrade --pre pytest-homeassistant
-    # A newer Home Assistant shouldn't block a PR that didn't cause the break.
-    # The scheduled run does fail, so its failure email goes out.
-    continue-on-error: ${{ matrix.deps != 'pinned' && github.event_name != 'schedule' }}
+            required: false
+    # A newer Home Assistant than the pins shouldn't block a PR that didn't
+    # cause the break. The scheduled run does fail, so its failure email goes
+    # out.
+    continue-on-error: ${{ !matrix.required && github.event_name != 'schedule' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
