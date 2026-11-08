@@ -7,6 +7,9 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+  # Weekly, so a new Home Assistant is tried even when nothing is pushed.
+  schedule:
+    - cron: "23 6 * * 1"
 
 permissions:
   contents: read
@@ -31,15 +34,43 @@ jobs:
         run: ruff format --check .
 
   test:
-    name: Tests
+    # The pinned run keeps the name "Tests", so a required check on it still
+    # matches.
+    name: ${{ matrix.deps == 'pinned' && 'Tests' || 'Tests (latest Home Assistant)' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pinned: the Home Assistant requirements-test.txt chooses, which gates
+        # every change. latest: the newest pytest-homeassistant-custom-component
+        # and the Home Assistant it pins, which warns before a release breaks
+        # users. That package follows Home Assistant releases with some delay.
+        deps: [pinned, latest]
+    # A newer Home Assistant shouldn't block a PR that didn't cause the break.
+    # The scheduled run does fail, so its failure email goes out.
+    continue-on-error: ${{ matrix.deps == 'latest' && github.event_name != 'schedule' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -r requirements-test.txt
+      - name: Install pinned test dependencies
+        if: matrix.deps == 'pinned'
+        run: pip install -r requirements-test.txt
+      - name: Install latest test dependencies
+        if: matrix.deps == 'latest'
+        run: pip install --upgrade pytest-homeassistant-custom-component
+      - name: Record the Home Assistant under test
+        run: |
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          from importlib.metadata import version
+          print(
+              f"Home Assistant {version('homeassistant')} "
+              f"(pytest-homeassistant-custom-component "
+              f"{version('pytest-homeassistant-custom-component')})"
+          )
+          PY
       - name: pytest
         run: python -m pytest -q
 
