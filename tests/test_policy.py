@@ -22,7 +22,6 @@ from homeassistant.helpers import (
     entity_registry as er,
 )
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ha_rbac.catalog import Catalog
 from custom_components.ha_rbac.const import (
@@ -47,6 +46,7 @@ from custom_components.ha_rbac.policy import (
     default_roles,
     desugar,
 )
+from testsupport.ha_test import MockConfigEntry
 
 
 def _lookup(hass: HomeAssistant) -> PermissionLookup:

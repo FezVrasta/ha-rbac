@@ -846,7 +846,8 @@ async def test_search_related_hides_a_device_with_nothing_readable(
     """A device the role can read nothing in must not appear in results."""
     from homeassistant.helpers import device_registry as dr  # noqa: PLC0415
     from homeassistant.helpers import entity_registry as er  # noqa: PLC0415
-    from pytest_homeassistant_custom_component.common import (  # noqa: PLC0415
+
+    from testsupport.ha_test import (  # noqa: PLC0415
         MockConfigEntry,
     )
 
@@ -999,7 +1000,8 @@ async def test_a_denied_floor_or_label_is_not_named_by_a_search(
     from homeassistant.helpers import entity_registry as er  # noqa: PLC0415
     from homeassistant.helpers import floor_registry as fr  # noqa: PLC0415
     from homeassistant.helpers import label_registry as lr  # noqa: PLC0415
-    from pytest_homeassistant_custom_component.common import (  # noqa: PLC0415
+
+    from testsupport.ha_test import (  # noqa: PLC0415
         MockConfigEntry,
     )
 

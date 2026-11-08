@@ -10,7 +10,18 @@ python3 -m venv .venv
 ./scripts-test
 ```
 
-That pulls in `pytest-homeassistant-custom-component`, which packages Home Assistant's own test fixtures — so the suite needs nothing but the installed package, and runs identically here and in CI. It pins the Home Assistant version the suite exercises; bump it in `requirements-test.txt` to test against a newer one.
+That pulls in `pytest-homeassistant-custom-component`, which packages Home Assistant's own test fixtures — so the suite needs nothing but the installed package, and runs identically here and in CI. It pins the oldest Home Assistant the integration supports.
+
+That package stops at Home Assistant 2026.10. For newer releases, and betas, Home Assistant publishes its own, `pytest-homeassistant`, versioned with Home Assistant. CI runs the suite three ways: the pinned oldest release (which must pass), the newest release, and the newest beta. The last two warn without blocking a PR, and run weekly on their own. To run the newest locally:
+
+```bash
+python3 -m venv .venv-latest
+.venv-latest/bin/pip install pytest-homeassistant    # add --pre for the beta
+.venv-latest/bin/python testsupport/install_integration_requirements.py
+HA_PYTHON=.venv-latest/bin/python ./scripts-test
+```
+
+Import Home Assistant's test helpers (`MockConfigEntry` and the rest) from `testsupport.ha_test`, which works with either package.
 
 Lint and format with the same configuration Home Assistant uses:
 

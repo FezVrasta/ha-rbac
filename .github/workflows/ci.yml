@@ -34,42 +34,53 @@ jobs:
         run: ruff format --check .
 
   test:
-    # The pinned run keeps the name "Tests", so a required check on it still
-    # matches.
-    name: ${{ matrix.deps == 'pinned' && 'Tests' || 'Tests (latest Home Assistant)' }}
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # pinned: the Home Assistant requirements-test.txt chooses, which gates
-        # every change. latest: the newest pytest-homeassistant-custom-component
-        # and the Home Assistant it pins, which warns before a release breaks
-        # users. That package follows Home Assistant releases with some delay.
-        deps: [pinned, latest]
+        include:
+          # The oldest Home Assistant the integration supports, which gates
+          # every change. The name stays "Tests" so a required check on it
+          # still matches. Its community test package stops at 2026.10.
+          - deps: pinned
+            name: Tests
+            install: pip install -r requirements-test.txt
+          # The newest release, with Home Assistant's own test package.
+          - deps: latest
+            name: Tests (latest Home Assistant)
+            install: pip install --upgrade pytest-homeassistant
+          # The newest beta, out about a week before each monthly release. When
+          # no beta is newer than the release, this tests the release.
+          - deps: beta
+            name: Tests (Home Assistant beta)
+            install: pip install --upgrade --pre pytest-homeassistant
     # A newer Home Assistant shouldn't block a PR that didn't cause the break.
     # The scheduled run does fail, so its failure email goes out.
-    continue-on-error: ${{ matrix.deps == 'latest' && github.event_name != 'schedule' }}
+    continue-on-error: ${{ matrix.deps != 'pinned' && github.event_name != 'schedule' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - name: Install pinned test dependencies
-        if: matrix.deps == 'pinned'
-        run: pip install -r requirements-test.txt
-      - name: Install latest test dependencies
-        if: matrix.deps == 'latest'
-        run: pip install --upgrade pytest-homeassistant-custom-component
+      - name: Install test dependencies
+        run: ${{ matrix.install }}
+      - name: Install the libraries of integrations the suite imports
+        if: matrix.deps != 'pinned'
+        run: python testsupport/install_integration_requirements.py
       - name: Record the Home Assistant under test
         run: |
           python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
-          from importlib.metadata import version
-          print(
-              f"Home Assistant {version('homeassistant')} "
-              f"(pytest-homeassistant-custom-component "
-              f"{version('pytest-homeassistant-custom-component')})"
-          )
+          from importlib.metadata import PackageNotFoundError, version
+
+          for package in ("pytest-homeassistant", "pytest-homeassistant-custom-component"):
+              try:
+                  supplied_by = f"{package} {version(package)}"
+                  break
+              except PackageNotFoundError:
+                  continue
+          print(f"Home Assistant {version('homeassistant')} ({supplied_by})")
           PY
       - name: pytest
         run: python -m pytest -q

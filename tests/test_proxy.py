@@ -22,7 +22,6 @@ from homeassistant.components.http.auth import async_sign_path
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockUser
 from yarl import URL
 
 from custom_components.ha_rbac.catalog import Catalog
@@ -40,6 +39,7 @@ from custom_components.ha_rbac.proxy import (
 )
 from custom_components.ha_rbac.record import Recorder
 from custom_components.ha_rbac.store import RbacStore
+from testsupport.ha_test import MockUser
 
 
 class _RecordingClient:

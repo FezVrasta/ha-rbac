@@ -12,7 +12,6 @@ import pytest
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ha_rbac import async_setup_entry, async_unload_entry
 from custom_components.ha_rbac.const import (
@@ -27,6 +26,7 @@ from custom_components.ha_rbac.util import (
     async_upstream_is_loopback_only,
     is_loopback_bind,
 )
+from testsupport.ha_test import MockConfigEntry
 
 
 def _free_port() -> int:
