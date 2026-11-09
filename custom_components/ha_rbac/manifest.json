@@ -4,6 +4,7 @@
   "after_dependencies": [
     "hassio",
     "lovelace",
+    "mobile_app",
     "zeroconf"
   ],
   "codeowners": [
