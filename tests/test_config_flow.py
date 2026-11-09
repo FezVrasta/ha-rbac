@@ -13,7 +13,6 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ha_rbac.config_flow import RbacConfigFlow, RbacOptionsFlow
 from custom_components.ha_rbac.const import (
@@ -24,6 +23,7 @@ from custom_components.ha_rbac.const import (
     CONF_UPSTREAM_PORT,
     DOMAIN,
 )
+from testsupport.ha_test import MockConfigEntry
 
 PORTS = {
     CONF_PROXY_PORT: 8123,

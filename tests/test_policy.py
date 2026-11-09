@@ -22,7 +22,6 @@ from homeassistant.helpers import (
     entity_registry as er,
 )
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ha_rbac.catalog import Catalog
 from custom_components.ha_rbac.const import (
@@ -47,6 +46,7 @@ from custom_components.ha_rbac.policy import (
     default_roles,
     desugar,
 )
+from testsupport.ha_test import MockConfigEntry
 
 
 def _lookup(hass: HomeAssistant) -> PermissionLookup:
@@ -181,7 +181,9 @@ async def test_entity_level_area_overrides_its_device(hass: HomeAssistant) -> No
 
     ent_reg = er.async_get(hass)
     entry = ent_reg.async_get_or_create("light", "test", "unique2", device_id=device.id)
-    ent_reg.async_update_entity(entry.entity_id, area_id=study.id)
+    # Since Home Assistant 2026.10 an entity needs a name of its own before a
+    # user can give it an area of its own.
+    ent_reg.async_update_entity(entry.entity_id, area_id=study.id, name="Study lamp")
 
     study_policy = desugar(hass, {CAT_ENTITIES: {"area_ids": {study.id: True}}})
     kitchen_policy = desugar(hass, {CAT_ENTITIES: {"area_ids": {kitchen.id: True}}})

@@ -7,6 +7,9 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+  # Weekly, so a new Home Assistant is tried even when nothing is pushed.
+  schedule:
+    - cron: "23 6 * * 1"
 
 permissions:
   contents: read
@@ -31,15 +34,67 @@ jobs:
         run: ruff format --check .
 
   test:
-    name: Tests
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest Home Assistant the integration supports. The name stays
+          # "Tests" so a required check on it still matches. Its community
+          # test package stops at 2026.10.
+          - deps: pinned
+            name: Tests
+            install: pip install -r requirements-test.txt
+            required: true
+          # The newest release the suite is known to pass on, pinned in
+          # requirements-test-latest.txt. It can't change under a PR, so it's
+          # required: a fix for a break in a newer release or beta must still
+          # pass here. Dependabot proposes the next release, and merging that
+          # PR records it as known good.
+          - deps: known-good
+            name: Tests (last known good Home Assistant)
+            install: pip install -r requirements-test-latest.txt
+            required: true
+          # The newest release, unpinned.
+          - deps: latest
+            name: Tests (latest Home Assistant)
+            install: pip install --upgrade pytest-homeassistant
+            required: false
+          # The newest beta, out about a week before each monthly release. When
+          # no beta is newer than the release, this tests the release.
+          - deps: beta
+            name: Tests (Home Assistant beta)
+            install: pip install --upgrade --pre pytest-homeassistant
+            required: false
+    # A newer Home Assistant than the pins shouldn't block a PR that didn't
+    # cause the break. The scheduled run does fail, so its failure email goes
+    # out.
+    continue-on-error: ${{ !matrix.required && github.event_name != 'schedule' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -r requirements-test.txt
+      - name: Install test dependencies
+        run: ${{ matrix.install }}
+      - name: Install the libraries of integrations the suite imports
+        if: matrix.deps != 'pinned'
+        run: python testsupport/install_integration_requirements.py
+      - name: Record the Home Assistant under test
+        run: |
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          from importlib.metadata import PackageNotFoundError, version
+
+          for package in ("pytest-homeassistant", "pytest-homeassistant-custom-component"):
+              try:
+                  supplied_by = f"{package} {version(package)}"
+                  break
+              except PackageNotFoundError:
+                  continue
+          print(f"Home Assistant {version('homeassistant')} ({supplied_by})")
+          PY
       - name: pytest
         run: python -m pytest -q
 

@@ -12,8 +12,6 @@ from homeassistant.auth.permissions.const import CAT_ENTITIES, POLICY_READ
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.ha_rbac import async_setup_entry, async_unload_entry
 from custom_components.ha_rbac.catalog import Catalog
@@ -35,6 +33,7 @@ from custom_components.ha_rbac.filters import REGISTRY
 from custom_components.ha_rbac.policy import Evaluator
 from custom_components.ha_rbac.proxy import RbacProxy
 from custom_components.ha_rbac.store import RbacStore
+from testsupport.ha_test import MockConfigEntry, WebSocketGenerator
 
 
 def _free_port() -> int:

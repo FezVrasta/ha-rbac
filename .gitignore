@@ -4,5 +4,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .venv/
+.venv-latest/
 venv/
 .DS_Store
+# pytest-homeassistant writes Home Assistant's default blueprints here during a run.
+tests/testing_config/
