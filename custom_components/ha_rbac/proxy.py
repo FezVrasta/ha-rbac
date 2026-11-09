@@ -675,7 +675,7 @@ class RbacProxy:
             return {}
         try:
             raw = await request.read()
-        except (aiohttp.ClientError, asyncio.CancelledError):
+        except aiohttp.ClientError:
             return {}
         if not raw:
             return {}
