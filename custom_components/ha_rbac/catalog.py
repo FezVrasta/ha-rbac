@@ -370,19 +370,29 @@ def _all_view_subclasses(base: Any) -> list[Any]:
     return found
 
 
-def build_routes() -> list[RouteInfo]:
+def build_routes(hass: HomeAssistant | None = None) -> list[RouteInfo]:
     """Derive REST route tiers from the registered view classes.
 
     `hass.http.app.router` knows the paths but has lost the view object inside
-    `request_handler_factory`'s closure, so the classes are walked instead. Views
-    that build their URL per instance are not discoverable this way and simply
-    stay unknown, which resolves to admin.
+    `request_handler_factory`'s closure, so the classes are walked instead. A
+    view that builds its URL per instance has no URL on its class, so those are
+    read back out of the same closure (`_views_with_their_own_url`). One that
+    cannot be recovered stays unknown, which resolves to admin.
     """
     from homeassistant.components.http import HomeAssistantView  # noqa: PLC0415
 
+    # (the object the URL is read from, the class whose methods carry the tiers)
+    sources: list[tuple[Any, Any]] = [
+        (cls, cls)
+        for cls in _all_view_subclasses(HomeAssistantView)
+        if isinstance(getattr(cls, "url", None), str) and cls.url
+    ]
+    if hass is not None:
+        sources.extend((view, type(view)) for view in _views_with_their_own_url(hass))
+
     routes: list[RouteInfo] = []
-    for cls in _all_view_subclasses(HomeAssistantView):
-        url = getattr(cls, "url", None)
+    for source, cls in sources:
+        url = getattr(source, "url", None)
         if not isinstance(url, str) or not url:
             continue
 
@@ -397,7 +407,7 @@ def build_routes() -> list[RouteInfo]:
                 tier = TIER_ADMIN
             tiers[method] = tier
 
-        urls = [url, *(getattr(cls, "extra_urls", None) or [])]
+        urls = [url, *(getattr(source, "extra_urls", None) or [])]
         for candidate in urls:
             if not isinstance(candidate, str) or not candidate:
                 continue
@@ -406,12 +416,52 @@ def build_routes() -> list[RouteInfo]:
                     pattern=_url_to_pattern(candidate),
                     url=candidate,
                     tiers=tiers,
-                    requires_auth=getattr(cls, "requires_auth", True),
+                    requires_auth=getattr(source, "requires_auth", True),
                 )
             )
 
     routes.sort(key=lambda route: route.specificity)
     return routes
+
+
+def _views_with_their_own_url(hass: HomeAssistant) -> list[Any]:
+    """Return the registered views whose URL is set on the instance.
+
+    `media_source`'s `/media/{source_dir_id}/{location}` is one: its class has no
+    `url`, so walking classes never saw it and every local media file resolved
+    to the administrative default, refused to the people it was put there for.
+    `request_handler_factory` closes over the view it wraps, which is the only
+    place the router keeps it. If a release stops doing that, nothing is found
+    and those paths fall back to admin, which is where they were.
+    """
+    from homeassistant.components.http import HomeAssistantView  # noqa: PLC0415
+
+    if (app := getattr(getattr(hass, "http", None), "app", None)) is None:
+        return []
+
+    found: dict[int, Any] = {}
+    for resource in app.router.resources():
+        try:
+            registered = list(resource)
+        except TypeError:
+            continue
+        for route in registered:
+            code = getattr(route.handler, "__code__", None)
+            cells = getattr(route.handler, "__closure__", None)
+            if code is None or not cells:
+                continue
+            for name, cell in zip(code.co_freevars, cells, strict=False):
+                if name != "view":
+                    continue
+                try:
+                    view = cell.cell_contents
+                except ValueError:
+                    continue
+                if isinstance(view, HomeAssistantView) and not isinstance(
+                    getattr(type(view), "url", None), str
+                ):
+                    found[id(view)] = view
+    return list(found.values())
 
 
 class Catalog:
@@ -463,7 +513,7 @@ class Catalog:
             )
 
         self._commands = commands
-        self._routes = build_routes()
+        self._routes = build_routes(self._hass)
         self._statics = build_statics(self._hass)
         self._check_not_degraded()
 

@@ -445,3 +445,26 @@ async def test_a_command_that_gates_on_admin_inline_is_admin_tier(
         TIER_OPEN
     )
     assert commands.SUBSCRIBE_ALLOWLIST
+
+
+async def test_a_view_that_sets_its_url_per_instance_is_still_derived(
+    hass: HomeAssistant, tmp_path: pathlib.Path
+) -> None:
+    """Local media is served by a view whose URL lives on the instance (#92).
+
+    `LocalMediaView` builds `/media/{source_dir_id}/{location:.*}` in `__init__`,
+    so its class carries no `url` and walking classes never saw it. Every file
+    under `/media/local` then resolved to the administrative default and was
+    refused to a restricted user, a camera snapshot on a dashboard included.
+    """
+    hass.config.media_dirs = {"local": str(tmp_path)}
+    await async_setup_component(hass, "http", {})
+    assert await async_setup_component(hass, "media_source", {})
+    await hass.async_block_till_done()
+    catalog = Catalog(hass)
+    catalog.rebuild()
+
+    path = "/media/local/reolink_snapshot/last_snapshot_front_door.jpg"
+    assert catalog.tier_for_request("GET", path) == TIER_OPEN
+    assert catalog.tier_for_request("HEAD", path) == TIER_OPEN
+    assert catalog.tier_for_request("POST", path) == TIER_ADMIN
