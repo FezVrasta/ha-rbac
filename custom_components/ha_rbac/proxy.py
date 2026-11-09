@@ -52,8 +52,10 @@ from .filters import (
 )
 from .http_config import LOOPBACK
 from .ingress import (
+    SESSION_COMMAND,
     SESSION_COOKIE,
     SESSION_ENDPOINT,
+    VALIDATE_COMMAND,
     VALIDATE_ENDPOINT,
     IngressGuard,
     IngressUnavailable,
@@ -1141,6 +1143,14 @@ class _WsSession:
         # renewal carries its session in the request instead of the reply, so
         # it is handled here rather than on the way back.
         endpoint = message.get("endpoint")
+        session_data = message.get("data")
+        # The dedicated ingress commands stand for the same two endpoints and
+        # are tracked as them, so the reply that mints a session is recorded
+        # by the same code whichever way the frontend asked for it.
+        if msg_type == SESSION_COMMAND:
+            endpoint = SESSION_ENDPOINT
+        elif msg_type == VALIDATE_COMMAND:
+            endpoint, session_data = VALIDATE_ENDPOINT, message
         if isinstance(endpoint, str) and isinstance(msg_id, int):
             # Evicting a live correlation would leave its reply unjudged, and a
             # Supervisor listing would then arrive with every denied add-on in
@@ -1165,7 +1175,7 @@ class _WsSession:
         if (
             self._user is not None
             and endpoint == VALIDATE_ENDPOINT
-            and (session := session_from(message.get("data")))
+            and (session := session_from(session_data))
         ):
             self._ingress.touch_session(session)
 

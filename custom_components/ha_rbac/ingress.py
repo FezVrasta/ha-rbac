@@ -26,6 +26,14 @@ SESSION_COOKIE = "ingress_session"
 SESSION_ENDPOINT = "/ingress/session"
 VALIDATE_ENDPOINT = "/ingress/validate_session"
 
+# The dedicated commands the frontend opens ingress panels with since Home
+# Assistant 2026.11, in place of `supervisor/api` calls to the two endpoints
+# above. They name the add-on in a `slug` field rather than in an endpoint, and
+# the renewal carries its session at the top level rather than under `data`.
+INGRESS_COMMAND_PREFIX = "supervisor/ingress/"
+SESSION_COMMAND = "supervisor/ingress/session"
+VALIDATE_COMMAND = "supervisor/ingress/validate_session"
+
 # A session outlives a page load but not a working day. The frontend
 # revalidates while an add-on panel is open, which refreshes the stamp.
 SESSION_TTL = 8 * 3600
