@@ -39,7 +39,14 @@ from homeassistant.util.json import json_loads
 from multidict import CIMultiDict
 from yarl import URL
 
-from .decide import KIND_HTTP, KIND_WS, REASON_APP, Decider, Decision
+from .decide import (
+    KIND_HTTP,
+    KIND_WS,
+    REASON_APP,
+    REASON_UNBOUNDED,
+    Decider,
+    Decision,
+)
 from .denylog import Denial, DenyLog
 from .filters import (
     REGISTRY,
@@ -264,6 +271,32 @@ def _is_upstream_error(content_type: str, status: int) -> bool:
         status >= HTTPStatus.BAD_REQUEST
         and content_type.partition(";")[0].strip().lower() == "text/plain"
     )
+
+
+# The charsets a judged request body may declare. The gate reads a body as
+# UTF-8, and so do the Home Assistant views that parse their own bytes, but the
+# services view and every `request.json()` caller decode with whatever charset
+# the Content-Type names. A body in UTF-16 was unreadable here, judged as
+# naming nothing -- so `POST /api/services/lock/unlock` came down to whether
+# the role controls *some* lock -- and Home Assistant then decoded it and
+# unlocked the one the role denies.
+#
+# Decoding it here the way the services view does would only move the gap to
+# the views that read raw bytes, since the same body would then mean one thing
+# to the gate and another to them. JSON is UTF-8 by definition (RFC 8259) and
+# no Home Assistant client says otherwise, so another charset is refused rather
+# than interpreted. ASCII is a subset of UTF-8 and reads identically.
+_JUDGED_BODY_CHARSETS = frozenset({"utf-8", "utf8", "us-ascii", "ascii"})
+
+
+def _undecidable_charset(request: web.Request) -> str | None:
+    """Return the charset a body declares if the gate cannot read it as declared."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    charset = request.charset
+    if charset is None or charset.strip().lower() in _JUDGED_BODY_CHARSETS:
+        return None
+    return charset
 
 
 def _is_websocket(request: web.Request) -> bool:
@@ -607,8 +640,19 @@ class RbacProxy:
             # A full-access user is normally forwarded unjudged, but a recording
             # has to see what an unrestricted user touches, so `decide` is still
             # consulted: it notes the request and allows it rather than refusing.
-            body = await self._peek_json(request)
             name = f"{request.method} {request.path}"
+            if (charset := _undecidable_charset(request)) is not None:
+                decision = Decision(
+                    allowed=False,
+                    reason=REASON_UNBOUNDED,
+                    detail=(
+                        f"request body declares charset {charset!r}, which the "
+                        "gate cannot read the way Home Assistant would"
+                    ),
+                )
+                self._record(user, KIND_HTTP, name, decision)
+                return web.json_response({"message": "Unauthorized"}, status=401)
+            body = await self._peek_json(request)
             decision = self._decider.decide(
                 permissions, KIND_HTTP, name, body, query=request.query
             )

@@ -19,7 +19,7 @@ import pytest
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.components.http.auth import async_sign_path
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.setup import async_setup_component
 from yarl import URL
@@ -576,6 +576,65 @@ async def test_peek_json_lets_cancellation_propagate(
 
     with pytest.raises(asyncio.CancelledError):
         await proxy._peek_json(request)  # type: ignore[arg-type]
+
+
+async def test_a_body_in_another_charset_cannot_hide_its_target(
+    proxy_env: dict[str, Any],
+) -> None:
+    """A UTF-16 body named a denied lock that the gate could not read.
+
+    The gate parsed the raw bytes as UTF-8, failed, and judged the call as
+    naming nothing, so it came down to whether the role controls the lock
+    domain at all. Home Assistant's services view decodes with the declared
+    charset, read `lock.front`, and unlocked it.
+    """
+    hass, store = proxy_env["hass"], proxy_env["store"]
+    hass.states.async_set("lock.front", "locked")
+    hass.states.async_set("lock.shed", "locked")
+    calls: list[ServiceCall] = []
+
+    async def _unlock(call: ServiceCall) -> None:
+        calls.append(call)
+
+    hass.services.async_register("lock", "unlock", _unlock)
+    role = await store.async_create_role(
+        {
+            "name": "Every door but the front",
+            "allow": {"entities": {"all": {"read": True, "control": True}}},
+            "deny": {"entities": {"entity_ids": {"lock.front": True}}},
+        }
+    )
+    await store.async_set_binding(proxy_env["read_only_user"].id, [role["id"]])
+    auth = {"Authorization": f"Bearer {proxy_env['read_only_token']}"}
+    url = f"{proxy_env['base']}/api/services/lock/unlock"
+    front = '{"entity_id": "lock.front"}'
+
+    async with aiohttp.ClientSession() as session:
+        for charset in ("utf-16", "utf-16-le", "utf-32", "utf-7", "latin-1"):
+            async with session.post(
+                url,
+                headers={
+                    **auth,
+                    "Content-Type": f"application/json; charset={charset}",
+                },
+                data=front.encode(charset),
+            ) as response:
+                assert response.status == 401, charset
+
+        # The ordinary spellings still reach Home Assistant for a lock the
+        # role does control, with or without the charset stated.
+        for content_type in ("application/json", "application/json; charset=UTF-8"):
+            async with session.post(
+                url,
+                headers={**auth, "Content-Type": content_type},
+                data=b'{"entity_id": "lock.shed"}',
+            ) as response:
+                assert response.status == 200, content_type
+
+    assert [call.data["entity_id"] for call in calls] == ["lock.shed", "lock.shed"]
+    assert any(
+        "charset" in denial["detail"] for denial in proxy_env["denylog"].async_recent()
+    )
 
 
 async def test_coalesced_batches_are_handled(proxy_env: dict[str, Any]) -> None:
