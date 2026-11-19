@@ -641,7 +641,10 @@ class RbacProxy:
             # has to see what an unrestricted user touches, so `decide` is still
             # consulted: it notes the request and allows it rather than refusing.
             name = f"{request.method} {request.path}"
-            if (charset := _undecidable_charset(request)) is not None:
+            if (
+                not permissions.full_access
+                and (charset := _undecidable_charset(request)) is not None
+            ):
                 decision = Decision(
                     allowed=False,
                     reason=REASON_UNBOUNDED,
