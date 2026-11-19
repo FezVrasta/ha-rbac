@@ -10,7 +10,7 @@ classification at all. A mutation's damage is not visible in the response, so it
 has to be judged up front.
 """
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
@@ -165,6 +165,36 @@ def _reads_attributes(node: Any, depth: int = 0) -> bool:
     if isinstance(node, list):
         return any(_reads_attributes(item, depth + 1) for item in node)
     return False
+
+
+def _named_attributes(node: Any, depth: int = 0) -> "Iterator[tuple[str, str]]":
+    """Yield each (entity id, attribute) a payload reads by name.
+
+    A `state` or `numeric_state` condition or trigger reads an attribute with
+    a plain `attribute:` key, no template involved, and answers whether it
+    matches: an oracle that bisects a number in a handful of requests. A
+    `numeric_state` on a text attribute is worse, since the error it raises
+    quotes the value. Nested conditions and script steps are walked the same.
+    """
+    if depth > MAX_WALK_DEPTH:
+        return
+    if isinstance(node, list):
+        for item in node:
+            yield from _named_attributes(item, depth + 1)
+        return
+    if not isinstance(node, dict):
+        return
+    attribute = node.get("attribute")
+    if isinstance(attribute, str):
+        entity_ids = node.get("entity_id")
+        if isinstance(entity_ids, str):
+            entity_ids = [part.strip() for part in entity_ids.split(",")]
+        if isinstance(entity_ids, list):
+            for entity_id in entity_ids:
+                if isinstance(entity_id, str):
+                    yield entity_id.strip().lower(), attribute
+    for value in node.values():
+        yield from _named_attributes(value, depth + 1)
 
 
 def _invokes_a_service(node: Any, depth: int = 0) -> bool:
@@ -566,6 +596,19 @@ class Decider:
                     "a role that withholds them"
                 ),
             )
+
+        # 2d. The same attributes, read by name instead of through a template.
+        if permissions.hides_attributes:
+            for entity_id, attribute in _named_attributes(payload):
+                if permissions.attribute_hidden(entity_id, attribute):
+                    return Decision(
+                        allowed=False,
+                        reason=REASON_UNBOUNDED,
+                        detail=(
+                            f"request reads attribute {attribute!r} of "
+                            f"{entity_id}, which the role withholds"
+                        ),
+                    )
 
         found = extract(payload)
         if kind == KIND_HTTP:

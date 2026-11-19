@@ -1188,6 +1188,72 @@ async def test_a_template_reading_attributes_is_refused_when_any_are_hidden(
     assert allowed.allowed is True
 
 
+async def test_a_condition_naming_a_hidden_attribute_is_refused(
+    hass: HomeAssistant, decider: Decider
+) -> None:
+    """`attribute:` on a state condition reads the value with no template.
+
+    `subscribe_condition` answers true or false, so `numeric_state` with
+    `above` bisects a hidden number, and on a text attribute the error frame
+    quotes the value outright.
+    """
+    hass.states.async_set("sensor.x", "1", {"outdoor_temp": 4.1, "unit": "C"})
+    hass.states.async_set("sensor.y", "2", {"outdoor_temp": 3.0})
+    role = compile_role(
+        hass,
+        _role(
+            allow={CAT_ENTITIES: {SUBCAT_ALL: {POLICY_READ: True}}},
+            # Core marks it administrative; the Automations capability grants it.
+            tiers={"max": TIER_OPEN, "allow": ["subscribe_condition"], "deny": []},
+            attributes={
+                "rules": [
+                    {
+                        "target": "entity_ids",
+                        "ids": ["sensor.x"],
+                        "names": ["outdoor_*"],
+                    }
+                ]
+            },
+        ),
+        _lookup(hass),
+    )
+    perms = Permissions(roles=[role])
+
+    def _ask(condition: dict[str, Any]) -> bool:
+        return decider.decide(
+            perms,
+            KIND_WS,
+            "subscribe_condition",
+            {"type": "subscribe_condition", "condition": condition},
+        ).allowed
+
+    numeric = {
+        "condition": "numeric_state",
+        "entity_id": "sensor.x",
+        "attribute": "outdoor_temp",
+        "above": 3.6,
+    }
+    assert _ask(numeric) is False
+    # Nested, listed, or spelled with a different case: still the same read.
+    assert _ask({"condition": "or", "conditions": [numeric]}) is False
+    assert (
+        _ask(
+            {
+                "condition": "state",
+                "entity_id": ["sensor.y", "Sensor.X"],
+                "attribute": "outdoor_temp",
+                "state": 4.1,
+            }
+        )
+        is False
+    )
+
+    # An attribute the role leaves visible, or the same one on an entity the
+    # rule does not cover, is answered as before.
+    assert _ask({**numeric, "attribute": "unit"}) is True
+    assert _ask({**numeric, "entity_id": "sensor.y"}) is True
+
+
 async def test_a_role_without_attribute_rules_keeps_templates(
     hass: HomeAssistant, decider: Decider
 ) -> None:
