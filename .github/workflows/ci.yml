@@ -79,8 +79,9 @@ jobs:
           cache: pip
       - name: Install test dependencies
         run: ${{ matrix.install }}
+      # Every run, the pinned one included: the frontend check needs the
+      # frontend Home Assistant ships with that release.
       - name: Install the libraries of integrations the suite imports
-        if: matrix.deps != 'pinned'
         run: python testsupport/install_integration_requirements.py
       - name: Record the Home Assistant under test
         run: |
@@ -93,7 +94,10 @@ jobs:
                   break
               except PackageNotFoundError:
                   continue
-          print(f"Home Assistant {version('homeassistant')} ({supplied_by})")
+          print(
+              f"Home Assistant {version('homeassistant')} ({supplied_by}), "
+              f"frontend {version('home-assistant-frontend')}"
+          )
           PY
       - name: pytest
         run: python -m pytest -q
