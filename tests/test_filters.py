@@ -1439,3 +1439,56 @@ def test_the_opening_frame_of_each_blocking_subscription_has_a_shape() -> None:
     ) == {"events": [], "start_time": 7}
     assert opening_frame("subscribe_events", {"event_type": "state_changed"}) is None
     assert opening_frame("history/stream", {"states": {}}) is None
+
+
+async def test_an_area_is_listed_only_for_what_it_holds(hass: HomeAssistant) -> None:
+    """An area entry names its floor too, and the walk judged both together.
+
+    One readable entity anywhere on the floor kept every other area on it in
+    `config/area_registry/list`, names and all, and an area holding nothing was
+    listed to every role.
+    """
+    from homeassistant.helpers import area_registry as ar  # noqa: PLC0415
+    from homeassistant.helpers import entity_registry as er  # noqa: PLC0415
+    from homeassistant.helpers import floor_registry as fr  # noqa: PLC0415
+    from homeassistant.helpers import label_registry as lr  # noqa: PLC0415
+
+    floor = fr.async_get(hass).async_create("Ground")
+    attic = fr.async_get(hass).async_create("Attic")
+    areas = ar.async_get(hass)
+    kitchen = areas.async_create("Kitchen", floor_id=floor.floor_id)
+    vault = areas.async_create("Vault", floor_id=floor.floor_id)
+    empty = areas.async_create("Empty", floor_id=floor.floor_id)
+    label = lr.async_get(hass).async_create("Security")
+    entities = er.async_get(hass)
+    light = entities.async_get_or_create("light", "demo", "kitchen")
+    lock = entities.async_get_or_create("lock", "demo", "vault")
+    entities.async_update_entity(light.entity_id, area_id=kitchen.id)
+    entities.async_update_entity(
+        lock.entity_id, area_id=vault.id, labels={label.label_id}
+    )
+    ctx = _ctx(hass, {lock.entity_id})
+
+    listed = REGISTRY.filter_result(
+        "config/area_registry/list",
+        ctx,
+        [
+            {"area_id": area.id, "floor_id": floor.floor_id, "name": area.name}
+            for area in (kitchen, vault, empty)
+        ],
+    )
+    assert [entry["name"] for entry in listed] == ["Kitchen"]
+
+    floors = REGISTRY.filter_result(
+        "config/floor_registry/list",
+        ctx,
+        [{"floor_id": f.floor_id, "name": f.name} for f in (floor, attic)],
+    )
+    assert [entry["name"] for entry in floors] == ["Ground"]
+
+    labels = REGISTRY.filter_result(
+        "config/label_registry/list",
+        ctx,
+        [{"label_id": label.label_id, "name": label.name}],
+    )
+    assert labels == []

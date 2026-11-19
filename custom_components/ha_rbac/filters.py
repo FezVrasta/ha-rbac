@@ -17,7 +17,10 @@ from .const import (
     EVENT_RBAC_DENIED,
     GRANT_HISTORY,
     GRANT_LOGBOOK,
+    KEY_AREA,
     KEY_ENTITY,
+    KEY_FLOOR,
+    KEY_LABEL,
     RESOURCE_KEYS,
 )
 from .extract import Extracted, entity_candidate
@@ -664,6 +667,48 @@ def _filter_display_registry(ctx: FilterContext, result: Any) -> Any:
             or ctx.readable(entry[DISPLAY_ENTITY_ID])
         ],
     }
+
+
+def _holds_something_readable(ctx: FilterContext, kind: str, item_id: Any) -> bool:
+    """Return True if one area, floor or label holds an entity the role can read."""
+    from .decide import expand_to_entities  # noqa: PLC0415
+
+    if not isinstance(item_id, str):
+        return False
+    found = Extracted()
+    found.buckets[kind].add(item_id)
+    return any(
+        ctx.readable(entity_id) for entity_id in expand_to_entities(ctx.hass, found)
+    )
+
+
+def _registry_list_filter(id_key: str, kind: str) -> Callable[..., Any]:
+    """Keep the entries of a registry listing the role can see something in."""
+
+    def _filter(ctx: FilterContext, result: Any) -> Any:
+        if not isinstance(result, list):
+            return prune(ctx, result)
+        return [
+            entry
+            for entry in result
+            if isinstance(entry, dict)
+            and _holds_something_readable(ctx, kind, entry.get(id_key))
+        ]
+
+    return _filter
+
+
+# Judged by the entry's own id alone. The generic walk asks whether *any*
+# container an object names holds something readable, and an area entry names
+# its floor as well, so one readable entity anywhere on that floor listed every
+# other area on it by name, along with every area that holds nothing at all.
+REGISTRY.result("config/area_registry/list")(_registry_list_filter("area_id", KEY_AREA))
+REGISTRY.result("config/floor_registry/list")(
+    _registry_list_filter("floor_id", KEY_FLOOR)
+)
+REGISTRY.result("config/label_registry/list")(
+    _registry_list_filter("label_id", KEY_LABEL)
+)
 
 
 @REGISTRY.result("lovelace/dashboards/list")
