@@ -217,6 +217,20 @@ You can also hide the History or Logbook screen from the sidebar and still grant
 </details>
 
 <details>
+<summary><strong>Why is a card hidden for a restricted user?</strong></summary>
+
+<br>
+
+Usually because of one of these two:
+
+- **Visibility conditions with a template.** Since 2026.10, Home Assistant checks a card's visibility conditions on the server, and if that check fails the card is hidden. A template can read any entity in the house and its answer can be used to find out things the role can't see, so ha-rbac refuses it for any role that restricts something. Use `state` or `numeric_state` conditions that name an entity the role can read instead. A `numeric_state` with neither `above` nor `below` counts as a template, because Home Assistant turns it into one, and so does every other condition on a card that has a template among them.
+- **Picture cards showing a camera.** `picture-entity`, `picture-glance` and `picture-elements` ask Home Assistant to sign a URL for the camera, and signing URLs is refused to every restricted role (a signed URL works for anyone holding it). A card that shows the camera entity's own `entity_picture` works, because that URL (`/api/camera_proxy/<entity>?token=…`) already carries the camera's token.
+
+For anything else, the Denials tab says what was refused.
+
+</details>
+
+<details>
 <summary><strong>Isn't this security by obscurity?</strong></summary>
 
 <br>
