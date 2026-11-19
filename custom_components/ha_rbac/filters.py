@@ -1073,17 +1073,20 @@ def _filter_current_user(ctx: FilterContext, result: Any) -> Any:
     just stops the UI offering things that will fail.
 
     Home Assistant builds its whole Settings area from this flag, and shows its
-    dashboard editor by it alone, with nothing finer underneath. Two things make
-    a role keep the flag Home Assistant reported:
+    dashboard editor by it alone, with nothing finer underneath. A role keeps
+    the flag Home Assistant reported when:
 
     * its ceiling is the administrative tier (`admin_ui`), because it can then
       really use what is offered;
+    * it holds an administrative capability, whose job is done in the Settings
+      pages (`reports_as_admin`);
     * it holds a dashboard-edit grant *and* has opted in (`reports_as_admin`).
       Reporting administrator for the editor's sake also opens the Settings
       sidebar, user management and integrations in the menu, so it needs its
-      own opt-in rather than riding along with the grant. Every gate still runs
-      behind the flag exactly as before; it widens what is *offered*, never what
-      is granted.
+      own opt-in rather than riding along with the grant.
+
+    Every gate still runs behind the flag exactly as before; it widens what is
+    *offered*, never what is granted.
 
     A user Home Assistant itself calls non-admin stays non-admin.
     """

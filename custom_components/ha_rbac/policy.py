@@ -55,6 +55,7 @@ from .const import (
     ROLE_EDITOR,
     ROLE_READ_ONLY,
     ROLE_USER,
+    SETTINGS_CAPABILITIES,
     TIER_ADMIN,
     TIER_OPEN,
     TIER_ORDER,
@@ -926,6 +927,9 @@ class CompiledRole:
     # Assistant's own dashboard editor is offered for a `dashboard_edit`
     # grant. Consulted only for that reporting, never for enforcement.
     report_as_admin: bool
+    # Holds a capability whose job is done in the Settings pages, which the
+    # frontend offers only to a user it believes is an administrator.
+    reaches_settings: bool
     attribute_rules: "list[CompiledAttributeRule]"
     choice_rules: "list[CompiledChoiceRule]"
     # Grant rules per section of `GRANT_SECTIONS`, keyed by section name. Every
@@ -1044,6 +1048,9 @@ def compile_role(
         app_deny=list(apps.get("deny") or []),
         dashboard_edit=list(apps.get("dashboard_edit") or []),
         report_as_admin=bool(apps.get("report_as_admin")),
+        reaches_settings=bool(
+            SETTINGS_CAPABILITIES.intersection(role.get("capabilities") or [])
+        ),
         attribute_rules=attribute_rules,
         choice_rules=choice_rules,
         grant_rules=grant_rules,
@@ -1266,17 +1273,24 @@ class Permissions:
     def reports_as_admin(self) -> bool:
         """Return True if `auth/current_user` should report this user as an admin.
 
-        Two conditions, both required: a role must actually hold a dashboard
-        to edit, and -- separately -- a role must have opted in to being
-        reported this way at all. The grant alone is not enough, because
         Home Assistant shows or hides its whole Settings sidebar by this one
-        flag, with nothing finer underneath it: widening what the frontend
-        *offers* is a choice a role has to make on purpose, not a side effect
-        of being handed a dashboard to edit. Enforcement never reads this
-        property; every gate runs the same whether it is True or False.
+        flag, with nothing finer underneath it. Two ways get there:
+
+        * a role holds an administrative capability (automations, devices and
+          so on). Those jobs are done in the Settings pages, so a role holding
+          one without the sidebar can't do it at all (#93);
+        * a role holds a dashboard to edit *and* a role has opted in to being
+          reported this way. The grant alone is not enough: widening what the
+          frontend offers is a choice a role has to make on purpose, not a side
+          effect of being handed a dashboard to edit.
+
+        Enforcement never reads this property; every gate runs the same whether
+        it is True or False.
         """
         if self.pass_through:
             return False
+        if any(role.reaches_settings for role in self.roles):
+            return True
         return any(role.dashboard_edit for role in self.roles) and any(
             role.report_as_admin for role in self.roles
         )

@@ -1041,6 +1041,28 @@ async def test_a_dashboard_edit_grant_reports_the_role_as_admin_only_when_opted_
     assert _is_admin(editor) is True
 
 
+async def test_an_administrative_capability_reports_the_role_as_admin(
+    hass: HomeAssistant,
+) -> None:
+    """#93: Home Assistant offers its Settings sidebar only to an administrator.
+
+    A role granted automations, or devices and integrations, does that job in
+    the Settings pages, so without the sidebar the grant was unusable from the
+    interface. Notifications live in the bell and don't count.
+    """
+
+    def _is_admin(role: dict[str, Any]) -> Any:
+        compiled = compile_role(hass, role, _lookup(hass))
+        ctx = FilterContext.for_user(hass, Permissions(roles=[compiled]))
+        return REGISTRY.filter_result(
+            "auth/current_user", ctx, {"id": "u", "is_admin": True}
+        )["is_admin"]
+
+    assert _is_admin(_role(capabilities=["automations", "devices"])) is True
+    assert _is_admin(_role(capabilities=["notifications"])) is False
+    assert _is_admin(_role()) is False
+
+
 async def test_a_denied_addon_is_refused_at_the_supervisor_api(
     hass: HomeAssistant,
 ) -> None:

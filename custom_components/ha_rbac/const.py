@@ -194,6 +194,15 @@ WITHHELD_UNLESS_GRANTED: Final[dict[str, tuple[str, ...]]] = {
     if capability.get("default_deny")
 }
 
+# The capabilities whose job is done in Home Assistant's Settings pages. Holding
+# one is useless without the Settings sidebar, which the frontend shows only to
+# a user it believes is an administrator. Notifications live in the bell.
+SETTINGS_CAPABILITIES: Final[frozenset[str]] = frozenset(
+    capability["id"]
+    for capability in CAPABILITIES
+    if not capability.get("default_deny")
+)
+
 CAPABILITY_PATTERNS: Final[dict[str, tuple[str, ...]]] = {
     capability["id"]: capability["patterns"] for capability in CAPABILITIES
 }

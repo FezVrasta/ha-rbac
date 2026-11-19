@@ -1065,7 +1065,11 @@ class HaRbacPanel extends HTMLElement {
         <div class="card-content">      <p class="hint">Everything in this section is an administrator's job.
         Ticked, it is a job this role does too. Leave them all off and the role
         can live in the house without changing how it works: it reads and
-        controls the entities allowed above and reaches no settings at all.</p>
+        controls the entities allowed above and reaches no settings at all.
+        Tick any job other than notifications and Home Assistant's Settings
+        sidebar appears for this role, since that's where the job is done.
+        Settings pages it wasn't given show in the menu and refuse
+        everything inside them.</p>
       <div class="cap">
         <ha-checkbox id="tier-admin"
           ${(draft.tiers || {}).max === "admin" ? "checked" : ""}
