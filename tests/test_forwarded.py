@@ -90,6 +90,78 @@ async def test_a_chain_from_an_untrusted_peer_is_discarded(hass) -> None:
     assert headers[hdrs.X_FORWARDED_FOR] == "203.0.113.7"
 
 
+async def test_a_trusted_peer_keeps_the_scheme_the_client_used(hass) -> None:
+    """Behind a TLS-terminating reverse proxy, the client was on https.
+
+    The reverse proxy talks plain http to us. Sending our own scheme made Home
+    Assistant build every absolute URL with http://, which broke OAuth
+    discovery for MCP clients that compare the advertised resource with the URL
+    they were given.
+    """
+    proxy = _proxy(hass, forward_client_ip=True, trusted_proxies=["10.0.0.0/8"])
+    request = _Request(
+        "10.0.0.5",
+        {
+            hdrs.X_FORWARDED_FOR: "203.0.113.7",
+            hdrs.X_FORWARDED_PROTO: "https",
+            hdrs.X_FORWARDED_HOST: "home.example.org",
+        },
+    )
+    request.scheme = "http"
+    headers = proxy._request_headers(request)
+
+    assert headers[hdrs.X_FORWARDED_FOR] == "203.0.113.7, 10.0.0.5"
+    assert headers[hdrs.X_FORWARDED_PROTO] == "https"
+    assert headers[hdrs.X_FORWARDED_HOST] == "home.example.org"
+
+
+@pytest.mark.parametrize(
+    ("chain", "outer", "expected"),
+    [
+        ("203.0.113.7, 10.0.0.9", "https, http", "https"),
+        ("203.0.113.7, 10.0.0.9", "https", "https"),
+        ("203.0.113.7", "HTTPS", "https"),
+        ("203.0.113.7", ", https", "http"),
+        ("203.0.113.7", "gopher", "http"),
+        ("203.0.113.7", "", "http"),
+    ],
+)
+async def test_the_forwarded_scheme_is_a_single_valid_one(
+    hass, chain: str, outer: str, expected: str
+) -> None:
+    """One scheme, the client's own.
+
+    Home Assistant accepts a single scheme with any X-Forwarded-For chain, and
+    the ha-mcp webhook proxy reads the header raw: a chain of them ended up
+    verbatim in its OAuth discovery URLs ("https, http://...").
+    """
+    proxy = _proxy(hass, forward_client_ip=True, trusted_proxies=["10.0.0.0/8"])
+    request = _Request(
+        "10.0.0.5", {hdrs.X_FORWARDED_FOR: chain, hdrs.X_FORWARDED_PROTO: outer}
+    )
+    request.scheme = "http"
+
+    assert proxy._request_headers(request)[hdrs.X_FORWARDED_PROTO] == expected
+
+
+async def test_an_untrusted_peer_cannot_claim_a_scheme_or_host(hass) -> None:
+    """These are as much the client's own claim as its address."""
+    proxy = _proxy(hass, forward_client_ip=True, trusted_proxies=["10.0.0.0/8"])
+    request = _Request(
+        "203.0.113.7",
+        {
+            hdrs.X_FORWARDED_FOR: "198.51.100.1",
+            hdrs.X_FORWARDED_PROTO: "https",
+            hdrs.X_FORWARDED_HOST: "evil.example",
+        },
+    )
+    request.scheme = "http"
+    headers = proxy._request_headers(request)
+
+    assert headers[hdrs.X_FORWARDED_PROTO] == "http"
+    assert headers[hdrs.X_FORWARDED_HOST] == "home.example"
+
+
 async def test_an_unparseable_trusted_proxy_is_not_a_crash(hass) -> None:
     """The list is Home Assistant's to validate, not ours to choke on."""
     proxy = _proxy(hass, forward_client_ip=True, trusted_proxies=["not-an-address"])

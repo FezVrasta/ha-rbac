@@ -558,13 +558,41 @@ class RbacProxy:
             # From anyone else the header is just something the client typed,
             # and honouring it would let them forge their way past IP banning
             # and the `trusted_networks` auth provider.
+            trusted = self._peer_is_trusted(peer)
             chain = request.headers.get(hdrs.X_FORWARDED_FOR, "").strip()
-            headers[hdrs.X_FORWARDED_FOR] = (
-                f"{chain}, {peer}" if chain and self._peer_is_trusted(peer) else peer
+            chain = chain if trusted else ""
+            headers[hdrs.X_FORWARDED_FOR] = f"{chain}, {peer}" if chain else peer
+            # The same goes for the scheme and host the client actually used. A
+            # reverse proxy that terminates TLS talks plain HTTP to us, so our
+            # own scheme would tell Home Assistant every request came in over
+            # http, and every absolute URL it builds (OAuth discovery among
+            # them) would point there.
+            outer_host = request.headers.get(hdrs.X_FORWARDED_HOST, "").strip()
+            headers[hdrs.X_FORWARDED_HOST] = (
+                outer_host.rsplit(",", 1)[-1].strip()
+                if trusted and outer_host
+                else request.headers.get(hdrs.HOST, "")
             )
-            headers[hdrs.X_FORWARDED_HOST] = request.headers.get(hdrs.HOST, "")
-            headers[hdrs.X_FORWARDED_PROTO] = request.scheme
+            headers[hdrs.X_FORWARDED_PROTO] = self._forwarded_proto(
+                request, chain if trusted else None
+            )
         return headers
+
+    @staticmethod
+    def _forwarded_proto(request: web.Request, chain: str | None) -> str:
+        """Return the X-Forwarded-Proto to send, given a trusted peer's chain.
+
+        Always a single scheme: Home Assistant accepts one whatever the length
+        of X-Forwarded-For, and integrations that read the header themselves
+        (MCP proxies building OAuth discovery URLs) expect exactly one. The
+        leftmost entry is the scheme the client itself used.
+        """
+        own = request.scheme
+        if chain is None:
+            return own
+        outer = request.headers.get(hdrs.X_FORWARDED_PROTO, "")
+        first = outer.split(",", 1)[0].strip().lower()
+        return first if first in ("http", "https") else own
 
     def _peer_is_trusted(self, peer: str) -> bool:
         """Return True if Home Assistant would trust a chain from this peer."""
