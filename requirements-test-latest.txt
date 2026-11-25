@@ -2,4 +2,4 @@
 # Assistant's own test package. CI requires it on every change, so a fix for a
 # break in a newer release or beta must still pass here. Dependabot proposes the
 # next release; merging that PR, once its checks pass, records it as known good.
-pytest-homeassistant==2026.11.1
+pytest-homeassistant==2026.11.2
